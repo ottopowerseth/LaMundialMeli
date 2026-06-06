@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { ensureSheets, writeSheet } from "@/lib/sheets";
+import { ensureSheets, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
 function getComisionPct(listingType: string) {
@@ -97,7 +97,32 @@ export async function POST() {
       ];
     });
 
+    // Leer stock anterior antes de escribir
+    const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
+    try {
+      const prevRows = await readSheet("Publicaciones!A2:F1000");
+      for (const r of prevRows) {
+        if (r[0]) stockAnterior[r[0]] = { titulo: r[1] ?? "", stock: Number(r[5]) || 0, precio: Number(r[3]) || 0 };
+      }
+    } catch { /* primera vez */ }
+
     await writeSheet("Publicaciones!A1", [headers, ...rows]);
+
+    // Detectar cambios de stock
+    const cambiosStock: { titulo: string; antes: number; despues: number; diferencia: number }[] = [];
+    for (const item of items) {
+      const id = String(item.id);
+      const stockNuevo = item.available_quantity as number;
+      const anterior = stockAnterior[id];
+      if (anterior && anterior.stock !== stockNuevo) {
+        cambiosStock.push({
+          titulo: item.title as string,
+          antes: anterior.stock,
+          despues: stockNuevo,
+          diferencia: stockNuevo - anterior.stock,
+        });
+      }
+    }
 
     // Ventas — paginado
     const orders: Record<string, unknown>[] = [];
@@ -129,10 +154,27 @@ export async function POST() {
 
     await writeSheet("Ventas!A1", [ordHeaders, ...ordRows]);
 
+    // Ventas nuevas (últimas 24h)
+    const hace24h = new Date(Date.now() - 86400000);
+    const ventasNuevas = orders
+      .filter(o => new Date(o.date_created as string) > hace24h)
+      .map(o => {
+        const it = (o.order_items as Record<string, unknown>[])?.[0];
+        return {
+          titulo: (it?.item as Record<string, unknown>)?.title ?? "",
+          cantidad: it?.quantity ?? 0,
+          total: o.total_amount,
+          comprador: (o.buyer as Record<string, unknown>)?.nickname ?? "",
+          fecha: new Date(o.date_created as string).toLocaleDateString("es-CL"),
+        };
+      });
+
     return NextResponse.json({
       ok: true,
       publicaciones: items.length,
       ventas: orders.length,
+      cambiosStock,
+      ventasNuevas,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
