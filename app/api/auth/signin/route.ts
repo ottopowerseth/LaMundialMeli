@@ -4,8 +4,11 @@ import { createSessionToken } from "@/lib/auth";
 export async function POST(req: NextRequest) {
   const { password } = await req.json().catch(() => ({}));
 
+  if (!process.env.ADMIN_PASSWORD) {
+    return NextResponse.json({ error: "ADMIN_PASSWORD no configurada en Vercel" }, { status: 500 });
+  }
+
   if (!password || password !== process.env.ADMIN_PASSWORD) {
-    // Delay para dificultar fuerza bruta
     await new Promise((r) => setTimeout(r, 500));
     return NextResponse.json({ error: "Contraseña incorrecta" }, { status: 401 });
   }
