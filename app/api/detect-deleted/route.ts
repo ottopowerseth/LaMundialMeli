@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { readSheet, writeSheet } from "@/lib/sheets";
+import { readSheet, batchWriteSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
 export async function POST() {
@@ -37,9 +37,14 @@ export async function POST() {
       }
     });
 
-    // Marcar como ELIMINADA en columna Alerta (R)
-    for (const { fila } of eliminados) {
-      await writeSheet(`Publicaciones!R${fila}`, [["ELIMINADA"]]);
+    // Marcar como ELIMINADA en columna Alerta (R) — una sola llamada batch
+    if (eliminados.length > 0) {
+      await batchWriteSheet(
+        eliminados.map(({ fila }) => ({
+          range: `Publicaciones!R${fila}`,
+          values: [["ELIMINADA"]],
+        }))
+      );
     }
 
     return NextResponse.json({ ok: true, eliminados: eliminados.length, productos: eliminados });

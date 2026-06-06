@@ -57,6 +57,20 @@ export async function writeSheet(range: string, values: unknown[][]) {
   });
 }
 
+export async function batchWriteSheet(updates: { range: string; values: unknown[][] }[]) {
+  if (updates.length === 0) return;
+  const auth = getAuthClient();
+  const sheets = google.sheets({ version: "v4", auth });
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: updates.map(({ range, values }) => ({ range, values })),
+    },
+  });
+}
+
 export async function appendSheet(range: string, values: unknown[][]) {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
