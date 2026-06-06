@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { ensureSheets, readSheet, writeSheet } from "@/lib/sheets";
+import { ensureSheets, clearSheet, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
 function getComisionPct(listingType: string) {
@@ -97,7 +97,7 @@ export async function POST() {
       ];
     });
 
-    // Leer stock anterior antes de escribir
+    // Leer stock anterior antes de limpiar la hoja
     const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
     try {
       const prevRows = await readSheet("Publicaciones!A2:F1000");
@@ -106,6 +106,8 @@ export async function POST() {
       }
     } catch { /* primera vez */ }
 
+    // Limpiar hoja antes de escribir para que no queden filas viejas
+    await clearSheet("Publicaciones");
     await writeSheet("Publicaciones!A1", [headers, ...rows]);
 
     // Detectar cambios de stock
@@ -152,6 +154,7 @@ export async function POST() {
       ];
     });
 
+    await clearSheet("Ventas");
     await writeSheet("Ventas!A1", [ordHeaders, ...ordRows]);
 
     // Ventas nuevas (últimas 24h)

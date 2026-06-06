@@ -52,6 +52,18 @@ export async function ensureSheets(sheetNames: string[]) {
   }
 }
 
+export async function clearSheet(sheetName: string) {
+  const auth = getAuthClient();
+  const sheets = google.sheets({ version: "v4", auth });
+
+  await withRetry(() =>
+    sheets.spreadsheets.values.clear({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range: `${sheetName}!A:Z`,
+    })
+  );
+}
+
 export async function readSheet(range: string) {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
