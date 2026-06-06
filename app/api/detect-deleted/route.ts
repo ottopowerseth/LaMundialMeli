@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { readSheet, writeSheet } from "@/lib/sheets";
-
-const mlClient = axios.create({
-  baseURL: "https://api.mercadolibre.com",
-  headers: { Authorization: `Bearer ${process.env.ML_ACCESS_TOKEN}` },
-});
+import { getValidAccessToken } from "@/lib/ml-token";
 
 export async function POST() {
   try {
+    const token = await getValidAccessToken();
+    const mlClient = axios.create({
+      baseURL: "https://api.mercadolibre.com",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
     const { data: user } = await mlClient.get("/users/me");
     const userId = user.id;
 
@@ -39,7 +41,6 @@ export async function POST() {
       }
     });
 
-    // Actualizar columna Alerta (R = col 18) para los eliminados
     for (const { row } of updates) {
       await writeSheet(`Publicaciones!R${row}`, [["ELIMINADA"]]);
     }
