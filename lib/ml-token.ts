@@ -44,37 +44,53 @@ async function readConfig(): Promise<Record<string, string>> {
   }
 }
 
-async function writeConfig(key: string, value: string) {
+export async function saveTokens(accessToken: string, refreshToken: string) {
+  await ensureConfigTab();
   const sheets = getSheetsClient();
+
+  // Leer config actual para saber en qué filas están las claves
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${CONFIG_TAB}!A:A`,
+    range: `${CONFIG_TAB}!A:B`,
   });
   const rows = data.values ?? [];
-  const rowIndex = rows.findIndex((r) => r[0] === key);
+  const keyRow: Record<string, number> = {};
+  rows.forEach((r, i) => { if (r[0]) keyRow[r[0]] = i + 1; });
 
-  if (rowIndex >= 0) {
-    await sheets.spreadsheets.values.update({
+  const updates: { key: string; value: string }[] = [
+    { key: "ML_ACCESS_TOKEN", value: accessToken },
+    { key: "ML_REFRESH_TOKEN", value: refreshToken },
+    { key: "ML_TOKEN_UPDATED", value: new Date().toISOString() },
+  ];
+
+  const batchData: { range: string; values: string[][] }[] = [];
+  const appends: string[][] = [];
+
+  for (const { key, value } of updates) {
+    if (keyRow[key]) {
+      batchData.push({ range: `${CONFIG_TAB}!B${keyRow[key]}`, values: [[value]] });
+    } else {
+      appends.push([key, value]);
+    }
+  }
+
+  // Una sola llamada para actualizar claves existentes
+  if (batchData.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: SHEET_ID,
-      range: `${CONFIG_TAB}!B${rowIndex + 1}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[value]] },
+      requestBody: { valueInputOption: "RAW", data: batchData },
     });
-  } else {
+  }
+
+  // Una sola llamada para agregar claves nuevas (si las hay)
+  if (appends.length > 0) {
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: `${CONFIG_TAB}!A:B`,
       valueInputOption: "RAW",
-      requestBody: { values: [[key, value]] },
+      requestBody: { values: appends },
     });
   }
-}
-
-export async function saveTokens(accessToken: string, refreshToken: string) {
-  await ensureConfigTab();
-  await writeConfig("ML_ACCESS_TOKEN", accessToken);
-  await writeConfig("ML_REFRESH_TOKEN", refreshToken);
-  await writeConfig("ML_TOKEN_UPDATED", new Date().toISOString());
 }
 
 export async function getValidAccessToken(): Promise<string> {

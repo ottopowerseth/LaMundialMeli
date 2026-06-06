@@ -10,6 +10,25 @@ function getAuthClient() {
   });
 }
 
+async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      const status =
+        (err as { code?: number })?.code ??
+        (err as { response?: { status?: number } })?.response?.status;
+      const isQuota = status === 429 || status === 503;
+      if (isQuota && i < retries - 1) {
+        await new Promise((r) => setTimeout(r, (i + 1) * 10000)); // 10s, 20s, 30s
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("unreachable");
+}
+
 export async function ensureSheets(sheetNames: string[]) {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
@@ -49,12 +68,14 @@ export async function writeSheet(range: string, values: unknown[][]) {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values },
-  });
+  await withRetry(() =>
+    sheets.spreadsheets.values.update({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values },
+    })
+  );
 }
 
 export async function batchWriteSheet(updates: { range: string; values: unknown[][] }[]) {
@@ -62,23 +83,27 @@ export async function batchWriteSheet(updates: { range: string; values: unknown[
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
 
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    requestBody: {
-      valueInputOption: "USER_ENTERED",
-      data: updates.map(({ range, values }) => ({ range, values })),
-    },
-  });
+  await withRetry(() =>
+    sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: updates.map(({ range, values }) => ({ range, values })),
+      },
+    })
+  );
 }
 
 export async function appendSheet(range: string, values: unknown[][]) {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: process.env.GOOGLE_SHEET_ID,
-    range,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values },
-  });
+  await withRetry(() =>
+    sheets.spreadsheets.values.append({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values },
+    })
+  );
 }
