@@ -77,18 +77,32 @@ export async function POST() {
       "Ganancia", "Margen %", "Días de Stock", "Alerta", "URL", "Actualizado",
     ];
 
+    // Leer hoja anterior ANTES de limpiar para preservar datos manuales y detectar cambios de stock
+    // A=0,B=1,C=2,D=3,E=4,F=5(Costo),G=6(Precio),H=7,I=8(Envío)
+    const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
+    const datosManual: Record<string, { costo: string; envio: string }> = {};
+    try {
+      const prevRows = await readSheet("Publicaciones!A2:I1000");
+      for (const r of prevRows) {
+        if (!r[0]) continue;
+        stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
+        datosManual[r[0]] = { costo: r[5] ?? "", envio: r[8] ?? "" };
+      }
+    } catch { /* primera vez */ }
+
     const rows = items.map((item, i) => {
       const row = i + 2;
+      const manual = datosManual[String(item.id)] ?? { costo: "", envio: "" };
       return [
         String(item.id),                                      // A: ID
         item.category_id,                                     // B: Categoría
         item.title,                                           // C: Título
         item.available_quantity,                              // D: Stock
         item.sold_quantity,                                   // E: Vendidos
-        "",                                                   // F: Costo (manual)
+        manual.costo,                                         // F: Costo (se preserva entre syncs)
         item.price,                                           // G: Precio de Venta
         `=G${row}*J${row}`,                                   // H: Comisión $ = Precio × Comisión%
-        "",                                                   // I: Envío (manual)
+        manual.envio,                                         // I: Envío (se preserva entre syncs)
         getComisionPct(item.listing_type_id as string, !!(item.catalog_listing)), // J: Comisión %
         item.status,                                          // K: Estado ML
         item.listing_type_id,                                 // L: Tipo Publicación
@@ -100,16 +114,6 @@ export async function POST() {
         new Date().toLocaleDateString("es-CL"),               // R: Actualizado
       ];
     });
-
-    // Leer stock anterior antes de limpiar la hoja
-    const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
-    try {
-      const prevRows = await readSheet("Publicaciones!A2:G1000");
-      for (const r of prevRows) {
-        // A=ID(0), C=Título(2), D=Stock(3), G=Precio(6)
-        if (r[0]) stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
-      }
-    } catch { /* primera vez */ }
 
     // Limpiar hoja antes de escribir para que no queden filas viejas
     await clearSheet("Publicaciones");
