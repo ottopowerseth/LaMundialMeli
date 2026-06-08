@@ -4,11 +4,13 @@ import { ensureSheets, clearSheet, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
 function getComisionPct(listingType: string) {
+  // Fuente: API MercadoLibre /sites/MLC/listing_types (junio 2026)
+  // Activos en Chile: gold_pro=Premium(17%), gold_special=Clásica(14%), free(0%)
   const rates: Record<string, number> = {
-    gold_pro: 0.17, gold_special: 0.1375, gold_premium: 0.1375,
-    gold: 0.12, silver: 0.08, bronze: 0.06, free: 0,
+    gold_pro: 0.17, gold_special: 0.14,
+    gold_premium: 0, gold: 0, silver: 0, bronze: 0, free: 0,
   };
-  return rates[listingType] ?? 0.13;
+  return rates[listingType] ?? 0.14;
 }
 
 function getDiasStock(item: Record<string, unknown>) {
@@ -64,45 +66,48 @@ export async function POST() {
       );
     }
 
+    // Columnas en el orden actual de la planilla:
+    // A:ID  B:Categoría  C:Título  D:Stock  E:Vendidos  F:Costo  G:Precio de Venta
+    // H:Comisión$  I:Envío  J:Comisión%  K:Estado ML  L:Tipo Publicación
+    // M:Ganancia  N:Margen%  O:Días de Stock  P:Alerta  Q:URL  R:Actualizado
     const headers = [
-      "ID", "Título", "Categoría", "Precio de Venta", "Moneda",
-      "Stock", "Vendidos", "Estado ML", "Condición", "Tipo Publicación",
-      "Costo", "Comisión %", "Comisión $", "Envío",
+      "ID", "Categoría", "Título", "Stock", "Vendidos",
+      "Costo", "Precio de Venta", "Comisión $", "Envío", "Comisión %",
+      "Estado ML", "Tipo Publicación",
       "Ganancia", "Margen %", "Días de Stock", "Alerta", "URL", "Actualizado",
     ];
 
     const rows = items.map((item, i) => {
       const row = i + 2;
       return [
-        String(item.id),
-        item.title,
-        item.category_id,
-        item.price,
-        item.currency_id,
-        item.available_quantity,
-        item.sold_quantity,
-        item.status,
-        item.condition,
-        item.listing_type_id,
-        "",
-        getComisionPct(item.listing_type_id as string),
-        `=D${row}*L${row}`,
-        "",
-        `=D${row}-K${row}-M${row}-N${row}`,
-        `=IF(D${row}>0,O${row}/D${row},"")`,
-        getDiasStock(item),
-        getAlerta(item),
-        item.permalink,
-        new Date().toLocaleDateString("es-CL"),
+        String(item.id),                                      // A: ID
+        item.category_id,                                     // B: Categoría
+        item.title,                                           // C: Título
+        item.available_quantity,                              // D: Stock
+        item.sold_quantity,                                   // E: Vendidos
+        "",                                                   // F: Costo (manual)
+        item.price,                                           // G: Precio de Venta
+        `=G${row}*J${row}`,                                   // H: Comisión $ = Precio × Comisión%
+        "",                                                   // I: Envío (manual)
+        getComisionPct(item.listing_type_id as string),       // J: Comisión %
+        item.status,                                          // K: Estado ML
+        item.listing_type_id,                                 // L: Tipo Publicación
+        `=G${row}-F${row}-H${row}-I${row}`,                   // M: Ganancia = Precio - Costo - Com$ - Envío
+        `=IF(G${row}>0,M${row}/G${row},"")`,                  // N: Margen %
+        getDiasStock(item),                                   // O: Días de Stock
+        getAlerta(item),                                      // P: Alerta
+        item.permalink,                                       // Q: URL
+        new Date().toLocaleDateString("es-CL"),               // R: Actualizado
       ];
     });
 
     // Leer stock anterior antes de limpiar la hoja
     const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
     try {
-      const prevRows = await readSheet("Publicaciones!A2:F1000");
+      const prevRows = await readSheet("Publicaciones!A2:G1000");
       for (const r of prevRows) {
-        if (r[0]) stockAnterior[r[0]] = { titulo: r[1] ?? "", stock: Number(r[5]) || 0, precio: Number(r[3]) || 0 };
+        // A=ID(0), C=Título(2), D=Stock(3), G=Precio(6)
+        if (r[0]) stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
       }
     } catch { /* primera vez */ }
 

@@ -23,8 +23,8 @@ export async function POST() {
       offset += 100;
     }
 
-    // Leer sheet con ID (A) y Título (B)
-    const sheetRows = await readSheet("Publicaciones!A2:B1000");
+    // Leer sheet con ID (A) y Título (C)
+    const sheetRows = await readSheet("Publicaciones!A2:C1000");
     if (sheetRows.length === 0) {
       return NextResponse.json({ ok: true, eliminados: 0, productos: [] });
     }
@@ -33,15 +33,15 @@ export async function POST() {
     sheetRows.forEach((row, i) => {
       const id = row[0];
       if (id && !mlIds.has(id)) {
-        eliminados.push({ id, titulo: row[1] ?? "Sin título", fila: i + 2 });
+        eliminados.push({ id, titulo: row[2] ?? "Sin título", fila: i + 2 });
       }
     });
 
-    // Marcar como ELIMINADA en columna Alerta (R) — una sola llamada batch
+    // Marcar como ELIMINADA en columna Alerta (P) — una sola llamada batch
     if (eliminados.length > 0) {
       await batchWriteSheet(
         eliminados.map(({ fila }) => ({
-          range: `Publicaciones!R${fila}`,
+          range: `Publicaciones!P${fila}`,
           values: [["ELIMINADA"]],
         }))
       );
