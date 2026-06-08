@@ -62,6 +62,33 @@ export async function clearSheet(sheetName: string) {
       range: `${sheetName}!A:Z`,
     })
   );
+
+  // También limpia el formato de las celdas para evitar que formatos
+  // anteriores (ej: "Fecha") distorsionen los nuevos valores
+  const { data } = await sheets.spreadsheets.get({
+    spreadsheetId: process.env.GOOGLE_SHEET_ID,
+  });
+  const sheet = data.sheets?.find((s) => s.properties?.title === sheetName);
+  if (sheet?.properties?.sheetId !== undefined) {
+    await withRetry(() =>
+      sheets.spreadsheets.batchUpdate({
+        spreadsheetId: process.env.GOOGLE_SHEET_ID,
+        requestBody: {
+          requests: [{
+            repeatCell: {
+              range: {
+                sheetId: sheet.properties!.sheetId,
+                startRowIndex: 0,
+                endRowIndex: 2000,
+              },
+              cell: { userEnteredFormat: {} },
+              fields: "userEnteredFormat",
+            },
+          }],
+        },
+      })
+    );
+  }
 }
 
 export async function readSheet(range: string) {

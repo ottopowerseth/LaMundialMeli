@@ -93,7 +93,7 @@ export async function POST() {
         item.status,                                          // K: Estado ML
         item.listing_type_id,                                 // L: Tipo Publicación
         `=G${row}-F${row}-H${row}-I${row}`,                   // M: Ganancia = Precio - Costo - Com$ - Envío
-        `=IF(G${row}>0,M${row}/G${row},"")`,                  // N: Margen %
+        `=IF(G${row}>0;M${row}/G${row};"")`,                   // N: Margen % — usa ; por locale es_CL
         getDiasStock(item),                                   // O: Días de Stock
         getAlerta(item),                                      // P: Alerta
         item.permalink,                                       // Q: URL
