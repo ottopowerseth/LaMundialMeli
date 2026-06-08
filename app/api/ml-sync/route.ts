@@ -3,14 +3,14 @@ import axios from "axios";
 import { ensureSheets, clearSheet, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
-function getComisionPct(listingType: string) {
+function getComisionPct(listingType: string, catalogListing: boolean) {
   // Fuente: API MercadoLibre /sites/MLC/listing_types (junio 2026)
-  // Activos en Chile: gold_pro=Premium(17%), gold_special=Clásica(14%), free(0%)
-  const rates: Record<string, number> = {
-    gold_pro: 0.17, gold_special: 0.14,
-    gold_premium: 0, gold: 0, silver: 0, bronze: 0, free: 0,
-  };
-  return rates[listingType] ?? 0.14;
+  // Catálogo reduce Premium de 17% → 15%
+  if (listingType === "gold_pro") return catalogListing ? 0.15 : 0.17;
+  if (listingType === "gold_special") return 0.14;
+  if (listingType === "free") return 0;
+  if (["gold_premium", "gold", "silver", "bronze"].includes(listingType)) return 0;
+  return 0.14;
 }
 
 function getDiasStock(item: Record<string, unknown>) {
@@ -89,7 +89,7 @@ export async function POST() {
         item.price,                                           // G: Precio de Venta
         `=G${row}*J${row}`,                                   // H: Comisión $ = Precio × Comisión%
         "",                                                   // I: Envío (manual)
-        getComisionPct(item.listing_type_id as string),       // J: Comisión %
+        getComisionPct(item.listing_type_id as string, !!(item.catalog_listing)), // J: Comisión %
         item.status,                                          // K: Estado ML
         item.listing_type_id,                                 // L: Tipo Publicación
         `=G${row}-F${row}-H${row}-I${row}`,                   // M: Ganancia = Precio - Costo - Com$ - Envío
