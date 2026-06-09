@@ -7,10 +7,12 @@ type MLStatus = { ok: boolean; nickname?: string } | null;
 
 type StockChange = { titulo: string; antes: number; despues: number; diferencia: number };
 type VentaNueva = { titulo: string; cantidad: number; total: number; comprador: string; fecha: string };
+type ProductoNuevo = { id: string; titulo: string; precio: number; estado: string };
 type SyncResult = {
   ok: boolean;
   publicaciones?: number;
   ventas?: number;
+  productosNuevos?: ProductoNuevo[];
   cambiosStock?: StockChange[];
   ventasNuevas?: VentaNueva[];
   timestamp?: string;
@@ -172,6 +174,22 @@ export default function Home() {
                     <p className="text-xs text-gray-500 mt-1">Ventas últimas 24h</p>
                   </div>
                 </div>
+
+                {/* Productos nuevos */}
+                {(syncResult.productosNuevos?.length ?? 0) > 0 && (
+                  <div>
+                    <h3 className="font-semibold text-gray-800 mb-2">Productos nuevos ({syncResult.productosNuevos!.length})</h3>
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                      {syncResult.productosNuevos!.map((p, i) => (
+                        <div key={i} className="flex items-center justify-between text-sm bg-green-50 rounded-lg px-3 py-2">
+                          <span className="text-gray-700 truncate flex-1 mr-3">{p.titulo}</span>
+                          <span className="text-gray-400 mr-3">${Number(p.precio).toLocaleString("es-CL")}</span>
+                          <span className="text-xs text-green-700 font-medium bg-green-100 px-2 py-0.5 rounded-full">{p.estado}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Cambios de stock */}
                 {(syncResult.cambiosStock?.length ?? 0) > 0 && (

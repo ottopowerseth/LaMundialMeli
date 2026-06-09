@@ -26,6 +26,9 @@ function getDiasStock(item: Record<string, unknown>) {
 function getAlerta(item: Record<string, unknown>) {
   if (item.status === "closed") return "CERRADA";
   if (item.status === "paused") return "PAUSADA";
+  if (item.status === "under_review") return "EN REVISIÓN";
+  if (item.status === "not_yet_active") return "ACTIVANDO";
+  if (item.status === "inactive") return "INACTIVA";
   if ((item.available_quantity as number) === 0) return "SIN STOCK";
   if ((item.available_quantity as number) <= 3) return "REPONER";
   return "OK";
@@ -44,14 +47,24 @@ export async function POST() {
     const { data: user } = await mlClient.get("/users/me");
     const userId = user.id;
 
-    // Publicaciones — paginado
+    // Publicaciones — buscar en todos los estados para incluir productos nuevos
+    // "active" y "paused" son los que trae el endpoint sin filtro, pero
+    // productos recién creados pueden estar en "under_review" o "not_yet_active"
     const allIds: string[] = [];
-    let offset = 0;
-    while (true) {
-      const { data } = await mlClient.get(`/users/${userId}/items/search?limit=100&offset=${offset}`);
-      allIds.push(...data.results);
-      if (allIds.length >= data.paging.total || data.results.length === 0) break;
-      offset += 100;
+    const idSet = new Set<string>();
+    const statusesToFetch = ["active", "paused", "under_review", "not_yet_active", "inactive"];
+    for (const status of statusesToFetch) {
+      let offset = 0;
+      while (true) {
+        const { data } = await mlClient.get(
+          `/users/${userId}/items/search?status=${status}&limit=100&offset=${offset}`
+        );
+        for (const id of data.results as string[]) {
+          if (!idSet.has(id)) { idSet.add(id); allIds.push(id); }
+        }
+        if (data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
+        offset += 100;
+      }
     }
 
     // Detalles en batches de 20
@@ -119,6 +132,16 @@ export async function POST() {
     await clearSheet("Publicaciones");
     await writeSheet("Publicaciones!A1", [headers, ...rows]);
 
+    // Detectar productos nuevos (IDs que no estaban en la hoja anterior)
+    const productosNuevos = items
+      .filter((item) => !datosManual[String(item.id)])
+      .map((item) => ({
+        id: String(item.id),
+        titulo: item.title as string,
+        precio: item.price as number,
+        estado: item.status as string,
+      }));
+
     // Detectar cambios de stock
     const cambiosStock: { titulo: string; antes: number; despues: number; diferencia: number }[] = [];
     for (const item of items) {
@@ -185,6 +208,7 @@ export async function POST() {
       ok: true,
       publicaciones: items.length,
       ventas: orders.length,
+      productosNuevos,
       cambiosStock,
       ventasNuevas,
       timestamp: new Date().toISOString(),
