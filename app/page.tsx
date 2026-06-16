@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Image from "next/image";
 
 type MLStatus = { ok: boolean; nickname?: string } | null;
@@ -27,6 +27,21 @@ type DeletedResult = {
   error?: string;
 } | null;
 
+type AuditResult = {
+  ventas_brutas: number;
+  ventas_netas: number;
+  comisiones_ml: number;
+  comisiones_mp: number;
+  total_comisiones: number;
+  recuperable: number;
+  tasa_efectiva: number;
+  errores: number;
+  detalle_errores: string[];
+  resumen: string;
+};
+
+type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; error?: string } | null;
+
 function Spinner() {
   return (
     <svg className="animate-spin h-4 w-4 inline mr-2" viewBox="0 0 24 24" fill="none">
@@ -36,7 +51,22 @@ function Spinner() {
   );
 }
 
+function formatCLP(n: number) {
+  return "$" + Math.round(n).toLocaleString("es-CL");
+}
+
+type FileZone = { key: string; label: string; hint: string };
+const FILE_ZONES: FileZone[] = [
+  { key: "csv_mp", label: "CSV Mercado Pago", hint: "settlement_v2_...csv" },
+  { key: "facturacion_ml", label: "Facturación ML", hint: "Reporte_Facturacion_MercadoLibre_...xlsx" },
+  { key: "cargos_full", label: "Cargos / Pagos de Facturas", hint: "Reporte_Cargos_Full_...xlsx" },
+  { key: "notas_credito", label: "Notas de Crédito (opcional)", hint: "Reporte_NotasCredito_...xlsx" },
+];
+
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<"sync" | "auditoria">("sync");
+
+  // --- Sync state ---
   const [mlStatus, setMlStatus] = useState<MLStatus>(null);
   const [syncing, setSyncing] = useState(false);
   const [detecting, setDetecting] = useState(false);
@@ -44,6 +74,18 @@ export default function Home() {
   const [deletedResult, setDeletedResult] = useState<DeletedResult>(null);
   const [borrandoFilas, setBorrandoFilas] = useState<number[]>([]);
   const [seleccionados, setSeleccionados] = useState<number[]>([]);
+
+  // --- Auditoría state ---
+  const [mes, setMes] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [auditFiles, setAuditFiles] = useState<Record<string, File | null>>({
+    csv_mp: null, facturacion_ml: null, cargos_full: null, notas_credito: null,
+  });
+  const [analyzing, setAnalyzing] = useState(false);
+  const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
+  const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(setMlStatus).catch(() => setMlStatus({ ok: false }));
@@ -85,7 +127,6 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filas }),
       });
-      // Remover del log local
       setDeletedResult(prev =>
         prev ? { ...prev, productos: prev.productos?.filter(p => !filas.includes(p.fila)) } : prev
       );
@@ -97,6 +138,27 @@ export default function Home() {
 
   function toggleSeleccion(fila: number) {
     setSeleccionados(prev => prev.includes(fila) ? prev.filter(f => f !== fila) : [...prev, fila]);
+  }
+
+  async function handleAnalyze() {
+    const hasFile = Object.values(auditFiles).some(f => f !== null);
+    if (!hasFile) return;
+
+    setAnalyzing(true);
+    setAuditResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("mes", mes);
+      for (const file of Object.values(auditFiles)) {
+        if (file) fd.append("file", file);
+      }
+      const res = await fetch("/api/audit/analyze", { method: "POST", body: fd });
+      setAuditResult(await res.json());
+    } catch {
+      setAuditResult({ ok: false, error: "Error de red" });
+    } finally {
+      setAnalyzing(false);
+    }
   }
 
   const productosRestantes = deletedResult?.productos ?? [];
@@ -123,185 +185,304 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-8 space-y-5">
-
-        {/* Botones */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
-            <div>
-              <h2 className="font-bold text-gray-900 text-lg">Actualizar publicaciones</h2>
-              <p className="text-sm text-gray-500 mt-1">Sincroniza stock, precios y ventas desde ML hacia Google Sheets.</p>
-            </div>
-            <button onClick={handleSync} disabled={syncing || !mlStatus?.ok}
-              className="w-full font-bold py-3 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ backgroundColor: "#C41230" }}>
-              {syncing ? <><Spinner />Sincronizando...</> : "Actualizar ahora"}
-            </button>
-          </div>
-
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
-            <div>
-              <h2 className="font-bold text-gray-900 text-lg">Detectar eliminados</h2>
-              <p className="text-sm text-gray-500 mt-1">Detecta productos que ya no existen en ML y los marca en el Sheet.</p>
-            </div>
-            <button onClick={handleDetectDeleted} disabled={detecting || !mlStatus?.ok}
-              className="w-full bg-gray-900 hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-xl">
-              {detecting ? <><Spinner />Detectando...</> : "Detectar eliminados"}
-            </button>
-          </div>
+      {/* Tabs */}
+      <div className="max-w-4xl mx-auto px-6 pt-6">
+        <div className="flex gap-1 bg-white rounded-2xl border border-gray-200 shadow-sm p-1 w-fit">
+          <button onClick={() => setActiveTab("sync")}
+            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "sync" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            style={activeTab === "sync" ? { backgroundColor: "#C41230" } : {}}>
+            Publicaciones
+          </button>
+          <button onClick={() => setActiveTab("auditoria")}
+            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "auditoria" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            style={activeTab === "auditoria" ? { backgroundColor: "#C41230" } : {}}>
+            Auditoría
+          </button>
         </div>
+      </div>
 
-        {/* Log de sync */}
-        {syncResult && (
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
-            <h2 className="font-bold text-gray-900 text-lg">Log de sincronización</h2>
+      <div className="max-w-4xl mx-auto px-6 py-6 space-y-5">
 
-            {!syncResult.ok ? (
-              <p className="text-red-600 text-sm">✗ Error: {syncResult.error}</p>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  <div className="bg-gray-50 rounded-xl p-3 text-center">
-                    <p className="text-2xl font-bold text-gray-900">{syncResult.publicaciones}</p>
-                    <p className="text-xs text-gray-500 mt-1">Publicaciones</p>
-                  </div>
-                  <div className="bg-gray-50 rounded-xl p-3 text-center">
-                    <p className="text-2xl font-bold text-gray-900">{syncResult.ventas}</p>
-                    <p className="text-xs text-gray-500 mt-1">Ventas totales</p>
-                  </div>
-                  <div className="bg-gray-50 rounded-xl p-3 text-center">
-                    <p className="text-2xl font-bold text-gray-900">{syncResult.ventasNuevas?.length ?? 0}</p>
-                    <p className="text-xs text-gray-500 mt-1">Ventas últimas 24h</p>
-                  </div>
+        {/* === TAB: PUBLICACIONES === */}
+        {activeTab === "sync" && (
+          <>
+            {/* Botones */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div>
+                  <h2 className="font-bold text-gray-900 text-lg">Actualizar publicaciones</h2>
+                  <p className="text-sm text-gray-500 mt-1">Sincroniza stock, precios y ventas desde ML hacia Google Sheets.</p>
                 </div>
+                <button onClick={handleSync} disabled={syncing || !mlStatus?.ok}
+                  className="w-full font-bold py-3 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: "#C41230" }}>
+                  {syncing ? <><Spinner />Sincronizando...</> : "Actualizar ahora"}
+                </button>
+              </div>
 
-                {/* Productos nuevos */}
-                {(syncResult.productosNuevos?.length ?? 0) > 0 && (
-                  <div>
-                    <h3 className="font-semibold text-gray-800 mb-2">Productos nuevos ({syncResult.productosNuevos!.length})</h3>
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                      {syncResult.productosNuevos!.map((p, i) => (
-                        <div key={i} className="flex items-center justify-between text-sm bg-green-50 rounded-lg px-3 py-2">
-                          <span className="text-gray-700 truncate flex-1 mr-3">{p.titulo}</span>
-                          <span className="text-gray-400 mr-3">${Number(p.precio).toLocaleString("es-CL")}</span>
-                          <span className="text-xs text-green-700 font-medium bg-green-100 px-2 py-0.5 rounded-full">{p.estado}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Cambios de stock */}
-                {(syncResult.cambiosStock?.length ?? 0) > 0 && (
-                  <div>
-                    <h3 className="font-semibold text-gray-800 mb-2">Cambios de stock ({syncResult.cambiosStock!.length})</h3>
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                      {syncResult.cambiosStock!.map((c, i) => (
-                        <div key={i} className="flex items-center justify-between text-sm bg-gray-50 rounded-lg px-3 py-2">
-                          <span className="text-gray-700 truncate flex-1 mr-3">{c.titulo}</span>
-                          <span className="text-gray-400 mr-2">{c.antes} → {c.despues}</span>
-                          <span className={`font-bold ${c.diferencia > 0 ? "text-green-600" : "text-red-600"}`}>
-                            {c.diferencia > 0 ? `+${c.diferencia}` : c.diferencia}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Ventas últimas 24h */}
-                {(syncResult.ventasNuevas?.length ?? 0) > 0 && (
-                  <div>
-                    <h3 className="font-semibold text-gray-800 mb-2">Ventas últimas 24h</h3>
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                      {syncResult.ventasNuevas!.map((v, i) => (
-                        <div key={i} className="text-sm bg-gray-50 rounded-lg px-3 py-2">
-                          <div className="flex justify-between">
-                            <span className="text-gray-700 truncate flex-1 mr-3">{v.titulo}</span>
-                            <span className="font-semibold text-gray-900">${Number(v.total).toLocaleString("es-CL")}</span>
-                          </div>
-                          <div className="text-gray-400 mt-0.5">Cant: {v.cantidad} · {v.comprador} · {v.fecha}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <p className="text-xs text-gray-400">Actualizado: {syncResult.timestamp ? new Date(syncResult.timestamp).toLocaleString("es-CL") : "-"}</p>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Log de eliminados */}
-        {deletedResult && (
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
-            <h2 className="font-bold text-gray-900 text-lg">Productos eliminados de ML</h2>
-
-            {!deletedResult.ok ? (
-              <p className="text-red-600 text-sm">✗ Error: {deletedResult.error}</p>
-            ) : productosRestantes.length === 0 ? (
-              <p className="text-green-600 text-sm">✓ No hay productos eliminados pendientes</p>
-            ) : (
-              <>
-                <p className="text-sm text-gray-500">{productosRestantes.length} producto(s) marcados como ELIMINADA en el Sheet. Selecciona los que quieres borrar definitivamente.</p>
-
-                {/* Acciones bulk */}
-                <div className="flex gap-2 flex-wrap">
-                  <button onClick={() => setSeleccionados(productosRestantes.map(p => p.fila))}
-                    className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50">
-                    Seleccionar todos
-                  </button>
-                  <button onClick={() => setSeleccionados([])}
-                    className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50">
-                    Deseleccionar
-                  </button>
-                  {seleccionados.length > 0 && (
-                    <button onClick={() => borrarDelSheet(seleccionados)}
-                      disabled={borrandoFilas.length > 0}
-                      className="text-sm px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
-                      {borrandoFilas.length > 0 ? "Borrando..." : `Borrar seleccionados (${seleccionados.length})`}
-                    </button>
-                  )}
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div>
+                  <h2 className="font-bold text-gray-900 text-lg">Detectar eliminados</h2>
+                  <p className="text-sm text-gray-500 mt-1">Detecta productos que ya no existen en ML y los marca en el Sheet.</p>
                 </div>
+                <button onClick={handleDetectDeleted} disabled={detecting || !mlStatus?.ok}
+                  className="w-full bg-gray-900 hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-xl">
+                  {detecting ? <><Spinner />Detectando...</> : "Detectar eliminados"}
+                </button>
+              </div>
+            </div>
 
-                {/* Lista de productos */}
-                <div className="space-y-1 max-h-64 overflow-y-auto">
-                  {productosRestantes.map((p) => (
-                    <div key={p.id} className={`flex items-center gap-3 text-sm rounded-lg px-3 py-2.5 cursor-pointer transition-colors ${seleccionados.includes(p.fila) ? "bg-red-50 border border-red-200" : "bg-gray-50 hover:bg-gray-100"}`}
-                      onClick={() => toggleSeleccion(p.fila)}>
-                      <input type="checkbox" checked={seleccionados.includes(p.fila)} onChange={() => toggleSeleccion(p.fila)}
-                        className="accent-red-600" onClick={e => e.stopPropagation()} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-gray-800 truncate font-medium">{p.titulo}</p>
-                        <p className="text-gray-400 text-xs">{p.id}</p>
+            {/* Log de sync */}
+            {syncResult && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <h2 className="font-bold text-gray-900 text-lg">Log de sincronización</h2>
+                {!syncResult.ok ? (
+                  <p className="text-red-600 text-sm">✗ Error: {syncResult.error}</p>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      <div className="bg-gray-50 rounded-xl p-3 text-center">
+                        <p className="text-2xl font-bold text-gray-900">{syncResult.publicaciones}</p>
+                        <p className="text-xs text-gray-500 mt-1">Publicaciones</p>
                       </div>
-                      <button onClick={(e) => { e.stopPropagation(); borrarDelSheet([p.fila]); }}
-                        disabled={borrandoFilas.includes(p.fila)}
-                        className="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50 shrink-0">
-                        Borrar
-                      </button>
+                      <div className="bg-gray-50 rounded-xl p-3 text-center">
+                        <p className="text-2xl font-bold text-gray-900">{syncResult.ventas}</p>
+                        <p className="text-xs text-gray-500 mt-1">Ventas totales</p>
+                      </div>
+                      <div className="bg-gray-50 rounded-xl p-3 text-center">
+                        <p className="text-2xl font-bold text-gray-900">{syncResult.ventasNuevas?.length ?? 0}</p>
+                        <p className="text-xs text-gray-500 mt-1">Ventas últimas 24h</p>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              </>
+
+                    {(syncResult.productosNuevos?.length ?? 0) > 0 && (
+                      <div>
+                        <h3 className="font-semibold text-gray-800 mb-2">Productos nuevos ({syncResult.productosNuevos!.length})</h3>
+                        <div className="space-y-1 max-h-48 overflow-y-auto">
+                          {syncResult.productosNuevos!.map((p, i) => (
+                            <div key={i} className="flex items-center justify-between text-sm bg-green-50 rounded-lg px-3 py-2">
+                              <span className="text-gray-700 truncate flex-1 mr-3">{p.titulo}</span>
+                              <span className="text-gray-400 mr-3">${Number(p.precio).toLocaleString("es-CL")}</span>
+                              <span className="text-xs text-green-700 font-medium bg-green-100 px-2 py-0.5 rounded-full">{p.estado}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(syncResult.cambiosStock?.length ?? 0) > 0 && (
+                      <div>
+                        <h3 className="font-semibold text-gray-800 mb-2">Cambios de stock ({syncResult.cambiosStock!.length})</h3>
+                        <div className="space-y-1 max-h-48 overflow-y-auto">
+                          {syncResult.cambiosStock!.map((c, i) => (
+                            <div key={i} className="flex items-center justify-between text-sm bg-gray-50 rounded-lg px-3 py-2">
+                              <span className="text-gray-700 truncate flex-1 mr-3">{c.titulo}</span>
+                              <span className="text-gray-400 mr-2">{c.antes} → {c.despues}</span>
+                              <span className={`font-bold ${c.diferencia > 0 ? "text-green-600" : "text-red-600"}`}>
+                                {c.diferencia > 0 ? `+${c.diferencia}` : c.diferencia}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(syncResult.ventasNuevas?.length ?? 0) > 0 && (
+                      <div>
+                        <h3 className="font-semibold text-gray-800 mb-2">Ventas últimas 24h</h3>
+                        <div className="space-y-1 max-h-48 overflow-y-auto">
+                          {syncResult.ventasNuevas!.map((v, i) => (
+                            <div key={i} className="text-sm bg-gray-50 rounded-lg px-3 py-2">
+                              <div className="flex justify-between">
+                                <span className="text-gray-700 truncate flex-1 mr-3">{v.titulo}</span>
+                                <span className="font-semibold text-gray-900">${Number(v.total).toLocaleString("es-CL")}</span>
+                              </div>
+                              <div className="text-gray-400 mt-0.5">Cant: {v.cantidad} · {v.comprador} · {v.fecha}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <p className="text-xs text-gray-400">Actualizado: {syncResult.timestamp ? new Date(syncResult.timestamp).toLocaleString("es-CL") : "-"}</p>
+                  </>
+                )}
+              </div>
             )}
-          </div>
+
+            {/* Log de eliminados */}
+            {deletedResult && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <h2 className="font-bold text-gray-900 text-lg">Productos eliminados de ML</h2>
+                {!deletedResult.ok ? (
+                  <p className="text-red-600 text-sm">✗ Error: {deletedResult.error}</p>
+                ) : productosRestantes.length === 0 ? (
+                  <p className="text-green-600 text-sm">✓ No hay productos eliminados pendientes</p>
+                ) : (
+                  <>
+                    <p className="text-sm text-gray-500">{productosRestantes.length} producto(s) marcados como ELIMINADA en el Sheet. Selecciona los que quieres borrar definitivamente.</p>
+                    <div className="flex gap-2 flex-wrap">
+                      <button onClick={() => setSeleccionados(productosRestantes.map(p => p.fila))}
+                        className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50">
+                        Seleccionar todos
+                      </button>
+                      <button onClick={() => setSeleccionados([])}
+                        className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50">
+                        Deseleccionar
+                      </button>
+                      {seleccionados.length > 0 && (
+                        <button onClick={() => borrarDelSheet(seleccionados)}
+                          disabled={borrandoFilas.length > 0}
+                          className="text-sm px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
+                          {borrandoFilas.length > 0 ? "Borrando..." : `Borrar seleccionados (${seleccionados.length})`}
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-1 max-h-64 overflow-y-auto">
+                      {productosRestantes.map((p) => (
+                        <div key={p.id} className={`flex items-center gap-3 text-sm rounded-lg px-3 py-2.5 cursor-pointer transition-colors ${seleccionados.includes(p.fila) ? "bg-red-50 border border-red-200" : "bg-gray-50 hover:bg-gray-100"}`}
+                          onClick={() => toggleSeleccion(p.fila)}>
+                          <input type="checkbox" checked={seleccionados.includes(p.fila)} onChange={() => toggleSeleccion(p.fila)}
+                            className="accent-red-600" onClick={e => e.stopPropagation()} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-gray-800 truncate font-medium">{p.titulo}</p>
+                            <p className="text-gray-400 text-xs">{p.id}</p>
+                          </div>
+                          <button onClick={(e) => { e.stopPropagation(); borrarDelSheet([p.fila]); }}
+                            disabled={borrandoFilas.includes(p.fila)}
+                            className="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50 shrink-0">
+                            Borrar
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Link al Sheet */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex items-center justify-between">
+              <div>
+                <p className="font-bold text-gray-900">Google Sheets</p>
+                <p className="text-sm text-gray-500">Ver publicaciones y ventas sincronizadas</p>
+              </div>
+              <a href="https://docs.google.com/spreadsheets/d/14mb2PAwr-xvy_syr-cpXdBWcUx0Nni8byQx6YX03xDM"
+                target="_blank" rel="noopener noreferrer"
+                className="text-white font-bold py-2.5 px-5 rounded-xl text-sm"
+                style={{ backgroundColor: "#0F9D58" }}>
+                Abrir Sheet →
+              </a>
+            </div>
+          </>
         )}
 
-        {/* Link al Sheet */}
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex items-center justify-between">
-          <div>
-            <p className="font-bold text-gray-900">Google Sheets</p>
-            <p className="text-sm text-gray-500">Ver publicaciones y ventas sincronizadas</p>
-          </div>
-          <a href="https://docs.google.com/spreadsheets/d/14mb2PAwr-xvy_syr-cpXdBWcUx0Nni8byQx6YX03xDM"
-            target="_blank" rel="noopener noreferrer"
-            className="text-white font-bold py-2.5 px-5 rounded-xl text-sm"
-            style={{ backgroundColor: "#0F9D58" }}>
-            Abrir Sheet →
-          </a>
-        </div>
+        {/* === TAB: AUDITORÍA === */}
+        {activeTab === "auditoria" && (
+          <>
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+              <div>
+                <h2 className="font-bold text-gray-900 text-lg">Auditoría de comisiones</h2>
+                <p className="text-sm text-gray-500 mt-1">Sube los reportes del mes y la IA analizará las comisiones cobradas por ML/MP.</p>
+              </div>
+
+              {/* Selector de mes */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Mes a auditar</label>
+                <input type="month" value={mes} onChange={e => setMes(e.target.value)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:border-transparent"
+                  style={{ "--tw-ring-color": "#C41230" } as React.CSSProperties} />
+              </div>
+
+              {/* Zonas de archivo */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {FILE_ZONES.map(zone => {
+                  const file = auditFiles[zone.key];
+                  return (
+                    <div key={zone.key}
+                      className={`border-2 border-dashed rounded-xl p-4 cursor-pointer transition-colors ${file ? "border-green-400 bg-green-50" : "border-gray-300 hover:border-gray-400 bg-gray-50"}`}
+                      onClick={() => fileRefs.current[zone.key]?.click()}>
+                      <input ref={el => { fileRefs.current[zone.key] = el; }} type="file"
+                        accept=".csv,.xlsx,.xls" className="hidden"
+                        onChange={e => {
+                          const f = e.target.files?.[0] ?? null;
+                          setAuditFiles(prev => ({ ...prev, [zone.key]: f }));
+                          e.target.value = "";
+                        }} />
+                      <div className="flex items-start gap-3">
+                        <span className="text-2xl">{file ? "✅" : "📂"}</span>
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm text-gray-800">{zone.label}</p>
+                          <p className="text-xs text-gray-400 mt-0.5 truncate">{file ? file.name : zone.hint}</p>
+                        </div>
+                        {file && (
+                          <button onClick={e => { e.stopPropagation(); setAuditFiles(prev => ({ ...prev, [zone.key]: null })); }}
+                            className="ml-auto text-gray-400 hover:text-red-500 shrink-0 text-lg leading-none">×</button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button onClick={handleAnalyze}
+                disabled={analyzing || !Object.values(auditFiles).some(f => f !== null)}
+                className="w-full font-bold py-3 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ backgroundColor: "#C41230" }}>
+                {analyzing ? <><Spinner />Analizando con IA...</> : "Analizar"}
+              </button>
+            </div>
+
+            {/* Resultado */}
+            {auditResult && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+                {!auditResult.ok ? (
+                  <p className="text-red-600 text-sm">✗ Error: {auditResult.error}</p>
+                ) : auditResult.result && (
+                  <>
+                    <div>
+                      <h3 className="font-bold text-gray-900 text-lg">Resultado — {auditResult.mes}</h3>
+                      <p className="text-sm text-gray-500 mt-1">{auditResult.result.resumen}</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {[
+                        { label: "Ventas Brutas", value: formatCLP(auditResult.result.ventas_brutas), color: "text-gray-900" },
+                        { label: "Ventas Netas", value: formatCLP(auditResult.result.ventas_netas), color: "text-gray-900" },
+                        { label: "Comisiones ML", value: formatCLP(auditResult.result.comisiones_ml), color: "text-orange-600" },
+                        { label: "Comisiones MP", value: formatCLP(auditResult.result.comisiones_mp), color: "text-orange-600" },
+                        { label: "Total Comisiones", value: formatCLP(auditResult.result.total_comisiones), color: "text-red-700" },
+                        { label: "Tasa Efectiva", value: `${auditResult.result.tasa_efectiva.toFixed(2)}%`, color: "text-red-700" },
+                        { label: "Recuperable", value: formatCLP(auditResult.result.recuperable), color: "text-green-600" },
+                        { label: "Errores detectados", value: String(auditResult.result.errores), color: auditResult.result.errores > 0 ? "text-red-600" : "text-gray-900" },
+                      ].map(card => (
+                        <div key={card.label} className="bg-gray-50 rounded-xl p-3 text-center">
+                          <p className={`text-xl font-bold ${card.color}`}>{card.value}</p>
+                          <p className="text-xs text-gray-500 mt-1">{card.label}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {auditResult.result.detalle_errores.length > 0 && (
+                      <div>
+                        <h4 className="font-semibold text-gray-800 mb-2">Detalle de errores / inconsistencias</h4>
+                        <ul className="space-y-1">
+                          {auditResult.result.detalle_errores.map((err, i) => (
+                            <li key={i} className="text-sm text-gray-700 bg-red-50 rounded-lg px-3 py-2">
+                              {i + 1}. {err}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <p className="text-xs text-gray-400">Guardado en la hoja "Auditoría" del Google Sheets.</p>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        )}
 
       </div>
     </main>
