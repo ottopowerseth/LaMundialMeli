@@ -3,11 +3,27 @@ import * as XLSX from "xlsx";
 export type AuditData = {
   facturacionML?: Record<string, unknown>[];
   facturacionMP?: Record<string, unknown>[];
-  cargosFacturas?: Record<string, unknown>[];
   notasCredito?: Record<string, unknown>[];
   flexCredito?: Record<string, unknown>[];
   flexDebito?: Record<string, unknown>[];
   archivosNoProporcionados: string[];
+};
+
+export type ErrorType =
+  | "comision_incorrecta"
+  | "envio_incorrecto"
+  | "devolucion_sin_reembolso"
+  | "comision_venta_anulada";
+
+export type TransaccionError = {
+  tipo: ErrorType;
+  fecha: string;
+  orden: string;
+  producto: string;
+  cobrado: number;
+  esperado: number;
+  diferencia: number;
+  detalle: string;
 };
 
 export type AuditResult = {
@@ -17,10 +33,14 @@ export type AuditResult = {
   comisiones_mp: number;
   total_comisiones: number;
   recuperable: number;
+  neto_recibido_mp: number;
   tasa_efectiva: number;
-  errores: number;
-  detalle_errores: string[];
+  flex_credito: number;
+  flex_debito: number;
+  errores_count: number;
+  errores: TransaccionError[];
   resumen: string;
+  detalle_errores: string[];
 };
 
 // ── Parsers ──────────────────────────────────────────────────────────────────
@@ -30,25 +50,35 @@ export function parseAuditFiles(files: { name: string; buffer: Buffer }[]): Audi
 
   for (const file of files) {
     const name = file.name.toLowerCase();
+    const text = file.buffer.toString("latin1");
 
-    if (name.includes("settlement") || (name.endsWith(".csv") && (name.includes("mercadopago") || name.includes("pago")))) {
-      result.facturacionMP = parseCSV(file.buffer.toString("latin1"));
-    } else if (name.includes("mercadolibre") || (name.includes("facturacion") && name.endsWith(".xlsx"))) {
-      result.facturacionML = parseXlsx(file.buffer, 7);
-    } else if (name.includes("cargos") || name.includes("pagos") || name.includes("facturas")) {
-      result.cargosFacturas = parseXlsx(file.buffer, 9);
-    } else if (name.includes("flex") && (name.includes("debito") || name.includes("débito"))) {
-      result.flexDebito = parseXlsx(file.buffer, 7);
-    } else if (name.includes("flex") && (name.includes("credito") || name.includes("crédito"))) {
-      result.flexCredito = parseXlsx(file.buffer, 7);
-    } else if (name.includes("nota") || name.includes("credito") || name.includes("crédito")) {
-      result.notasCredito = parseXlsx(file.buffer, 7);
+    if (name.endsWith(".csv")) {
+      if (text.includes("Porcentaje por categor") || text.includes("Número de venta") || text.includes("Numero de venta")) {
+        result.facturacionML = parseCSVSemicolon(text);
+      } else if (text.includes("Tipo de operaci") || text.includes("Sección ML") || text.includes("Valor de la operaci")) {
+        result.facturacionMP = parseCSVComma(text);
+      } else if (name.includes("mercadolibre") || name.includes("libre")) {
+        result.facturacionML = parseCSVSemicolon(text);
+      } else {
+        result.facturacionMP = parseCSVComma(text);
+      }
+    } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+      if (name.includes("nota") && (name.includes("credito") || name.includes("crédito"))) {
+        result.notasCredito = parseXlsx(file.buffer, 7);
+      } else if (name.includes("flex") && (name.includes("debito") || name.includes("débito"))) {
+        result.flexDebito = parseXlsx(file.buffer, 7);
+      } else if (name.includes("flex") && (name.includes("credito") || name.includes("crédito"))) {
+        result.flexCredito = parseXlsx(file.buffer, 7);
+      } else if (name.includes("mercadolibre") || name.includes("libre")) {
+        result.facturacionML = parseXlsx(file.buffer, 7);
+      } else {
+        result.facturacionMP = parseXlsx(file.buffer, 0);
+      }
     }
   }
 
-  if (!result.facturacionMP) result.archivosNoProporcionados.push("CSV Mercado Pago");
   if (!result.facturacionML) result.archivosNoProporcionados.push("Facturación ML");
-  if (!result.cargosFacturas) result.archivosNoProporcionados.push("Cargos/Pagos");
+  if (!result.facturacionMP) result.archivosNoProporcionados.push("Facturación MP");
 
   return result;
 }
@@ -57,12 +87,9 @@ function parseXlsx(buffer: Buffer, headerRowIndex: number): Record<string, unkno
   const wb = XLSX.read(buffer, { type: "buffer", cellText: true, cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "" }) as unknown[][];
-
   if (rows.length <= headerRowIndex) return [];
-
   const headers = (rows[headerRowIndex] as unknown[]).map((h) => String(h ?? "").trim()).filter(Boolean);
   if (headers.length === 0) return [];
-
   return rows
     .slice(headerRowIndex + 1)
     .filter((row) => Array.isArray(row) && (row as unknown[]).some((c) => c !== "" && c !== null && c !== undefined))
@@ -73,30 +100,48 @@ function parseXlsx(buffer: Buffer, headerRowIndex: number): Record<string, unkno
     });
 }
 
-function parseCSV(text: string): Record<string, unknown>[] {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) return [];
-
-  const headers = splitCSVLine(lines[0]).map((h) => h.trim().replace(/^"|"$/g, ""));
-
+function parseCSVSemicolon(text: string): Record<string, unknown>[] {
+  const lines = text.split(/\r?\n/);
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    if (lines[i].includes("Fecha del cargo") || lines[i].includes("factura fiscal") || lines[i].includes("Nº de factura")) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx === -1) headerIdx = 7;
+  const headers = splitLine(lines[headerIdx], ";").map(h => h.trim().replace(/^"|"$/g, ""));
   return lines
-    .slice(1)
-    .map((line) => {
-      const values = splitCSVLine(line);
+    .slice(headerIdx + 1)
+    .filter(l => l.trim())
+    .map(line => {
+      const vals = splitLine(line, ";");
       const obj: Record<string, unknown> = {};
-      headers.forEach((h, i) => { obj[h] = values[i]?.trim().replace(/^"|"$/g, "") ?? ""; });
+      headers.forEach((h, i) => { obj[h] = (vals[i] ?? "").trim().replace(/^"|"$/g, ""); });
       return obj;
     })
-    .filter((row) => Object.values(row).some((v) => v !== ""));
+    .filter(row => Object.values(row).some(v => v !== ""));
 }
 
-function splitCSVLine(line: string): string[] {
+function parseCSVComma(text: string): Record<string, unknown>[] {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = splitLine(lines[0], ",").map(h => h.trim().replace(/^"|"$/g, ""));
+  return lines.slice(1).map(line => {
+    const vals = splitLine(line, ",");
+    const obj: Record<string, unknown> = {};
+    headers.forEach((h, i) => { obj[h] = (vals[i] ?? "").trim().replace(/^"|"$/g, ""); });
+    return obj;
+  }).filter(row => Object.values(row).some(v => v !== ""));
+}
+
+function splitLine(line: string, sep: string): string[] {
   const result: string[] = [];
   let current = "";
   let inQuotes = false;
   for (const char of line) {
     if (char === '"') { inQuotes = !inQuotes; }
-    else if (char === "," && !inQuotes) { result.push(current); current = ""; }
+    else if (char === sep && !inQuotes) { result.push(current); current = ""; }
     else { current += char; }
   }
   result.push(current);
@@ -110,9 +155,7 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
   const year = parseInt(yearStr);
   const month = parseInt(monthStr);
   const detalle_errores: string[] = [];
-  let errores = 0;
 
-  // Parse CLP: handles "1.234,56", "1234.56", 1234, "-1234"
   function parseCLP(val: unknown): number {
     if (typeof val === "number") return Math.round(val);
     if (!val) return 0;
@@ -121,6 +164,9 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
       s = s.replace(/\./g, "").replace(",", ".");
     } else if (s.includes(",") && !s.includes(".")) {
       s = s.replace(",", ".");
+    } else if (s.includes(".") && !s.includes(",")) {
+      const m = s.match(/^-?\d+\.(\d+)$/);
+      if (m && m[1].length === 3) s = s.replace(".", "");
     }
     s = s.replace(/[^0-9.\-]/g, "");
     return Math.round(parseFloat(s) || 0);
@@ -131,51 +177,36 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
   };
 
-  // Normaliza texto quitando tildes para comparaciones flexibles
   function norm(s: string): string {
     return s.toLowerCase()
-      .replace(/[áà]/g, "a").replace(/[éè]/g, "e").replace(/[íì]/g, "i")
-      .replace(/[óò]/g, "o").replace(/[úùü]/g, "u").replace(/ñ/g, "n");
+      .replace(/[áàã]/g, "a").replace(/[éè]/g, "e").replace(/[íì]/g, "i")
+      .replace(/[óòô]/g, "o").replace(/[úùü]/g, "u").replace(/ñ/g, "n");
   }
 
   function isInMonth(dateVal: unknown): boolean {
     if (!dateVal) return false;
-
-    // Date objects (XLSX con cellDates:true los devuelve así)
     if (dateVal instanceof Date) {
       return dateVal.getFullYear() === year && (dateVal.getMonth() + 1) === month;
     }
-
     const s = String(dateVal).trim();
     if (!s) return false;
-
-    // ISO: 2026-01-15 o 2026-01-15T10:00:00
     const iso = s.match(/(\d{4})-(\d{2})-\d{2}/);
     if (iso) return +iso[1] === year && +iso[2] === month;
-
-    // DD/MM/YYYY o DD/MM/YY
     const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
     if (dmy) {
       const y = +dmy[3] < 100 ? 2000 + +dmy[3] : +dmy[3];
       return y === year && +dmy[2] === month;
     }
-
-    // DD-MM-YYYY (guiones en lugar de barras)
     const dmy2 = s.match(/^(\d{1,2})-(\d{2})-(\d{4})/);
     if (dmy2) return +dmy2[3] === year && +dmy2[2] === month;
-
-    // 15-ene-2026 o 15 ene 2026
     const sp = s.match(/(\d{1,2})[- ](ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[- ](\d{4})/i);
     if (sp) return +sp[3] === year && MESES_ES[sp[2].toLowerCase()] === month;
-
-    // Fallback: dejar que JS parsee el string (cubre "Thu Jan 02 2026 00:00:00 GMT...")
     try {
       const d = new Date(s);
       if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
         return d.getFullYear() === year && (d.getMonth() + 1) === month;
       }
     } catch { /* ignorar */ }
-
     return false;
   }
 
@@ -194,83 +225,145 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     return key ? row[key] : undefined;
   }
 
-  function detectDateKey(rows: Record<string, unknown>[]): string | null {
-    if (!rows.length) return null;
-    return findKey(rows[0], "fecha", "date", "día", "day");
-  }
+  // ── Procesar Facturación ML ────────────────────────────────────────────────
+  type VentaML = {
+    orden: string;
+    fecha: string;
+    producto: string;
+    total_venta: number;
+    comision_cobrada: number;
+    comision_esperada: number;
+    envio_cobrado: number;
+    tasa: number;
+    anulada: boolean;
+    cargo_anulado_pendiente: boolean;
+  };
 
-  function filterByMonth(rows: Record<string, unknown>[], label: string): Record<string, unknown>[] {
-    const dateKey = detectDateKey(rows);
-    if (!dateKey) {
-      detalle_errores.push(`${label}: no se encontró columna de fecha — se incluyen todas las filas`);
-      errores++;
-      return rows;
-    }
-    const filtered = rows.filter(row => isInMonth(row[dateKey]));
-    if (filtered.length === 0 && rows.length > 0) {
-      const sample = rows.slice(0, 3).map(r => String(r[dateKey])).join(" | ");
-      detalle_errores.push(`${label}: ninguna fila coincide con mes ${mes} (col "${dateKey}", ej: ${sample}) — se incluyen todas las filas`);
-      errores++;
-      return rows;
-    }
-    return filtered;
-  }
-
-  // ── Facturación ML ─────────────────────────────────────────────────────────
-  let comisiones_ml = 0;
-  if (data.facturacionML?.length) {
-    const rows = filterByMonth(data.facturacionML, "Facturación ML");
-    for (const row of rows) {
-      const monto = parseCLP(getVal(row, "monto", "importe", "total", "valor", "cargo", "amount"));
-      comisiones_ml += Math.abs(monto);
-    }
-  } else {
-    detalle_errores.push("Facturación ML no proporcionada — comisiones ML no calculadas");
-  }
-
-  // ── Facturación MP (settlement_v2) ─────────────────────────────────────────
+  const ventasML = new Map<string, VentaML>();
+  let comisiones_ml_raw = 0;
   let ventas_brutas = 0;
-  let devoluciones = 0;
-  let comisiones_mp = 0;
+  const ordenesContadas = new Set<string>();
 
-  if (data.facturacionMP?.length) {
-    const rows = filterByMonth(data.facturacionMP, "Facturación MP");
-    for (const row of rows) {
-      const tipo = String(getVal(row, "tipo de operación", "tipo", "type", "record_type") ?? "").toLowerCase();
-      const valorOp = parseCLP(getVal(row, "valor de la operación", "gross", "monto bruto", "operación"));
-      const valorCargo = parseCLP(getVal(row, "valor del cargo", "fee", "cargo"));
+  if (data.facturacionML?.length) {
+    const mlCols = Object.keys(data.facturacionML[0] ?? {});
+    detalle_errores.push(`[DIAG] ML columnas (${mlCols.length}): ${mlCols.slice(0, 10).join(" | ")}`);
 
-      // Devoluciones: tipo explícito de reversa/refund
-      const esDevolucion = norm(tipo).includes("refund") || norm(tipo).includes("devolucion")
-        || norm(tipo).includes("reversa") || norm(tipo).includes("reversao") || norm(tipo).includes("anulac");
+    const mlRows = data.facturacionML.filter(row =>
+      isInMonth(getVal(row, "fecha del cargo", "fecha"))
+    );
+    detalle_errores.push(`[DIAG] ML filas total=${data.facturacionML.length} filtradas=${mlRows.length}`);
 
-      // Ventas: cualquier fila con valor positivo que no sea devolución
-      if (esDevolucion) {
-        devoluciones += Math.abs(valorOp);
-      } else if (valorOp > 0) {
-        ventas_brutas += valorOp;
+    for (const row of mlRows) {
+      const detalleRaw = String(getVal(row, "detalle") ?? "");
+      const detalle = norm(detalleRaw);
+      const estado = norm(String(getVal(row, "estado del cargo") ?? ""));
+      const cargoAnula = String(getVal(row, "cargo que anula") ?? "").trim();
+      const valorCargo = parseCLP(getVal(row, "valor del cargo"));
+      const orden = String(getVal(row, "numero de venta", "número de venta") ?? "").trim();
+      const fecha = String(getVal(row, "fecha del cargo", "fecha") ?? "").trim();
+      const producto = String(getVal(row, "titulo de publicacion", "título de publicación") ?? "").slice(0, 60);
+      const totalVenta = parseCLP(getVal(row, "total de la venta"));
+      const costoCategoria = parseCLP(getVal(row, "costo por categoria", "costo por categoría"));
+      const costoFijo = parseCLP(getVal(row, "costo fijo") ?? 0);
+      const tasa = parseCLP(getVal(row, "porcentaje por categoria", "porcentaje por categoría"));
+
+      const esAnulacion = cargoAnula !== "" || detalle.includes("anulacion del cargo");
+      const esAnuladoEnFactura = estado.includes("anulado en factura");
+      const esPublicidad = detalle.includes("publicidad") || detalle.includes("product ads") || detalle.includes("mi p") || detalle.includes("mantenimiento");
+      const esEnvio = detalle.includes("envio") || detalle.includes("env");
+      const esVenta = detalle.includes("cargo por venta") && !esAnulacion;
+
+      if (esPublicidad) {
+        comisiones_ml_raw += Math.abs(valorCargo);
+        continue;
       }
 
-      // Comisiones MP: "Valor del cargo" puede ser positivo o negativo según el reporte
-      if (Math.abs(valorCargo) > 0) comisiones_mp += Math.abs(valorCargo);
+      if (esAnulacion) {
+        comisiones_ml_raw += valorCargo; // valorCargo negativo → reduce total
+        if (orden && ventasML.has(orden)) {
+          const v = ventasML.get(orden)!;
+          if (detalle.includes("venta")) v.comision_cobrada = Math.max(0, v.comision_cobrada + valorCargo);
+          if (esEnvio) v.envio_cobrado = Math.max(0, v.envio_cobrado + valorCargo);
+          if (v.comision_cobrada === 0 && v.envio_cobrado === 0) v.anulada = true;
+        }
+        continue;
+      }
+
+      // Registrar o actualizar la venta
+      if ((esVenta || esEnvio) && orden) {
+        if (!ventasML.has(orden)) {
+          ventasML.set(orden, {
+            orden, fecha, producto, total_venta: totalVenta,
+            comision_cobrada: 0, comision_esperada: 0,
+            envio_cobrado: 0, tasa, anulada: false, cargo_anulado_pendiente: false,
+          });
+        }
+        const v = ventasML.get(orden)!;
+        if (totalVenta > 0 && v.total_venta === 0) v.total_venta = totalVenta;
+        if (costoCategoria + costoFijo > 0) v.comision_esperada = costoCategoria + costoFijo;
+        if (tasa > 0 && v.tasa === 0) v.tasa = tasa;
+        if (producto && !v.producto) v.producto = producto;
+
+        if (esAnuladoEnFactura) {
+          v.cargo_anulado_pendiente = true;
+          if (esVenta) v.comision_cobrada += Math.abs(valorCargo);
+          if (esEnvio) v.envio_cobrado += Math.abs(valorCargo);
+          comisiones_ml_raw += Math.abs(valorCargo);
+        } else {
+          if (esVenta) v.comision_cobrada += Math.abs(valorCargo);
+          if (esEnvio) v.envio_cobrado += Math.abs(valorCargo);
+          comisiones_ml_raw += Math.abs(valorCargo);
+        }
+      } else if (esVenta || esEnvio) {
+        comisiones_ml_raw += Math.abs(valorCargo);
+      }
+
+      // Ventas brutas: una vez por orden, solo ventas no anuladas
+      if (esVenta && !esAnuladoEnFactura && orden && !ordenesContadas.has(orden) && totalVenta > 0) {
+        ventas_brutas += totalVenta;
+        ordenesContadas.add(orden);
+      }
     }
   } else {
-    detalle_errores.push("CSV Facturación MP no proporcionado — ventas y comisiones MP no calculadas");
+    detalle_errores.push("Facturación ML no proporcionada");
   }
 
-  const ventas_netas = ventas_brutas - devoluciones;
+  // ── Procesar Facturación MP ────────────────────────────────────────────────
+  let comisiones_mp = 0;
+  let neto_recibido_mp = 0;
+
+  if (data.facturacionMP?.length) {
+    const mpCols = Object.keys(data.facturacionMP[0] ?? {});
+    detalle_errores.push(`[DIAG] MP columnas (${mpCols.length}): ${mpCols.slice(0, 8).join(" | ")}`);
+
+    const mpRows = data.facturacionMP.filter(row =>
+      isInMonth(getVal(row, "fecha del cargo", "fecha"))
+    );
+    detalle_errores.push(`[DIAG] MP filas total=${data.facturacionMP.length} filtradas=${mpRows.length}`);
+
+    for (const row of mpRows) {
+      const detalle = norm(String(getVal(row, "detalle") ?? ""));
+      const valorCargo = parseCLP(getVal(row, "valor del cargo"));
+      const cobradoOp = parseCLP(getVal(row, "cobrado en la operacion", "cobrado en la operación"));
+
+      if (detalle.includes("cobrar con mercado pago") || detalle.includes("cuotas")) {
+        comisiones_mp += Math.abs(valorCargo);
+      }
+      if (cobradoOp > 0) neto_recibido_mp += cobradoOp;
+    }
+  } else {
+    detalle_errores.push("Facturación MP no proporcionada");
+  }
 
   // ── Notas de Crédito MP ────────────────────────────────────────────────────
   let recuperable = 0;
   if (data.notasCredito?.length) {
     for (const row of data.notasCredito) {
-      const estado = String(getVal(row, "estado") ?? "").toLowerCase();
+      const estado = norm(String(getVal(row, "estado") ?? ""));
       const monto = Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "total")));
       const ref = String(getVal(row, "referencia", "número", "n°", "id", "comprobante") ?? "");
-
       if (estado.includes("pend") || estado.includes("no aplic") || estado === "") {
         recuperable += monto;
-        errores++;
         if (monto > 0) detalle_errores.push(`NC pendiente: ${ref} — $${monto.toLocaleString("es-CL")}`);
       } else {
         comisiones_mp = Math.max(0, comisiones_mp - monto);
@@ -278,25 +371,62 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     }
   }
 
-  // ── Flex Crédito (bonificaciones → reducen costos) ─────────────────────────
+  // ── Flex Crédito / Débito ──────────────────────────────────────────────────
   let flexCreditoTotal = 0;
   if (data.flexCredito?.length) {
     for (const row of data.flexCredito) {
       flexCreditoTotal += Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "bonificación", "total")));
     }
-    comisiones_ml = Math.max(0, comisiones_ml - flexCreditoTotal);
+    comisiones_ml_raw = Math.max(0, comisiones_ml_raw - flexCreditoTotal);
   }
 
-  // ── Flex Débito (cargos adicionales → aumentan costos) ─────────────────────
   let flexDebitoTotal = 0;
   if (data.flexDebito?.length) {
     for (const row of data.flexDebito) {
       flexDebitoTotal += Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "cargo", "total")));
     }
-    comisiones_ml += flexDebitoTotal;
+    comisiones_ml_raw += flexDebitoTotal;
+  }
+
+  // ── Detectar errores por transacción ──────────────────────────────────────
+  const errores: TransaccionError[] = [];
+
+  for (const [, v] of ventasML) {
+    if (v.anulada) continue;
+
+    // Comisión incorrecta: diferencia > $100 entre cobrado y esperado
+    const difComision = v.comision_cobrada - v.comision_esperada;
+    if (Math.abs(difComision) > 100 && v.comision_esperada > 0) {
+      errores.push({
+        tipo: "comision_incorrecta",
+        fecha: v.fecha,
+        orden: v.orden,
+        producto: v.producto,
+        cobrado: v.comision_cobrada,
+        esperado: v.comision_esperada,
+        diferencia: difComision,
+        detalle: `ML facturó $${v.comision_cobrada.toLocaleString("es-CL")} (${v.tasa}%) · esperado $${v.comision_esperada.toLocaleString("es-CL")}`,
+      });
+    }
+
+    // Comisión en venta anulada: cobró pero la venta estaba marcada como anulada en factura
+    if (v.cargo_anulado_pendiente && v.comision_cobrada > 0) {
+      errores.push({
+        tipo: "comision_venta_anulada",
+        fecha: v.fecha,
+        orden: v.orden,
+        producto: v.producto,
+        cobrado: v.comision_cobrada,
+        esperado: 0,
+        diferencia: v.comision_cobrada,
+        detalle: `Cargo $${v.comision_cobrada.toLocaleString("es-CL")} anulado en factura — verificar reversa`,
+      });
+    }
   }
 
   // ── Totales ────────────────────────────────────────────────────────────────
+  const comisiones_ml = comisiones_ml_raw;
+  const ventas_netas = ventas_brutas;
   const total_comisiones = comisiones_ml + comisiones_mp;
   const tasa_efectiva = ventas_brutas > 0
     ? parseFloat(((total_comisiones / ventas_brutas) * 100).toFixed(2))
@@ -304,12 +434,13 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
 
   const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
   const partes = [
-    `Mes ${mes}: ventas brutas ${clp(ventas_brutas)}, netas ${clp(ventas_netas)}.`,
-    `Comisiones ML ${clp(comisiones_ml)}, MP ${clp(comisiones_mp)}, total ${clp(total_comisiones)} (tasa ${tasa_efectiva}%).`,
+    `Mes ${mes}: ventas brutas ${clp(ventas_brutas)}.`,
+    `Com. ML ${clp(comisiones_ml)} · Com. MP ${clp(comisiones_mp)} · Total ${clp(total_comisiones)} (${tasa_efectiva}%).`,
   ];
   if (recuperable > 0) partes.push(`Recuperable: ${clp(recuperable)}.`);
-  if (flexCreditoTotal > 0) partes.push(`Flex crédito aplicado: -${clp(flexCreditoTotal)}.`);
-  if (flexDebitoTotal > 0) partes.push(`Flex débito aplicado: +${clp(flexDebitoTotal)}.`);
+  if (flexCreditoTotal > 0) partes.push(`Flex crédito: -${clp(flexCreditoTotal)}.`);
+  if (flexDebitoTotal > 0) partes.push(`Flex débito: +${clp(flexDebitoTotal)}.`);
+  if (errores.length > 0) partes.push(`${errores.length} error(es) detectado(s).`);
 
   return {
     ventas_brutas,
@@ -318,9 +449,13 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     comisiones_mp,
     total_comisiones,
     recuperable,
+    neto_recibido_mp,
     tasa_efectiva,
+    flex_credito: flexCreditoTotal,
+    flex_debito: flexDebitoTotal,
+    errores_count: errores.length,
     errores,
-    detalle_errores,
     resumen: partes.join(" "),
+    detalle_errores,
   };
 }

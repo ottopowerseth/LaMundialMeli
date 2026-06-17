@@ -27,6 +27,19 @@ type DeletedResult = {
   error?: string;
 } | null;
 
+type ErrorType = "comision_incorrecta" | "envio_incorrecto" | "devolucion_sin_reembolso" | "comision_venta_anulada";
+
+type TransaccionError = {
+  tipo: ErrorType;
+  fecha: string;
+  orden: string;
+  producto: string;
+  cobrado: number;
+  esperado: number;
+  diferencia: number;
+  detalle: string;
+};
+
 type AuditResult = {
   ventas_brutas: number;
   ventas_netas: number;
@@ -34,17 +47,17 @@ type AuditResult = {
   comisiones_mp: number;
   total_comisiones: number;
   recuperable: number;
+  neto_recibido_mp: number;
   tasa_efectiva: number;
-  errores: number;
-  detalle_errores: string[];
+  flex_credito: number;
+  flex_debito: number;
+  errores_count: number;
+  errores: TransaccionError[];
   resumen: string;
+  detalle_errores: string[];
 };
 
-type AuditDebug = {
-  mp_columnas: string[]; mp_filas: number; mp_muestra: Record<string, unknown>[];
-  ml_columnas: string[]; ml_filas: number;
-};
-type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; debug?: AuditDebug; error?: string } | null;
+type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; error?: string } | null;
 
 type AuditHistorialRow = {
   mes: string;
@@ -76,12 +89,11 @@ function formatCLP(n: number) {
 
 type FileZone = { key: string; label: string; hint: string };
 const FILE_ZONES: FileZone[] = [
-  { key: "csv_mp", label: "Facturación Mercado Pago", hint: "settlement_v2_...csv" },
-  { key: "facturacion_ml", label: "Facturación Mercado Libre", hint: "Reporte_Facturacion_MercadoLibre_...xlsx" },
-  { key: "cargos_full", label: "Pagos de Facturas", hint: "Reporte_Pagos_Facturas_...xlsx" },
-  { key: "notas_credito", label: "Notas de Crédito MP (opcional)", hint: "Reporte_NotasCredito_...xlsx" },
-  { key: "flex_credito", label: "Notas de Crédito Envíos Flex (opcional)", hint: "Reporte_NotasCredito_Flex_...xlsx" },
-  { key: "flex_debito", label: "Notas de Débito Envíos Flex (opcional)", hint: "Reporte_NotasDebito_Flex_...xlsx" },
+  { key: "facturacion_ml", label: "Facturación Mercado Libre", hint: "Reporte_Facturacion_MercadoLibre_...csv/.xlsx" },
+  { key: "csv_mp", label: "Facturación Mercado Pago", hint: "Reporte_Facturacion_MercadoPago_...csv" },
+  { key: "notas_credito", label: "Notas de Crédito MP (opcional)", hint: "Reporte_NotasCredito_MercadoPago_...xlsx" },
+  { key: "flex_credito", label: "NC Envíos Flex (opcional)", hint: "Reporte_NotasCredito_Flex_...xlsx" },
+  { key: "flex_debito", label: "ND Envíos Flex (opcional)", hint: "Reporte_NotasDebito_Flex_...xlsx" },
 ];
 
 export default function Home() {
@@ -102,7 +114,7 @@ export default function Home() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [auditFiles, setAuditFiles] = useState<Record<string, File | null>>({
-    csv_mp: null, facturacion_ml: null, cargos_full: null, notas_credito: null, flex_credito: null, flex_debito: null,
+    csv_mp: null, facturacion_ml: null, notas_credito: null, flex_credito: null, flex_debito: null,
   });
   const [analyzing, setAnalyzing] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
@@ -517,16 +529,17 @@ export default function Home() {
                       <p className="text-sm text-gray-500 mt-1">{auditResult.result.resumen}</p>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {/* Métricas resumen */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       {[
                         { label: "Ventas Brutas", value: formatCLP(auditResult.result.ventas_brutas), color: "text-gray-900" },
-                        { label: "Ventas Netas", value: formatCLP(auditResult.result.ventas_netas), color: "text-gray-900" },
                         { label: "Comisiones ML", value: formatCLP(auditResult.result.comisiones_ml), color: "text-orange-600" },
                         { label: "Comisiones MP", value: formatCLP(auditResult.result.comisiones_mp), color: "text-orange-600" },
                         { label: "Total Comisiones", value: formatCLP(auditResult.result.total_comisiones), color: "text-red-700" },
                         { label: "Tasa Efectiva", value: `${auditResult.result.tasa_efectiva.toFixed(2)}%`, color: "text-red-700" },
+                        { label: "Neto Recibido MP", value: formatCLP(auditResult.result.neto_recibido_mp), color: "text-blue-700" },
                         { label: "Recuperable", value: formatCLP(auditResult.result.recuperable), color: "text-green-600" },
-                        { label: "Errores detectados", value: String(auditResult.result.errores), color: auditResult.result.errores > 0 ? "text-red-600" : "text-gray-900" },
+                        { label: "Errores detectados", value: String(auditResult.result.errores_count), color: auditResult.result.errores_count > 0 ? "text-red-600" : "text-gray-900" },
                       ].map(card => (
                         <div key={card.label} className="bg-gray-50 rounded-xl p-3 text-center">
                           <p className={`text-xl font-bold ${card.color}`}>{card.value}</p>
@@ -535,46 +548,127 @@ export default function Home() {
                       ))}
                     </div>
 
-                    {auditResult.result.detalle_errores.length > 0 && (
-                      <div>
-                        <h4 className="font-semibold text-gray-800 mb-2">Detalle de errores / inconsistencias</h4>
-                        <ul className="space-y-1">
-                          {auditResult.result.detalle_errores.map((err, i) => (
-                            <li key={i} className="text-sm text-gray-700 bg-red-50 rounded-lg px-3 py-2">
-                              {i + 1}. {err}
-                            </li>
-                          ))}
-                        </ul>
+                    {/* Ajustes Flex */}
+                    {(auditResult.result.flex_credito > 0 || auditResult.result.flex_debito > 0) && (
+                      <div className="flex gap-3 flex-wrap">
+                        {auditResult.result.flex_credito > 0 && (
+                          <span className="text-xs bg-green-50 text-green-700 border border-green-200 rounded-lg px-3 py-1.5 font-medium">
+                            Flex crédito aplicado: -{formatCLP(auditResult.result.flex_credito)}
+                          </span>
+                        )}
+                        {auditResult.result.flex_debito > 0 && (
+                          <span className="text-xs bg-red-50 text-red-700 border border-red-200 rounded-lg px-3 py-1.5 font-medium">
+                            Flex débito aplicado: +{formatCLP(auditResult.result.flex_debito)}
+                          </span>
+                        )}
                       </div>
                     )}
 
-                    {auditResult.debug && (
-                      <details className="text-xs">
-                        <summary className="text-gray-400 cursor-pointer hover:text-gray-600">Diagnóstico de columnas detectadas</summary>
-                        <div className="mt-2 space-y-2 bg-gray-50 rounded-lg p-3">
-                          <div>
-                            <span className="font-medium text-gray-600">MP ({auditResult.debug.mp_filas} filas): </span>
-                            <span className="text-gray-500">{auditResult.debug.mp_columnas.join(" · ") || "Sin columnas"}</span>
-                          </div>
-                          <div>
-                            <span className="font-medium text-gray-600">ML ({auditResult.debug.ml_filas} filas): </span>
-                            <span className="text-gray-500">{auditResult.debug.ml_columnas.join(" · ") || "Sin columnas"}</span>
-                          </div>
-                          {auditResult.debug.mp_muestra.length > 0 && (
-                            <div>
-                              <p className="font-medium text-gray-600 mb-1">Muestra fila MP:</p>
-                              {auditResult.debug.mp_muestra.slice(0, 1).map((row, i) => (
-                                <div key={i} className="space-y-0.5">
-                                  {Object.entries(row).map(([k, v]) => (
-                                    <p key={k} className="text-gray-500"><span className="text-gray-700">{k}:</span> {String(v)}</p>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                    {/* Tabla de errores por transacción */}
+                    {auditResult.result.errores.length > 0 && (
+                      <div>
+                        <div className="flex items-center gap-3 mb-3 flex-wrap">
+                          <h4 className="font-semibold text-gray-800">Errores detectados</h4>
+                          {(["comision_incorrecta", "envio_incorrecto", "devolucion_sin_reembolso", "comision_venta_anulada"] as ErrorType[]).map(tipo => {
+                            const count = auditResult.result!.errores.filter(e => e.tipo === tipo).length;
+                            if (count === 0) return null;
+                            const labels: Record<ErrorType, string> = {
+                              comision_incorrecta: "Comisión incorrecta",
+                              envio_incorrecto: "Envío incorrecto",
+                              devolucion_sin_reembolso: "Devolución sin reembolso",
+                              comision_venta_anulada: "Comisión en venta anulada",
+                            };
+                            const colors: Record<ErrorType, string> = {
+                              comision_incorrecta: "bg-orange-100 text-orange-800",
+                              envio_incorrecto: "bg-blue-100 text-blue-800",
+                              devolucion_sin_reembolso: "bg-red-100 text-red-800",
+                              comision_venta_anulada: "bg-purple-100 text-purple-800",
+                            };
+                            return (
+                              <span key={tipo} className={`text-xs px-2.5 py-1 rounded-full font-medium ${colors[tipo]}`}>
+                                {labels[tipo]} ({count})
+                              </span>
+                            );
+                          })}
                         </div>
+                        <div className="overflow-x-auto rounded-xl border border-gray-200">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
+                                <th className="px-3 py-2">Tipo</th>
+                                <th className="px-3 py-2">Fecha</th>
+                                <th className="px-3 py-2">Orden</th>
+                                <th className="px-3 py-2">Producto</th>
+                                <th className="px-3 py-2 text-right">Cobrado</th>
+                                <th className="px-3 py-2 text-right">Esperado</th>
+                                <th className="px-3 py-2 text-right">Dif.</th>
+                                <th className="px-3 py-2">Detalle</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                              {auditResult.result.errores.map((err, i) => {
+                                const badgeColors: Record<ErrorType, string> = {
+                                  comision_incorrecta: "bg-orange-100 text-orange-800",
+                                  envio_incorrecto: "bg-blue-100 text-blue-800",
+                                  devolucion_sin_reembolso: "bg-red-100 text-red-800",
+                                  comision_venta_anulada: "bg-purple-100 text-purple-800",
+                                };
+                                const badgeLabels: Record<ErrorType, string> = {
+                                  comision_incorrecta: "Comisión",
+                                  envio_incorrecto: "Envío",
+                                  devolucion_sin_reembolso: "Devolución",
+                                  comision_venta_anulada: "Anulada",
+                                };
+                                return (
+                                  <tr key={i} className="hover:bg-gray-50">
+                                    <td className="px-3 py-2">
+                                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${badgeColors[err.tipo]}`}>
+                                        {badgeLabels[err.tipo]}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-2 text-gray-600 whitespace-nowrap">{err.fecha}</td>
+                                    <td className="px-3 py-2 text-gray-500 font-mono">{err.orden}</td>
+                                    <td className="px-3 py-2 text-gray-700 max-w-[180px] truncate">{err.producto}</td>
+                                    <td className="px-3 py-2 text-right text-gray-800 font-medium">{formatCLP(err.cobrado)}</td>
+                                    <td className="px-3 py-2 text-right text-gray-500">{err.esperado > 0 ? formatCLP(err.esperado) : "—"}</td>
+                                    <td className={`px-3 py-2 text-right font-bold ${err.diferencia > 0 ? "text-green-600" : "text-red-600"}`}>
+                                      {err.diferencia > 0 ? "+" : ""}{formatCLP(err.diferencia)}
+                                    </td>
+                                    <td className="px-3 py-2 text-gray-500 max-w-[200px] truncate">{err.detalle}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">
+                          Total recuperable estimado: <span className="font-semibold text-green-600">
+                            {formatCLP(auditResult.result.errores.reduce((s, e) => s + Math.abs(e.diferencia), 0))}
+                          </span>
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Diagnóstico (colapsable) */}
+                    {auditResult.result.detalle_errores.filter(e => !e.startsWith("[DIAG]")).length > 0 && (
+                      <details className="text-xs">
+                        <summary className="text-gray-400 cursor-pointer hover:text-gray-600">Ver notas adicionales</summary>
+                        <ul className="mt-2 space-y-1">
+                          {auditResult.result.detalle_errores.filter(e => !e.startsWith("[DIAG]")).map((err, i) => (
+                            <li key={i} className="text-gray-600 bg-yellow-50 rounded-lg px-3 py-1.5">{err}</li>
+                          ))}
+                        </ul>
                       </details>
                     )}
+                    <details className="text-xs">
+                      <summary className="text-gray-400 cursor-pointer hover:text-gray-600">Diagnóstico técnico</summary>
+                      <ul className="mt-2 space-y-1">
+                        {auditResult.result.detalle_errores.filter(e => e.startsWith("[DIAG]")).map((err, i) => (
+                          <li key={i} className="text-gray-500 bg-gray-50 rounded px-3 py-1">{err}</li>
+                        ))}
+                      </ul>
+                    </details>
+
                     <p className="text-xs text-gray-400">Guardado en la hoja "Auditoría" del Google Sheets.</p>
                   </>
                 )}

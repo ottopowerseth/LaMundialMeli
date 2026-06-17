@@ -22,20 +22,12 @@ export async function POST(request: Request) {
     const auditData = parseAuditFiles(files);
     const result = calculateAudit(mes, auditData);
 
-    // Info de columnas detectadas para diagnóstico
-    const debug = {
-      mp_columnas: auditData.facturacionMP?.[0] ? Object.keys(auditData.facturacionMP[0]) : [],
-      mp_filas: auditData.facturacionMP?.length ?? 0,
-      mp_muestra: auditData.facturacionMP?.slice(0, 2) ?? [],
-      ml_columnas: auditData.facturacionML?.[0] ? Object.keys(auditData.facturacionML[0]) : [],
-      ml_filas: auditData.facturacionML?.length ?? 0,
-    };
-
     await ensureSheets(["Auditoría"]);
 
     const headers = [
       "Mes", "Ventas Brutas", "Ventas Netas", "Comisiones ML", "Comisiones MP",
-      "Total Comisiones", "Recuperable", "Tasa Efectiva %", "Errores", "Resumen", "Analizado",
+      "Total Comisiones", "Recuperable", "Neto Recibido MP", "Tasa Efectiva %",
+      "Flex Crédito", "Flex Débito", "Errores", "Resumen", "Analizado",
     ];
 
     try {
@@ -53,13 +45,16 @@ export async function POST(request: Request) {
       result.comisiones_mp,
       result.total_comisiones,
       result.recuperable,
+      result.neto_recibido_mp,
       result.tasa_efectiva,
-      result.errores,
+      result.flex_credito,
+      result.flex_debito,
+      result.errores_count,
       result.resumen,
       new Date().toLocaleString("es-CL"),
     ]]);
 
-    return NextResponse.json({ ok: true, mes, result, debug });
+    return NextResponse.json({ ok: true, mes, result });
   } catch (error) {
     console.error("[audit/analyze]", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
