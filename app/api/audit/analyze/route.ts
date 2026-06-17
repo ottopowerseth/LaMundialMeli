@@ -1,30 +1,6 @@
 import { NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
-import { readFileSync } from "fs";
-import { join } from "path";
-import { parseAuditFiles, buildAuditMessage } from "@/lib/audit";
-import { ensureSheets, appendSheet } from "@/lib/sheets";
-
-type AuditResult = {
-  ventas_brutas: number;
-  ventas_netas: number;
-  comisiones_ml: number;
-  comisiones_mp: number;
-  total_comisiones: number;
-  recuperable: number;
-  tasa_efectiva: number;
-  errores: number;
-  detalle_errores: string[];
-  resumen: string;
-};
-
-function getSystemPrompt(): string {
-  try {
-    return readFileSync(join(process.cwd(), "CONTEXT.md"), "utf-8");
-  } catch {
-    return "Eres un asistente financiero. Analiza los datos de Mercado Libre y Mercado Pago y responde con un JSON estructurado.";
-  }
-}
+import { parseAuditFiles, calculateAudit } from "@/lib/audit";
+import { ensureSheets, appendSheet, readSheet } from "@/lib/sheets";
 
 export async function POST(request: Request) {
   try {
@@ -44,21 +20,8 @@ export async function POST(request: Request) {
     }
 
     const auditData = parseAuditFiles(files);
-    const userMessage = buildAuditMessage(mes, auditData);
+    const result = calculateAudit(mes, auditData);
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const message = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2000,
-      system: getSystemPrompt(),
-      messages: [{ role: "user", content: userMessage }],
-    });
-
-    const rawText = (message.content[0] as { type: string; text: string }).text.trim();
-    const jsonText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-    const result: AuditResult = JSON.parse(jsonText);
-
-    // Guardar en Google Sheets hoja "Auditoría"
     await ensureSheets(["Auditoría"]);
 
     const headers = [
@@ -66,14 +29,12 @@ export async function POST(request: Request) {
       "Total Comisiones", "Recuperable", "Tasa Efectiva %", "Errores", "Resumen", "Analizado",
     ];
 
-    // Intentar agregar header si la hoja está vacía (appendSheet lo maneja)
     try {
-      const { readSheet } = await import("@/lib/sheets");
       const existing = await readSheet("Auditoría!A1:A1");
       if (!existing.length || !existing[0]?.length) {
         await appendSheet("Auditoría!A1", [headers]);
       }
-    } catch { /* si falla, continuar igual */ }
+    } catch { /* continue */ }
 
     await appendSheet("Auditoría!A1", [[
       mes,

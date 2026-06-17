@@ -10,6 +10,21 @@ export type AuditData = {
   archivosNoProporcionados: string[];
 };
 
+export type AuditResult = {
+  ventas_brutas: number;
+  ventas_netas: number;
+  comisiones_ml: number;
+  comisiones_mp: number;
+  total_comisiones: number;
+  recuperable: number;
+  tasa_efectiva: number;
+  errores: number;
+  detalle_errores: string[];
+  resumen: string;
+};
+
+// ── Parsers ──────────────────────────────────────────────────────────────────
+
 export function parseAuditFiles(files: { name: string; buffer: Buffer }[]): AuditData {
   const result: AuditData = { archivosNoProporcionados: [] };
 
@@ -88,47 +103,186 @@ function splitCSVLine(line: string): string[] {
   return result;
 }
 
-// Columnas relevantes del CSV de MP para no saturar el contexto de Claude
-const MP_COLUMNS = ["Detalle", "Valor del cargo", "Valor de la operación", "Tipo de operación", "Estado del cargo", "Descripción"];
+// ── Calculator ────────────────────────────────────────────────────────────────
 
-export function buildAuditMessage(mes: string, data: AuditData): string {
-  const sections: string[] = [`Mes a analizar: ${mes}`];
+export function calculateAudit(mes: string, data: AuditData): AuditResult {
+  const [yearStr, monthStr] = mes.split("-");
+  const year = parseInt(yearStr);
+  const month = parseInt(monthStr);
+  const detalle_errores: string[] = [];
+  let errores = 0;
 
-  if (data.facturacionML?.length) {
-    const sample = data.facturacionML.slice(0, 500);
-    sections.push(`\n=== FACTURACIÓN MERCADO LIBRE (${sample.length} filas) ===\n${JSON.stringify(sample)}`);
+  // Parse CLP: handles "1.234,56", "1234.56", 1234, "-1234"
+  function parseCLP(val: unknown): number {
+    if (typeof val === "number") return Math.round(val);
+    if (!val) return 0;
+    let s = String(val).trim().replace(/\s/g, "").replace(/[$%]/g, "");
+    if (s.includes(".") && s.includes(",")) {
+      s = s.replace(/\./g, "").replace(",", ".");
+    } else if (s.includes(",") && !s.includes(".")) {
+      s = s.replace(",", ".");
+    }
+    s = s.replace(/[^0-9.\-]/g, "");
+    return Math.round(parseFloat(s) || 0);
   }
+
+  const MESES_ES: Record<string, number> = {
+    ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6,
+    jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
+  };
+
+  function isInMonth(dateVal: unknown): boolean {
+    if (!dateVal) return false;
+    const s = String(dateVal).trim();
+    // 2026-01-15 or 2026-01-15T10:00
+    const iso = s.match(/(\d{4})-(\d{2})-\d{2}/);
+    if (iso) return +iso[1] === year && +iso[2] === month;
+    // 15/01/2026
+    const dmy = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (dmy) return +dmy[3] === year && +dmy[2] === month;
+    // 15-ene-2026 or ene-15
+    const sp = s.match(/(\d{1,2})[- ](ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[- ](\d{4})/i);
+    if (sp) return +sp[3] === year && MESES_ES[sp[2].toLowerCase()] === month;
+    return false;
+  }
+
+  function findKey(row: Record<string, unknown>, ...patterns: string[]): string | null {
+    const keys = Object.keys(row);
+    for (const p of patterns) {
+      const match = keys.find(k => k.toLowerCase().includes(p.toLowerCase()));
+      if (match) return match;
+    }
+    return null;
+  }
+
+  function getVal(row: Record<string, unknown>, ...patterns: string[]): unknown {
+    const key = findKey(row, ...patterns);
+    return key ? row[key] : undefined;
+  }
+
+  function detectDateKey(rows: Record<string, unknown>[]): string | null {
+    if (!rows.length) return null;
+    return findKey(rows[0], "fecha", "date", "día", "day");
+  }
+
+  function filterByMonth(rows: Record<string, unknown>[], label: string): Record<string, unknown>[] {
+    const dateKey = detectDateKey(rows);
+    if (!dateKey) {
+      detalle_errores.push(`${label}: no se encontró columna de fecha — se incluyen todas las filas`);
+      errores++;
+      return rows;
+    }
+    const filtered = rows.filter(row => isInMonth(row[dateKey]));
+    if (filtered.length === 0 && rows.length > 0) {
+      detalle_errores.push(`${label}: ninguna fila coincide con el mes ${mes} (columna "${dateKey}") — se incluyen todas las filas`);
+      errores++;
+      return rows;
+    }
+    return filtered;
+  }
+
+  // ── Facturación ML ─────────────────────────────────────────────────────────
+  let comisiones_ml = 0;
+  if (data.facturacionML?.length) {
+    const rows = filterByMonth(data.facturacionML, "Facturación ML");
+    for (const row of rows) {
+      const monto = parseCLP(getVal(row, "monto", "importe", "total", "valor", "cargo", "amount"));
+      comisiones_ml += Math.abs(monto);
+    }
+  } else {
+    detalle_errores.push("Facturación ML no proporcionada — comisiones ML no calculadas");
+  }
+
+  // ── Facturación MP (settlement_v2) ─────────────────────────────────────────
+  let ventas_brutas = 0;
+  let devoluciones = 0;
+  let comisiones_mp = 0;
 
   if (data.facturacionMP?.length) {
-    const filtered = data.facturacionMP
-      .slice(0, 2000)
-      .map((row) => {
-        const filtered: Record<string, unknown> = {};
-        MP_COLUMNS.forEach((col) => { if (row[col] !== undefined) filtered[col] = row[col]; });
-        return filtered;
-      });
-    sections.push(`\n=== FACTURACIÓN MERCADO PAGO (${filtered.length} filas, columnas clave) ===\n${JSON.stringify(filtered)}`);
+    const rows = filterByMonth(data.facturacionMP, "Facturación MP");
+    for (const row of rows) {
+      const tipo = String(getVal(row, "tipo de operación", "tipo", "type", "record_type") ?? "").toLowerCase();
+      const valorOp = parseCLP(getVal(row, "valor de la operación", "gross", "monto bruto", "operación"));
+      const valorCargo = parseCLP(getVal(row, "valor del cargo", "fee", "cargo"));
+
+      const esDevolucion = tipo.includes("refund") || tipo.includes("devolución") || tipo.includes("reversa") || tipo.includes("reversão") || tipo.includes("anulaci");
+      const esVenta = tipo.includes("settlement") || tipo.includes("acreditación") || tipo.includes("pago") || tipo.includes("payment") || tipo.includes("liquidación");
+
+      if (esDevolucion) {
+        devoluciones += Math.abs(valorOp);
+      } else if (esVenta && valorOp > 0) {
+        ventas_brutas += valorOp;
+      }
+
+      if (valorCargo < 0) comisiones_mp += Math.abs(valorCargo);
+    }
+  } else {
+    detalle_errores.push("CSV Facturación MP no proporcionado — ventas y comisiones MP no calculadas");
   }
 
-  if (data.cargosFacturas?.length) {
-    sections.push(`\n=== CARGOS / PAGOS DE FACTURAS (${data.cargosFacturas.length} filas) ===\n${JSON.stringify(data.cargosFacturas.slice(0, 300))}`);
-  }
+  const ventas_netas = ventas_brutas - devoluciones;
 
+  // ── Notas de Crédito MP ────────────────────────────────────────────────────
+  let recuperable = 0;
   if (data.notasCredito?.length) {
-    sections.push(`\n=== NOTAS DE CRÉDITO MERCADO PAGO (${data.notasCredito.length} filas) ===\n${JSON.stringify(data.notasCredito.slice(0, 300))}`);
+    for (const row of data.notasCredito) {
+      const estado = String(getVal(row, "estado") ?? "").toLowerCase();
+      const monto = Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "total")));
+      const ref = String(getVal(row, "referencia", "número", "n°", "id", "comprobante") ?? "");
+
+      if (estado.includes("pend") || estado.includes("no aplic") || estado === "") {
+        recuperable += monto;
+        errores++;
+        if (monto > 0) detalle_errores.push(`NC pendiente: ${ref} — $${monto.toLocaleString("es-CL")}`);
+      } else {
+        comisiones_mp = Math.max(0, comisiones_mp - monto);
+      }
+    }
   }
 
+  // ── Flex Crédito (bonificaciones → reducen costos) ─────────────────────────
+  let flexCreditoTotal = 0;
   if (data.flexCredito?.length) {
-    sections.push(`\n=== NOTAS DE CRÉDITO ENVÍOS FLEX (${data.flexCredito.length} filas) ===\n${JSON.stringify(data.flexCredito.slice(0, 300))}`);
+    for (const row of data.flexCredito) {
+      flexCreditoTotal += Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "bonificación", "total")));
+    }
+    comisiones_ml = Math.max(0, comisiones_ml - flexCreditoTotal);
   }
 
+  // ── Flex Débito (cargos adicionales → aumentan costos) ─────────────────────
+  let flexDebitoTotal = 0;
   if (data.flexDebito?.length) {
-    sections.push(`\n=== NOTAS DE DÉBITO ENVÍOS FLEX (${data.flexDebito.length} filas) ===\n${JSON.stringify(data.flexDebito.slice(0, 300))}`);
+    for (const row of data.flexDebito) {
+      flexDebitoTotal += Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "cargo", "total")));
+    }
+    comisiones_ml += flexDebitoTotal;
   }
 
-  if (data.archivosNoProporcionados.length) {
-    sections.push(`\nArchivos no proporcionados: ${data.archivosNoProporcionados.join(", ")}`);
-  }
+  // ── Totales ────────────────────────────────────────────────────────────────
+  const total_comisiones = comisiones_ml + comisiones_mp;
+  const tasa_efectiva = ventas_brutas > 0
+    ? parseFloat(((total_comisiones / ventas_brutas) * 100).toFixed(2))
+    : 0;
 
-  return sections.join("\n");
+  const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
+  const partes = [
+    `Mes ${mes}: ventas brutas ${clp(ventas_brutas)}, netas ${clp(ventas_netas)}.`,
+    `Comisiones ML ${clp(comisiones_ml)}, MP ${clp(comisiones_mp)}, total ${clp(total_comisiones)} (tasa ${tasa_efectiva}%).`,
+  ];
+  if (recuperable > 0) partes.push(`Recuperable: ${clp(recuperable)}.`);
+  if (flexCreditoTotal > 0) partes.push(`Flex crédito aplicado: -${clp(flexCreditoTotal)}.`);
+  if (flexDebitoTotal > 0) partes.push(`Flex débito aplicado: +${clp(flexDebitoTotal)}.`);
+
+  return {
+    ventas_brutas,
+    ventas_netas,
+    comisiones_ml,
+    comisiones_mp,
+    total_comisiones,
+    recuperable,
+    tasa_efectiva,
+    errores,
+    detalle_errores,
+    resumen: partes.join(" "),
+  };
 }
