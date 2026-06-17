@@ -42,6 +42,20 @@ type AuditResult = {
 
 type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; error?: string } | null;
 
+type AuditHistorialRow = {
+  mes: string;
+  ventas_brutas: number;
+  ventas_netas: number;
+  comisiones_ml: number;
+  comisiones_mp: number;
+  total_comisiones: number;
+  recuperable: number;
+  tasa_efectiva: number;
+  errores: number;
+  resumen: string;
+  analizado: string;
+};
+
 function Spinner() {
   return (
     <svg className="animate-spin h-4 w-4 inline mr-2" viewBox="0 0 24 24" fill="none">
@@ -87,11 +101,44 @@ export default function Home() {
   });
   const [analyzing, setAnalyzing] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
+  const [historial, setHistorial] = useState<AuditHistorialRow[]>([]);
+  const [expandedMes, setExpandedMes] = useState<string | null>(null);
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(setMlStatus).catch(() => setMlStatus({ ok: false }));
   }, []);
+
+  async function loadHistorial() {
+    try {
+      const res = await fetch("/api/sheets-data?tab=Auditor%C3%ADa");
+      const data = await res.json();
+      if (!data.rows) return;
+      // Columnas: Mes(0) VentasBrutas(1) VentasNetas(2) ComisionesML(3) ComisionesMP(4) Total(5) Recuperable(6) Tasa(7) Errores(8) Resumen(9) Analizado(10)
+      const rows: AuditHistorialRow[] = data.rows
+        .filter((r: string[]) => r[0])
+        .map((r: string[]) => ({
+          mes: r[0] ?? "",
+          ventas_brutas: Number(r[1]) || 0,
+          ventas_netas: Number(r[2]) || 0,
+          comisiones_ml: Number(r[3]) || 0,
+          comisiones_mp: Number(r[4]) || 0,
+          total_comisiones: Number(r[5]) || 0,
+          recuperable: Number(r[6]) || 0,
+          tasa_efectiva: Number(r[7]) || 0,
+          errores: Number(r[8]) || 0,
+          resumen: r[9] ?? "",
+          analizado: r[10] ?? "",
+        }))
+        .reverse(); // más reciente primero
+      setHistorial(rows);
+    } catch { /* silencioso */ }
+  }
+
+  useEffect(() => {
+    if (activeTab === "auditoria") loadHistorial();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   async function handleSync() {
     setSyncing(true);
@@ -155,7 +202,9 @@ export default function Home() {
         if (file) fd.append("file", file);
       }
       const res = await fetch("/api/audit/analyze", { method: "POST", body: fd });
-      setAuditResult(await res.json());
+      const json = await res.json();
+      setAuditResult(json);
+      if (json.ok) loadHistorial();
     } catch {
       setAuditResult({ ok: false, error: "Error de red" });
     } finally {
@@ -481,6 +530,55 @@ export default function Home() {
                     <p className="text-xs text-gray-400">Guardado en la hoja "Auditoría" del Google Sheets.</p>
                   </>
                 )}
+              </div>
+            )}
+
+            {/* Historial de auditorías */}
+            {historial.length > 0 && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-3">
+                <h3 className="font-bold text-gray-900 text-lg">Historial por mes</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
+                        <th className="pb-2 pr-4">Mes</th>
+                        <th className="pb-2 pr-4 text-right">Ventas Brutas</th>
+                        <th className="pb-2 pr-4 text-right">Com. ML</th>
+                        <th className="pb-2 pr-4 text-right">Com. MP</th>
+                        <th className="pb-2 pr-4 text-right">Total Com.</th>
+                        <th className="pb-2 pr-4 text-right">Tasa</th>
+                        <th className="pb-2 text-right">Recuperable</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {historial.map((row) => (
+                        <>
+                          <tr key={row.mes}
+                            className="hover:bg-gray-50 cursor-pointer"
+                            onClick={() => setExpandedMes(expandedMes === row.mes ? null : row.mes)}>
+                            <td className="py-2.5 pr-4 font-semibold text-gray-800">{row.mes}</td>
+                            <td className="py-2.5 pr-4 text-right text-gray-700">${Math.round(row.ventas_brutas).toLocaleString("es-CL")}</td>
+                            <td className="py-2.5 pr-4 text-right text-orange-600">${Math.round(row.comisiones_ml).toLocaleString("es-CL")}</td>
+                            <td className="py-2.5 pr-4 text-right text-orange-600">${Math.round(row.comisiones_mp).toLocaleString("es-CL")}</td>
+                            <td className="py-2.5 pr-4 text-right font-semibold text-red-700">${Math.round(row.total_comisiones).toLocaleString("es-CL")}</td>
+                            <td className="py-2.5 pr-4 text-right text-red-700">{Number(row.tasa_efectiva).toFixed(2)}%</td>
+                            <td className="py-2.5 text-right text-green-600">${Math.round(row.recuperable).toLocaleString("es-CL")}</td>
+                          </tr>
+                          {expandedMes === row.mes && (
+                            <tr key={`${row.mes}-detail`}>
+                              <td colSpan={7} className="py-2 pb-3">
+                                <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs text-gray-600 space-y-1">
+                                  <p>{row.resumen}</p>
+                                  <p className="text-gray-400">Analizado: {row.analizado}</p>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </>

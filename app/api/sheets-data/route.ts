@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSheet } from "@/lib/sheets";
 
-const ALLOWED_TABS = ["Publicaciones", "Ventas", "Config"] as const;
+const ALLOWED_TABS = ["Publicaciones", "Ventas", "Config", "Auditoría"] as const;
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);

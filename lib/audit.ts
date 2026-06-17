@@ -131,25 +131,59 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
   };
 
+  // Normaliza texto quitando tildes para comparaciones flexibles
+  function norm(s: string): string {
+    return s.toLowerCase()
+      .replace(/[áà]/g, "a").replace(/[éè]/g, "e").replace(/[íì]/g, "i")
+      .replace(/[óò]/g, "o").replace(/[úùü]/g, "u").replace(/ñ/g, "n");
+  }
+
   function isInMonth(dateVal: unknown): boolean {
     if (!dateVal) return false;
+
+    // Date objects (XLSX con cellDates:true los devuelve así)
+    if (dateVal instanceof Date) {
+      return dateVal.getFullYear() === year && (dateVal.getMonth() + 1) === month;
+    }
+
     const s = String(dateVal).trim();
-    // 2026-01-15 or 2026-01-15T10:00
+    if (!s) return false;
+
+    // ISO: 2026-01-15 o 2026-01-15T10:00:00
     const iso = s.match(/(\d{4})-(\d{2})-\d{2}/);
     if (iso) return +iso[1] === year && +iso[2] === month;
-    // 15/01/2026
-    const dmy = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-    if (dmy) return +dmy[3] === year && +dmy[2] === month;
-    // 15-ene-2026 or ene-15
+
+    // DD/MM/YYYY o DD/MM/YY
+    const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (dmy) {
+      const y = +dmy[3] < 100 ? 2000 + +dmy[3] : +dmy[3];
+      return y === year && +dmy[2] === month;
+    }
+
+    // DD-MM-YYYY (guiones en lugar de barras)
+    const dmy2 = s.match(/^(\d{1,2})-(\d{2})-(\d{4})/);
+    if (dmy2) return +dmy2[3] === year && +dmy2[2] === month;
+
+    // 15-ene-2026 o 15 ene 2026
     const sp = s.match(/(\d{1,2})[- ](ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[- ](\d{4})/i);
     if (sp) return +sp[3] === year && MESES_ES[sp[2].toLowerCase()] === month;
+
+    // Fallback: dejar que JS parsee el string (cubre "Thu Jan 02 2026 00:00:00 GMT...")
+    try {
+      const d = new Date(s);
+      if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
+        return d.getFullYear() === year && (d.getMonth() + 1) === month;
+      }
+    } catch { /* ignorar */ }
+
     return false;
   }
 
   function findKey(row: Record<string, unknown>, ...patterns: string[]): string | null {
     const keys = Object.keys(row);
     for (const p of patterns) {
-      const match = keys.find(k => k.toLowerCase().includes(p.toLowerCase()));
+      const np = norm(p);
+      const match = keys.find(k => norm(k).includes(np));
       if (match) return match;
     }
     return null;
@@ -174,7 +208,8 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     }
     const filtered = rows.filter(row => isInMonth(row[dateKey]));
     if (filtered.length === 0 && rows.length > 0) {
-      detalle_errores.push(`${label}: ninguna fila coincide con el mes ${mes} (columna "${dateKey}") — se incluyen todas las filas`);
+      const sample = rows.slice(0, 3).map(r => String(r[dateKey])).join(" | ");
+      detalle_errores.push(`${label}: ninguna fila coincide con mes ${mes} (col "${dateKey}", ej: ${sample}) — se incluyen todas las filas`);
       errores++;
       return rows;
     }
@@ -205,15 +240,18 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
       const valorOp = parseCLP(getVal(row, "valor de la operación", "gross", "monto bruto", "operación"));
       const valorCargo = parseCLP(getVal(row, "valor del cargo", "fee", "cargo"));
 
-      const esDevolucion = tipo.includes("refund") || tipo.includes("devolución") || tipo.includes("reversa") || tipo.includes("reversão") || tipo.includes("anulaci");
-      const esVenta = tipo.includes("settlement") || tipo.includes("acreditación") || tipo.includes("pago") || tipo.includes("payment") || tipo.includes("liquidación");
+      // Devoluciones: tipo explícito de reversa/refund
+      const esDevolucion = norm(tipo).includes("refund") || norm(tipo).includes("devolucion")
+        || norm(tipo).includes("reversa") || norm(tipo).includes("reversao") || norm(tipo).includes("anulac");
 
+      // Ventas: cualquier fila con valor positivo que no sea devolución
       if (esDevolucion) {
         devoluciones += Math.abs(valorOp);
-      } else if (esVenta && valorOp > 0) {
+      } else if (valorOp > 0) {
         ventas_brutas += valorOp;
       }
 
+      // Comisiones MP: "Valor del cargo" negativo = cobro al vendedor
       if (valorCargo < 0) comisiones_mp += Math.abs(valorCargo);
     }
   } else {
