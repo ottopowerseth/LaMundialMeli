@@ -5,6 +5,8 @@ export type AuditData = {
   facturacionMP?: Record<string, unknown>[];
   cargosFacturas?: Record<string, unknown>[];
   notasCredito?: Record<string, unknown>[];
+  flexCredito?: Record<string, unknown>[];
+  flexDebito?: Record<string, unknown>[];
   archivosNoProporcionados: string[];
 };
 
@@ -20,6 +22,10 @@ export function parseAuditFiles(files: { name: string; buffer: Buffer }[]): Audi
       result.facturacionML = parseXlsx(file.buffer, 7);
     } else if (name.includes("cargos") || name.includes("pagos") || name.includes("facturas")) {
       result.cargosFacturas = parseXlsx(file.buffer, 9);
+    } else if (name.includes("flex") && (name.includes("debito") || name.includes("débito"))) {
+      result.flexDebito = parseXlsx(file.buffer, 7);
+    } else if (name.includes("flex") && (name.includes("credito") || name.includes("crédito"))) {
+      result.flexCredito = parseXlsx(file.buffer, 7);
     } else if (name.includes("nota") || name.includes("credito") || name.includes("crédito")) {
       result.notasCredito = parseXlsx(file.buffer, 7);
     }
@@ -110,6 +116,14 @@ export function buildAuditMessage(mes: string, data: AuditData): string {
 
   if (data.notasCredito?.length) {
     sections.push(`\n=== NOTAS DE CRÉDITO MERCADO PAGO (${data.notasCredito.length} filas) ===\n${JSON.stringify(data.notasCredito.slice(0, 300))}`);
+  }
+
+  if (data.flexCredito?.length) {
+    sections.push(`\n=== NOTAS DE CRÉDITO ENVÍOS FLEX (${data.flexCredito.length} filas) ===\n${JSON.stringify(data.flexCredito.slice(0, 300))}`);
+  }
+
+  if (data.flexDebito?.length) {
+    sections.push(`\n=== NOTAS DE DÉBITO ENVÍOS FLEX (${data.flexDebito.length} filas) ===\n${JSON.stringify(data.flexDebito.slice(0, 300))}`);
   }
 
   if (data.archivosNoProporcionados.length) {

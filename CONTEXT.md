@@ -14,7 +14,11 @@ Recibirás datos exportados de los reportes mensuales de Mercado Libre y Mercado
 
 3. **Cargos Full / Pagos de Facturas** (Reporte_Cargos_Full / Reporte_Pagos_Facturas): Registro de facturas emitidas por ML/MP y sus pagos asociados.
 
-4. **Notas de Crédito** (Reporte_NotasCredito, opcional): Ajustes y devoluciones de comisiones mal cobradas o ventas anuladas corregidas por ML.
+4. **Notas de Crédito MP** (Reporte_NotasCredito, opcional): Ajustes y devoluciones de comisiones mal cobradas o ventas anuladas corregidas por ML/MP.
+
+5. **Notas de Crédito Envíos Flex** (opcional): Bonificaciones a favor del vendedor por envíos Flex. REDUCEN el costo de envío — deben sumarse como ingreso o restarse de los costos de envío.
+
+6. **Notas de Débito Envíos Flex** (opcional): Cargos adicionales por envíos Flex. AUMENTAN el costo de envío — deben incluirse en el total de comisiones o costos.
 
 ### Qué debes calcular:
 

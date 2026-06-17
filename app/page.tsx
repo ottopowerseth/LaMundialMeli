@@ -57,10 +57,12 @@ function formatCLP(n: number) {
 
 type FileZone = { key: string; label: string; hint: string };
 const FILE_ZONES: FileZone[] = [
-  { key: "csv_mp", label: "CSV Mercado Pago", hint: "settlement_v2_...csv" },
-  { key: "facturacion_ml", label: "Facturación ML", hint: "Reporte_Facturacion_MercadoLibre_...xlsx" },
-  { key: "cargos_full", label: "Cargos / Pagos de Facturas", hint: "Reporte_Cargos_Full_...xlsx" },
-  { key: "notas_credito", label: "Notas de Crédito (opcional)", hint: "Reporte_NotasCredito_...xlsx" },
+  { key: "csv_mp", label: "Facturación Mercado Pago", hint: "settlement_v2_...csv" },
+  { key: "facturacion_ml", label: "Facturación Mercado Libre", hint: "Reporte_Facturacion_MercadoLibre_...xlsx" },
+  { key: "cargos_full", label: "Pagos de Facturas", hint: "Reporte_Pagos_Facturas_...xlsx" },
+  { key: "notas_credito", label: "Notas de Crédito MP (opcional)", hint: "Reporte_NotasCredito_...xlsx" },
+  { key: "flex_credito", label: "Notas de Crédito Envíos Flex (opcional)", hint: "Reporte_NotasCredito_Flex_...xlsx" },
+  { key: "flex_debito", label: "Notas de Débito Envíos Flex (opcional)", hint: "Reporte_NotasDebito_Flex_...xlsx" },
 ];
 
 export default function Home() {
@@ -81,7 +83,7 @@ export default function Home() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [auditFiles, setAuditFiles] = useState<Record<string, File | null>>({
-    csv_mp: null, facturacion_ml: null, cargos_full: null, notas_credito: null,
+    csv_mp: null, facturacion_ml: null, cargos_full: null, notas_credito: null, flex_credito: null, flex_debito: null,
   });
   const [analyzing, setAnalyzing] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
