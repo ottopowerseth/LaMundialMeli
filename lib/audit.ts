@@ -251,8 +251,8 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
         ventas_brutas += valorOp;
       }
 
-      // Comisiones MP: "Valor del cargo" negativo = cobro al vendedor
-      if (valorCargo < 0) comisiones_mp += Math.abs(valorCargo);
+      // Comisiones MP: "Valor del cargo" puede ser positivo o negativo según el reporte
+      if (Math.abs(valorCargo) > 0) comisiones_mp += Math.abs(valorCargo);
     }
   } else {
     detalle_errores.push("CSV Facturación MP no proporcionado — ventas y comisiones MP no calculadas");

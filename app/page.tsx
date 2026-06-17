@@ -40,7 +40,11 @@ type AuditResult = {
   resumen: string;
 };
 
-type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; error?: string } | null;
+type AuditDebug = {
+  mp_columnas: string[]; mp_filas: number; mp_muestra: Record<string, unknown>[];
+  ml_columnas: string[]; ml_filas: number;
+};
+type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; debug?: AuditDebug; error?: string } | null;
 
 type AuditHistorialRow = {
   mes: string;
@@ -544,6 +548,33 @@ export default function Home() {
                       </div>
                     )}
 
+                    {auditResult.debug && (
+                      <details className="text-xs">
+                        <summary className="text-gray-400 cursor-pointer hover:text-gray-600">Diagnóstico de columnas detectadas</summary>
+                        <div className="mt-2 space-y-2 bg-gray-50 rounded-lg p-3">
+                          <div>
+                            <span className="font-medium text-gray-600">MP ({auditResult.debug.mp_filas} filas): </span>
+                            <span className="text-gray-500">{auditResult.debug.mp_columnas.join(" · ") || "Sin columnas"}</span>
+                          </div>
+                          <div>
+                            <span className="font-medium text-gray-600">ML ({auditResult.debug.ml_filas} filas): </span>
+                            <span className="text-gray-500">{auditResult.debug.ml_columnas.join(" · ") || "Sin columnas"}</span>
+                          </div>
+                          {auditResult.debug.mp_muestra.length > 0 && (
+                            <div>
+                              <p className="font-medium text-gray-600 mb-1">Muestra fila MP:</p>
+                              {auditResult.debug.mp_muestra.slice(0, 1).map((row, i) => (
+                                <div key={i} className="space-y-0.5">
+                                  {Object.entries(row).map(([k, v]) => (
+                                    <p key={k} className="text-gray-500"><span className="text-gray-700">{k}:</span> {String(v)}</p>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    )}
                     <p className="text-xs text-gray-400">Guardado en la hoja "Auditoría" del Google Sheets.</p>
                   </>
                 )}
