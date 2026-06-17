@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { Fragment, CSSProperties, useEffect, useState, useRef } from "react";
 import Image from "next/image";
 
 type MLStatus = { ok: boolean; nickname?: string } | null;
@@ -54,6 +54,7 @@ type AuditHistorialRow = {
   errores: number;
   resumen: string;
   analizado: string;
+  rowIndex: number; // índice 0-based en Google Sheets (fila real, incluye header)
 };
 
 function Spinner() {
@@ -103,6 +104,7 @@ export default function Home() {
   const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
   const [historial, setHistorial] = useState<AuditHistorialRow[]>([]);
   const [expandedMes, setExpandedMes] = useState<string | null>(null);
+  const [deletingRowIdx, setDeletingRowIdx] = useState<number | null>(null);
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
@@ -117,7 +119,7 @@ export default function Home() {
       // Columnas: Mes(0) VentasBrutas(1) VentasNetas(2) ComisionesML(3) ComisionesMP(4) Total(5) Recuperable(6) Tasa(7) Errores(8) Resumen(9) Analizado(10)
       const rows: AuditHistorialRow[] = data.rows
         .filter((r: string[]) => r[0])
-        .map((r: string[]) => ({
+        .map((r: string[], i: number) => ({
           mes: r[0] ?? "",
           ventas_brutas: Number(r[1]) || 0,
           ventas_netas: Number(r[2]) || 0,
@@ -129,6 +131,7 @@ export default function Home() {
           errores: Number(r[8]) || 0,
           resumen: r[9] ?? "",
           analizado: r[10] ?? "",
+          rowIndex: i + 1, // +1 porque fila 0 es el header en el Sheet
         }))
         .reverse(); // más reciente primero
       setHistorial(rows);
@@ -187,6 +190,20 @@ export default function Home() {
 
   function toggleSeleccion(fila: number) {
     setSeleccionados(prev => prev.includes(fila) ? prev.filter(f => f !== fila) : [...prev, fila]);
+  }
+
+  async function handleDeleteRow(rowIndex: number) {
+    setDeletingRowIdx(rowIndex);
+    try {
+      await fetch("/api/audit/delete-row", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rowIndex }),
+      });
+      await loadHistorial();
+    } finally {
+      setDeletingRowIdx(null);
+    }
   }
 
   async function handleAnalyze() {
@@ -442,7 +459,7 @@ export default function Home() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Mes a auditar</label>
                 <input type="month" value={mes} onChange={e => setMes(e.target.value)}
                   className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:border-transparent"
-                  style={{ "--tw-ring-color": "#C41230" } as React.CSSProperties} />
+                  style={{ "--tw-ring-color": "#C41230" } as CSSProperties} />
               </div>
 
               {/* Zonas de archivo */}
@@ -547,14 +564,15 @@ export default function Home() {
                         <th className="pb-2 pr-4 text-right">Com. MP</th>
                         <th className="pb-2 pr-4 text-right">Total Com.</th>
                         <th className="pb-2 pr-4 text-right">Tasa</th>
-                        <th className="pb-2 text-right">Recuperable</th>
+                        <th className="pb-2 pr-4 text-right">Recuperable</th>
+                        <th className="pb-2 w-8"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {historial.map((row) => (
-                        <>
-                          <tr key={row.mes}
-                            className="hover:bg-gray-50 cursor-pointer"
+                        <Fragment key={row.rowIndex}>
+                          <tr
+                            className="hover:bg-gray-50 cursor-pointer group"
                             onClick={() => setExpandedMes(expandedMes === row.mes ? null : row.mes)}>
                             <td className="py-2.5 pr-4 font-semibold text-gray-800">{row.mes}</td>
                             <td className="py-2.5 pr-4 text-right text-gray-700">${Math.round(row.ventas_brutas).toLocaleString("es-CL")}</td>
@@ -562,11 +580,20 @@ export default function Home() {
                             <td className="py-2.5 pr-4 text-right text-orange-600">${Math.round(row.comisiones_mp).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 pr-4 text-right font-semibold text-red-700">${Math.round(row.total_comisiones).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 pr-4 text-right text-red-700">{Number(row.tasa_efectiva).toFixed(2)}%</td>
-                            <td className="py-2.5 text-right text-green-600">${Math.round(row.recuperable).toLocaleString("es-CL")}</td>
+                            <td className="py-2.5 pr-4 text-right text-green-600">${Math.round(row.recuperable).toLocaleString("es-CL")}</td>
+                            <td className="py-2.5 text-right">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteRow(row.rowIndex); }}
+                                disabled={deletingRowIdx === row.rowIndex}
+                                className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 disabled:opacity-30 transition-opacity text-lg leading-none"
+                                title="Eliminar">
+                                {deletingRowIdx === row.rowIndex ? "…" : "×"}
+                              </button>
+                            </td>
                           </tr>
                           {expandedMes === row.mes && (
-                            <tr key={`${row.mes}-detail`}>
-                              <td colSpan={7} className="py-2 pb-3">
+                            <tr>
+                              <td colSpan={8} className="py-2 pb-3">
                                 <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs text-gray-600 space-y-1">
                                   <p>{row.resumen}</p>
                                   <p className="text-gray-400">Analizado: {row.analizado}</p>
@@ -574,7 +601,7 @@ export default function Home() {
                               </td>
                             </tr>
                           )}
-                        </>
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>
