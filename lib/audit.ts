@@ -4,6 +4,7 @@ export type AuditData = {
   facturacionML?: Record<string, unknown>[];
   facturacionMP?: Record<string, unknown>[];
   notasCredito?: Record<string, unknown>[];
+  notasCreditoML?: Record<string, unknown>[];
   flexCredito?: Record<string, unknown>[];
   flexDebito?: Record<string, unknown>[];
   archivosNoProporcionados: string[];
@@ -53,7 +54,9 @@ export function parseAuditFiles(files: { name: string; buffer: Buffer }[]): Audi
     const text = file.buffer.toString("latin1");
 
     if (name.endsWith(".csv")) {
-      if (text.includes("Porcentaje por categor") || text.includes("Número de venta") || text.includes("Numero de venta")) {
+      if (text.includes("Cargo que anula") || (name.includes("nota") && (name.includes("credito") || name.includes("crédito")) && (name.includes("mercadolibre") || name.includes("libre")))) {
+        result.notasCreditoML = parseCSVSemicolon(text);
+      } else if (text.includes("Porcentaje por categor") || text.includes("Número de venta") || text.includes("Numero de venta")) {
         result.facturacionML = parseCSVSemicolon(text);
       } else if (text.includes("Tipo de operaci") || text.includes("Sección ML") || text.includes("Valor de la operaci")) {
         result.facturacionMP = parseCSVComma(text);
@@ -63,7 +66,9 @@ export function parseAuditFiles(files: { name: string; buffer: Buffer }[]): Audi
         result.facturacionMP = parseCSVComma(text);
       }
     } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-      if (name.includes("nota") && (name.includes("credito") || name.includes("crédito"))) {
+      if (name.includes("nota") && (name.includes("credito") || name.includes("crédito")) && (name.includes("mercadolibre") || name.includes("libre"))) {
+        result.notasCreditoML = parseXlsx(file.buffer, 7);
+      } else if (name.includes("nota") && (name.includes("credito") || name.includes("crédito"))) {
         result.notasCredito = parseXlsx(file.buffer, 7);
       } else if (name.includes("flex") && (name.includes("debito") || name.includes("débito"))) {
         result.flexDebito = parseXlsx(file.buffer, 7);
@@ -371,6 +376,22 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     }
   }
 
+  // ── Notas de Crédito ML ───────────────────────────────────────────────────
+  let notasCreditoMLTotal = 0;
+  if (data.notasCreditoML?.length) {
+    for (const row of data.notasCreditoML) {
+      const valor = parseCLP(getVal(row, "valor del cargo"));
+      // Los valores vienen negativos (crédito a favor), tomamos el valor absoluto
+      const monto = Math.abs(valor);
+      if (monto > 0) {
+        notasCreditoMLTotal += monto;
+        const ref = String(getVal(row, "numero del cargo", "número del cargo", "n° de factura", "factura") ?? "").trim();
+        detalle_errores.push(`NC ML: ${ref} — -$${monto.toLocaleString("es-CL")}`);
+      }
+    }
+    comisiones_ml_raw = Math.max(0, comisiones_ml_raw - notasCreditoMLTotal);
+  }
+
   // ── Flex Crédito / Débito ──────────────────────────────────────────────────
   let flexCreditoTotal = 0;
   if (data.flexCredito?.length) {
@@ -438,6 +459,7 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     `Com. ML ${clp(comisiones_ml)} · Com. MP ${clp(comisiones_mp)} · Total ${clp(total_comisiones)} (${tasa_efectiva}%).`,
   ];
   if (recuperable > 0) partes.push(`Recuperable: ${clp(recuperable)}.`);
+  if (notasCreditoMLTotal > 0) partes.push(`NC ML aplicadas: -${clp(notasCreditoMLTotal)}.`);
   if (flexCreditoTotal > 0) partes.push(`Flex crédito: -${clp(flexCreditoTotal)}.`);
   if (flexDebitoTotal > 0) partes.push(`Flex débito: +${clp(flexDebitoTotal)}.`);
   if (errores.length > 0) partes.push(`${errores.length} error(es) detectado(s).`);

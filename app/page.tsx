@@ -6,7 +6,7 @@ import Image from "next/image";
 type MLStatus = { ok: boolean; nickname?: string } | null;
 
 type StockChange = { titulo: string; antes: number; despues: number; diferencia: number };
-type VentaNueva = { titulo: string; cantidad: number; total: number; comprador: string; fecha: string };
+type VentaNueva = { titulo: string; cantidad: number; total: number; comprador: string; fecha: string; orden?: string };
 type ProductoNuevo = { id: string; titulo: string; precio: number; estado: string };
 type SyncResult = {
   ok: boolean;
@@ -91,6 +91,7 @@ type FileZone = { key: string; label: string; hint: string };
 const FILE_ZONES: FileZone[] = [
   { key: "facturacion_ml", label: "Facturación Mercado Libre", hint: "Reporte_Facturacion_MercadoLibre_...csv/.xlsx" },
   { key: "csv_mp", label: "Facturación Mercado Pago", hint: "Reporte_Facturacion_MercadoPago_...csv" },
+  { key: "notas_credito_ml", label: "Notas de Crédito ML (opcional)", hint: "Reporte_Notas_Credito_MercadoLibre_...csv/.xlsx" },
   { key: "notas_credito", label: "Notas de Crédito MP (opcional)", hint: "Reporte_NotasCredito_MercadoPago_...xlsx" },
   { key: "flex_credito", label: "NC Envíos Flex (opcional)", hint: "Reporte_NotasCredito_Flex_...xlsx" },
   { key: "flex_debito", label: "ND Envíos Flex (opcional)", hint: "Reporte_NotasDebito_Flex_...xlsx" },
@@ -107,6 +108,8 @@ export default function Home() {
   const [deletedResult, setDeletedResult] = useState<DeletedResult>(null);
   const [borrandoFilas, setBorrandoFilas] = useState<number[]>([]);
   const [seleccionados, setSeleccionados] = useState<number[]>([]);
+  const [ventasSemana, setVentasSemana] = useState<VentaNueva[]>([]);
+  const [loadingVentas, setLoadingVentas] = useState(false);
 
   // --- Auditoría state ---
   const [mes, setMes] = useState(() => {
@@ -114,7 +117,7 @@ export default function Home() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [auditFiles, setAuditFiles] = useState<Record<string, File | null>>({
-    csv_mp: null, facturacion_ml: null, notas_credito: null, flex_credito: null, flex_debito: null,
+    csv_mp: null, facturacion_ml: null, notas_credito_ml: null, notas_credito: null, flex_credito: null, flex_debito: null,
   });
   const [analyzing, setAnalyzing] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
@@ -125,7 +128,39 @@ export default function Home() {
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(setMlStatus).catch(() => setMlStatus({ ok: false }));
+    loadVentasSemana();
   }, []);
+
+  async function loadVentasSemana() {
+    setLoadingVentas(true);
+    try {
+      const res = await fetch("/api/sheets-data?tab=Ventas");
+      const data = await res.json();
+      if (!data.rows) return;
+      // Columnas Sheet Ventas: ID Orden(0) Fecha(1) Producto(2) SKU(3) Cantidad(4) Precio Unit.(5) Total(6) Comprador(7) Estado(8)
+      const hace7d = new Date(Date.now() - 7 * 86400000);
+      const ventas: VentaNueva[] = data.rows
+        .filter((r: string[]) => {
+          if (!r[1]) return false;
+          // fecha formato dd-mm-yyyy o dd/mm/yyyy
+          const parts = r[1].split(/[-\/]/);
+          if (parts.length < 3) return false;
+          const fecha = new Date(Number(parts[2]), Number(parts[1]) - 1, Number(parts[0]));
+          return fecha >= hace7d;
+        })
+        .map((r: string[]) => ({
+          orden: r[0] ?? "",
+          fecha: r[1] ?? "",
+          titulo: r[2] ?? "",
+          cantidad: Number(r[4]) || 0,
+          total: Number(r[6]) || 0,
+          comprador: r[7] ?? "",
+        }));
+      setVentasSemana(ventas);
+    } catch { /* silencioso */ } finally {
+      setLoadingVentas(false);
+    }
+  }
 
   async function loadHistorial() {
     try {
@@ -164,7 +199,9 @@ export default function Home() {
     setSyncResult(null);
     try {
       const res = await fetch("/api/ml-sync", { method: "POST" });
-      setSyncResult(await res.json());
+      const json = await res.json();
+      setSyncResult(json);
+      if (json.ok) loadVentasSemana();
     } catch {
       setSyncResult({ ok: false, error: "Error de red" });
     } finally {
@@ -335,7 +372,7 @@ export default function Home() {
                       </div>
                       <div className="bg-gray-50 rounded-xl p-3 text-center">
                         <p className="text-2xl font-bold text-gray-900">{syncResult.ventasNuevas?.length ?? 0}</p>
-                        <p className="text-xs text-gray-500 mt-1">Ventas últimas 24h</p>
+                        <p className="text-xs text-gray-500 mt-1">Ventas últimos 7 días</p>
                       </div>
                     </div>
 
@@ -373,7 +410,7 @@ export default function Home() {
 
                     {(syncResult.ventasNuevas?.length ?? 0) > 0 && (
                       <div>
-                        <h3 className="font-semibold text-gray-800 mb-2">Ventas últimas 24h</h3>
+                        <h3 className="font-semibold text-gray-800 mb-2">Ventas últimos 7 días</h3>
                         <div className="space-y-1 max-h-48 overflow-y-auto">
                           {syncResult.ventasNuevas!.map((v, i) => (
                             <div key={i} className="text-sm bg-gray-50 rounded-lg px-3 py-2">
@@ -445,6 +482,46 @@ export default function Home() {
               </div>
             )}
 
+            {/* Ventas de la semana desde el Sheet */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="font-bold text-gray-900 text-lg">Ventas de los últimos 7 días</h2>
+                <button onClick={loadVentasSemana} disabled={loadingVentas}
+                  className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-40 underline">
+                  {loadingVentas ? "Cargando..." : "Actualizar"}
+                </button>
+              </div>
+              {loadingVentas ? (
+                <p className="text-sm text-gray-400"><Spinner />Cargando ventas del Sheet...</p>
+              ) : ventasSemana.length === 0 ? (
+                <p className="text-sm text-gray-400">No hay ventas registradas en los últimos 7 días. Sincroniza primero para actualizar el Sheet.</p>
+              ) : (
+                <>
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="font-semibold text-gray-700">{ventasSemana.length} venta{ventasSemana.length !== 1 ? "s" : ""}</span>
+                    <span className="text-gray-400">·</span>
+                    <span className="text-green-700 font-semibold">
+                      Total: {formatCLP(ventasSemana.reduce((s, v) => s + v.total, 0))}
+                    </span>
+                  </div>
+                  <div className="space-y-1 max-h-72 overflow-y-auto">
+                    {ventasSemana.map((v, i) => (
+                      <div key={i} className="text-sm bg-gray-50 rounded-lg px-3 py-2">
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="text-gray-700 truncate flex-1">{v.titulo}</span>
+                          <span className="font-semibold text-gray-900 shrink-0">{formatCLP(v.total)}</span>
+                        </div>
+                        <div className="text-gray-400 mt-0.5 text-xs">
+                          Cant: {v.cantidad} · {v.comprador} · {v.fecha}
+                          {v.orden && <span className="ml-2 font-mono text-gray-300">{v.orden}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
             {/* Link al Sheet */}
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex items-center justify-between">
               <div>
@@ -467,7 +544,7 @@ export default function Home() {
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
               <div>
                 <h2 className="font-bold text-gray-900 text-lg">Auditoría de comisiones</h2>
-                <p className="text-sm text-gray-500 mt-1">Sube los reportes del mes y la IA analizará las comisiones cobradas por ML/MP.</p>
+                <p className="text-sm text-gray-500 mt-1">Sube los reportes del mes para calcular las comisiones cobradas por ML/MP.</p>
               </div>
 
               {/* Selector de mes */}
@@ -513,7 +590,7 @@ export default function Home() {
                 disabled={analyzing || !Object.values(auditFiles).some(f => f !== null)}
                 className="w-full font-bold py-3 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ backgroundColor: "#C41230" }}>
-                {analyzing ? <><Spinner />Analizando con IA...</> : "Analizar"}
+                {analyzing ? <><Spinner />Analizando...</> : "Analizar"}
               </button>
             </div>
 

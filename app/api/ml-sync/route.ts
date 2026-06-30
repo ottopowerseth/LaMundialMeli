@@ -189,10 +189,10 @@ export async function POST() {
     await clearSheet("Ventas");
     await writeSheet("Ventas!A1", [ordHeaders, ...ordRows]);
 
-    // Ventas nuevas (últimas 24h)
-    const hace24h = new Date(Date.now() - 86400000);
+    // Ventas nuevas (últimas 24h para el contador, pero devolvemos 7 días para no perder ventas)
+    const hace7d = new Date(Date.now() - 7 * 86400000);
     const ventasNuevas = orders
-      .filter(o => new Date(o.date_created as string) > hace24h)
+      .filter(o => new Date(o.date_created as string) > hace7d)
       .map(o => {
         const it = (o.order_items as Record<string, unknown>[])?.[0];
         return {
