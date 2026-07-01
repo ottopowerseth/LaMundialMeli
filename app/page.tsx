@@ -167,7 +167,7 @@ export default function Home() {
       const res = await fetch("/api/sheets-data?tab=Auditor%C3%ADa");
       const data = await res.json();
       if (!data.rows) return;
-      // Columnas: Mes(0) VentasBrutas(1) VentasNetas(2) ComisionesML(3) ComisionesMP(4) Total(5) Recuperable(6) Tasa(7) Errores(8) Resumen(9) Analizado(10)
+      // Columnas: Mes(0) VentasBrutas(1) VentasNetas(2) ComisionesML(3) ComisionesMP(4) Total(5) Recuperable(6) NetoRecibidoMP(7) Tasa(8) FlexCredito(9) FlexDebito(10) Errores(11) Resumen(12) Analizado(13)
       const rows: AuditHistorialRow[] = data.rows
         .filter((r: string[]) => r[0])
         .map((r: string[], i: number) => ({
@@ -178,10 +178,10 @@ export default function Home() {
           comisiones_mp: Number(r[4]) || 0,
           total_comisiones: Number(r[5]) || 0,
           recuperable: Number(r[6]) || 0,
-          tasa_efectiva: Number(r[7]) || 0,
-          errores: Number(r[8]) || 0,
-          resumen: r[9] ?? "",
-          analizado: r[10] ?? "",
+          tasa_efectiva: Number(r[8]) || 0,
+          errores: Number(r[11]) || 0,
+          resumen: r[12] ?? "",
+          analizado: r[13] ?? "",
           rowIndex: i + 1, // +1 porque fila 0 es el header en el Sheet
         }))
         .reverse(); // más reciente primero

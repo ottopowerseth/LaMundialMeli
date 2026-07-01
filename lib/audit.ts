@@ -54,12 +54,13 @@ export function parseAuditFiles(files: { name: string; buffer: Buffer }[]): Audi
     const text = file.buffer.toString("latin1");
 
     if (name.endsWith(".csv")) {
-      if (text.includes("Cargo que anula") || (name.includes("nota") && (name.includes("credito") || name.includes("crédito")) && (name.includes("mercadolibre") || name.includes("libre")))) {
+      const esMP = text.includes("Tipo de operaci") || text.includes("Sección ML") || text.includes("Valor de la operaci");
+      if (!esMP && (text.includes("Cargo que anula") || (name.includes("nota") && (name.includes("credito") || name.includes("crédito")) && (name.includes("mercadolibre") || name.includes("libre"))))) {
         result.notasCreditoML = parseCSVSemicolon(text);
+      } else if (esMP) {
+        result.facturacionMP = parseCSVComma(text);
       } else if (text.includes("Porcentaje por categor") || text.includes("Número de venta") || text.includes("Numero de venta")) {
         result.facturacionML = parseCSVSemicolon(text);
-      } else if (text.includes("Tipo de operaci") || text.includes("Sección ML") || text.includes("Valor de la operaci")) {
-        result.facturacionMP = parseCSVComma(text);
       } else if (name.includes("mercadolibre") || name.includes("libre")) {
         result.facturacionML = parseCSVSemicolon(text);
       } else {
@@ -274,9 +275,9 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
 
       const esAnulacion = cargoAnula !== "" || detalle.includes("anulacion del cargo");
       const esAnuladoEnFactura = estado.includes("anulado en factura");
-      const esPublicidad = detalle.includes("publicidad") || detalle.includes("product ads") || detalle.includes("mi p") || detalle.includes("mantenimiento");
-      const esEnvio = detalle.includes("envio") || detalle.includes("env");
+      const esPublicidad = !esAnulacion && (detalle.includes("publicidad") || detalle.includes("product ads") || detalle.includes("mi p") || detalle.includes("mantenimiento"));
       const esVenta = detalle.includes("cargo por venta") && !esAnulacion;
+      const esEnvio = detalle.includes("envio") && !esAnulacion && !esVenta;
 
       if (esPublicidad) {
         comisiones_ml_raw += Math.abs(valorCargo);
@@ -287,8 +288,10 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
         comisiones_ml_raw += valorCargo; // valorCargo negativo → reduce total
         if (orden && ventasML.has(orden)) {
           const v = ventasML.get(orden)!;
-          if (detalle.includes("venta")) v.comision_cobrada = Math.max(0, v.comision_cobrada + valorCargo);
-          if (esEnvio) v.envio_cobrado = Math.max(0, v.envio_cobrado + valorCargo);
+          const anulaVenta = detalle.includes("venta");
+          const anulaEnvio = !anulaVenta && detalle.includes("envio");
+          if (anulaVenta) v.comision_cobrada = Math.max(0, v.comision_cobrada + valorCargo);
+          if (anulaEnvio) v.envio_cobrado = Math.max(0, v.envio_cobrado + valorCargo);
           if (v.comision_cobrada === 0 && v.envio_cobrado === 0) v.anulada = true;
         }
         continue;
@@ -309,16 +312,10 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
         if (tasa > 0 && v.tasa === 0) v.tasa = tasa;
         if (producto && !v.producto) v.producto = producto;
 
-        if (esAnuladoEnFactura) {
-          v.cargo_anulado_pendiente = true;
-          if (esVenta) v.comision_cobrada += Math.abs(valorCargo);
-          if (esEnvio) v.envio_cobrado += Math.abs(valorCargo);
-          comisiones_ml_raw += Math.abs(valorCargo);
-        } else {
-          if (esVenta) v.comision_cobrada += Math.abs(valorCargo);
-          if (esEnvio) v.envio_cobrado += Math.abs(valorCargo);
-          comisiones_ml_raw += Math.abs(valorCargo);
-        }
+        if (esAnuladoEnFactura) v.cargo_anulado_pendiente = true;
+        if (esVenta) v.comision_cobrada += Math.abs(valorCargo);
+        if (esEnvio) v.envio_cobrado += Math.abs(valorCargo);
+        comisiones_ml_raw += Math.abs(valorCargo);
       } else if (esVenta || esEnvio) {
         comisiones_ml_raw += Math.abs(valorCargo);
       }
@@ -349,13 +346,14 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     for (const row of mpRows) {
       const detalle = norm(String(getVal(row, "detalle") ?? ""));
       const valorCargo = parseCLP(getVal(row, "valor del cargo"));
-      const cobradoOp = parseCLP(getVal(row, "cobrado en la operacion", "cobrado en la operación"));
+      const valorOperacion = parseCLP(getVal(row, "valor de la operacion", "valor de la operación"));
 
       if (detalle.includes("cobrar con mercado pago") || detalle.includes("cuotas")) {
-        comisiones_mp += Math.abs(valorCargo);
+        comisiones_mp += valorCargo;
       }
-      if (cobradoOp > 0) neto_recibido_mp += cobradoOp;
+      if (valorOperacion > 0) neto_recibido_mp += valorOperacion;
     }
+    comisiones_mp = Math.max(0, comisiones_mp);
   } else {
     detalle_errores.push("Facturación MP no proporcionada");
   }
