@@ -8,6 +8,7 @@ const PUBLIC = [
   "/api/auth/login",       // OAuth ML: redirect
   "/api/auth/callback",    // OAuth ML: recibe code
   "/api/ml-notifications", // Webhook ML (verificado por firma)
+  "/api/version",          // Chequeo de versión desplegada
 ];
 
 export async function middleware(req: NextRequest) {
