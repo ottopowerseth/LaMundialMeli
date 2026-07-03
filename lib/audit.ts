@@ -184,7 +184,12 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
   };
 
   function norm(s: string): string {
-    return s.toLowerCase()
+    // Reparar mojibake típico (texto UTF-8 leído como latin1, p.ej. "OperaciÃ³n")
+    const s2 = s
+      .replace(/Ã¡/g, "a").replace(/Ã©/g, "e").replace(/Ã­/g, "i")
+      .replace(/Ã³/g, "o").replace(/Ãº/g, "u").replace(/Ã±/g, "n")
+      .replace(/Â°/g, "°");
+    return s2.toLowerCase()
       .replace(/[áàã]/g, "a").replace(/[éè]/g, "e").replace(/[íì]/g, "i")
       .replace(/[óòô]/g, "o").replace(/[úùü]/g, "u").replace(/ñ/g, "n");
   }
