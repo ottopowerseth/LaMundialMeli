@@ -333,6 +333,7 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
   // ── Procesar Facturación MP ────────────────────────────────────────────────
   let comisiones_mp = 0;
   let neto_recibido_mp = 0;
+  let ventas_brutas_mp = 0;
 
   if (data.facturacionMP?.length) {
     const mpCols = Object.keys(data.facturacionMP[0] ?? {});
@@ -343,15 +344,35 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     );
     detalle_errores.push(`[DIAG] MP filas total=${data.facturacionMP.length} filtradas=${mpRows.length}`);
 
+    const operacionesContadasMP = new Set<string>();
+
     for (const row of mpRows) {
       const detalle = norm(String(getVal(row, "detalle") ?? ""));
+      const estado = norm(String(getVal(row, "estado del cargo") ?? ""));
+      const cargoAnula = String(getVal(row, "cargo que anula") ?? "").trim();
       const valorCargo = parseCLP(getVal(row, "valor del cargo"));
       const valorOperacion = parseCLP(getVal(row, "valor de la operacion", "valor de la operación"));
+      const operacionRelacionada = String(getVal(row, "operacion relacionada", "operación relacionada") ?? "").trim();
+
+      const esAnulacion = cargoAnula !== "" || detalle.includes("anulacion del cargo");
+      const esAnuladoEnFactura = estado.includes("anulado en factura");
+
+      if (esAnulacion) {
+        // valorCargo viene negativo en las anulaciones → reduce comisión ya sumada
+        comisiones_mp += valorCargo;
+        continue;
+      }
 
       if (detalle.includes("cobrar con mercado pago") || detalle.includes("cuotas")) {
         comisiones_mp += valorCargo;
       }
-      if (valorOperacion > 0) neto_recibido_mp += valorOperacion;
+
+      // Ventas brutas MP: una vez por operación relacionada, ignorando anuladas
+      if (valorOperacion > 0 && operacionRelacionada && !esAnuladoEnFactura && !operacionesContadasMP.has(operacionRelacionada)) {
+        ventas_brutas_mp += valorOperacion;
+        neto_recibido_mp += valorOperacion;
+        operacionesContadasMP.add(operacionRelacionada);
+      }
     }
     comisiones_mp = Math.max(0, comisiones_mp);
   } else {
@@ -444,6 +465,7 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
   }
 
   // ── Totales ────────────────────────────────────────────────────────────────
+  ventas_brutas += ventas_brutas_mp;
   const comisiones_ml = comisiones_ml_raw;
   const ventas_netas = ventas_brutas;
   const total_comisiones = comisiones_ml + comisiones_mp;
