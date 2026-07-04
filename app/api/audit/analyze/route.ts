@@ -70,8 +70,8 @@ export async function POST(request: Request) {
     }
 
     const auditData = parseAuditFiles(files);
-    const result = calculateAudit(mes, auditData);
     const referenciaML = await fetchReferenciaML(mes);
+    const result = calculateAudit(mes, auditData, referenciaML?.ventasBrutas);
 
     await ensureSheets(["Auditoría"]);
 

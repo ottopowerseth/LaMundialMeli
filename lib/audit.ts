@@ -156,7 +156,7 @@ function splitLine(line: string, sep: string): string[] {
 
 // ── Calculator ────────────────────────────────────────────────────────────────
 
-export function calculateAudit(mes: string, data: AuditData): AuditResult {
+export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: number): AuditResult {
   const [yearStr, monthStr] = mes.split("-");
   const year = parseInt(yearStr);
   const month = parseInt(monthStr);
@@ -378,7 +378,9 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
         comisiones_mp += valorCargo;
       }
 
-      // Ventas brutas MP: una vez por operación relacionada, ignorando anuladas
+      // Neto recibido MP: una vez por operación relacionada, ignorando anuladas.
+      // No se suma a ventas_brutas porque "Fecha del cargo" es la fecha de liquidación
+      // del cargo (puede caer en el mes siguiente a la venta real), no la fecha de venta.
       if (valorOperacion > 0 && operacionRelacionada && !esAnuladoEnFactura && !operacionesContadasMP.has(operacionRelacionada)) {
         ventas_brutas_mp += valorOperacion;
         neto_recibido_mp += valorOperacion;
@@ -476,7 +478,13 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
   }
 
   // ── Totales ────────────────────────────────────────────────────────────────
-  ventas_brutas += ventas_brutas_mp;
+  // ventas_brutas_mp NO se suma: "Fecha del cargo" en el CSV de MP es la fecha de
+  // liquidación del cargo, no la fecha real de venta, así que mezcla operaciones de
+  // meses distintos. Cuando hay total de la API de ML disponible, se usa como fuente
+  // oficial de ventas brutas del mes; si no, se usa lo calculado desde el CSV de ML.
+  if (ventasBrutasML !== undefined) {
+    ventas_brutas = ventasBrutasML;
+  }
   const comisiones_ml = comisiones_ml_raw;
   const ventas_netas = ventas_brutas;
   const total_comisiones = comisiones_ml + comisiones_mp;
