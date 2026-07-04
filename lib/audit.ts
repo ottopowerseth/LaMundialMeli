@@ -358,9 +358,15 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
       const valorCargo = parseCLP(getVal(row, "valor del cargo"));
       const valorOperacion = parseCLP(getVal(row, "valor de la operacion", "valor de la operación"));
       const operacionRelacionada = String(getVal(row, "operacion relacionada", "operación relacionada") ?? "").trim();
+      // "Checkout" a secas = marketplace de Mercado Libre. "CHO API TARJETAS SHOPIFY" y
+      // "Link de pago" son otros canales (tienda propia/Shopify) que no se auditan aquí.
+      const tipoPago = norm(String(getVal(row, "tipo de pago") ?? ""));
+      const esCanalML = tipoPago === "checkout";
 
       const esAnulacion = cargoAnula !== "" || detalle.includes("anulacion del cargo");
       const esAnuladoEnFactura = estado.includes("anulado en factura");
+
+      if (!esCanalML) continue;
 
       if (esAnulacion) {
         // valorCargo viene negativo en las anulaciones → reduce comisión ya sumada
