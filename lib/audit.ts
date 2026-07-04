@@ -350,10 +350,6 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
     detalle_errores.push(`[DIAG] MP filas total=${data.facturacionMP.length} filtradas=${mpRows.length}`);
 
     const operacionesContadasMP = new Set<string>();
-    const opRelKeyDetectada = findKey(mpRows[0] ?? {}, "operacion relacionada", "operación relacionada");
-    detalle_errores.push(`[DIAG] MP clave 'operación relacionada' detectada: ${opRelKeyDetectada ?? "NO ENCONTRADA"}`);
-    let filasConValorOperacion = 0;
-    let filasConOpRelacionadaVacia = 0;
 
     for (const row of mpRows) {
       const detalle = norm(String(getVal(row, "detalle") ?? ""));
@@ -376,9 +372,6 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
         comisiones_mp += valorCargo;
       }
 
-      if (valorOperacion > 0) filasConValorOperacion++;
-      if (valorOperacion > 0 && !operacionRelacionada) filasConOpRelacionadaVacia++;
-
       // Ventas brutas MP: una vez por operación relacionada, ignorando anuladas
       if (valorOperacion > 0 && operacionRelacionada && !esAnuladoEnFactura && !operacionesContadasMP.has(operacionRelacionada)) {
         ventas_brutas_mp += valorOperacion;
@@ -386,7 +379,6 @@ export function calculateAudit(mes: string, data: AuditData): AuditResult {
         operacionesContadasMP.add(operacionRelacionada);
       }
     }
-    detalle_errores.push(`[DIAG] MP filas con valorOperacion>0: ${filasConValorOperacion} | con opRelacionada vacía: ${filasConOpRelacionadaVacia} | operaciones únicas contadas: ${operacionesContadasMP.size}`);
     comisiones_mp = Math.max(0, comisiones_mp);
   } else {
     detalle_errores.push("Facturación MP no proporcionada");
