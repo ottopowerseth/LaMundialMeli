@@ -349,6 +349,14 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
     );
     detalle_errores.push(`[DIAG] MP filas total=${data.facturacionMP.length} filtradas=${mpRows.length}`);
 
+    if (mpRows.length > 0) {
+      detalle_errores.push(
+        "Nota: \"Comisiones MP\" y \"Neto Recibido MP\" se calculan por fecha de liquidación " +
+        "del cargo, no por fecha de venta. Si el reporte de MP no coincide con el mes " +
+        "calendario, estas dos cifras pueden incluir cargos de ventas de otro mes."
+      );
+    }
+
     const operacionesContadasMP = new Set<string>();
 
     for (const row of mpRows) {
