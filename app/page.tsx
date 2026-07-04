@@ -57,7 +57,9 @@ type AuditResult = {
   detalle_errores: string[];
 };
 
-type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; error?: string } | null;
+type ReferenciaML = { ventasBrutas: number; cantidadVentas: number } | null;
+
+type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; referenciaML?: ReferenciaML; error?: string } | null;
 
 type AuditHistorialRow = {
   mes: string;
@@ -624,6 +626,42 @@ export default function Home() {
                         </div>
                       ))}
                     </div>
+
+                    {/* Comparación contra dashboard de Mercado Libre */}
+                    {auditResult.referenciaML && (() => {
+                      const ref = auditResult.referenciaML!;
+                      const diferencia = auditResult.result!.ventas_brutas - ref.ventasBrutas;
+                      const diferenciaPct = ref.ventasBrutas > 0 ? (diferencia / ref.ventasBrutas) * 100 : 0;
+                      const coincide = Math.abs(diferenciaPct) < 5;
+                      return (
+                        <div className={`rounded-xl border p-4 ${coincide ? "bg-green-50 border-green-200" : "bg-yellow-50 border-yellow-200"}`}>
+                          <p className="text-sm font-semibold text-gray-800">
+                            {coincide ? "✓ Coincide con Mercado Libre" : "⚠ Diferencia vs. Mercado Libre"}
+                          </p>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-2 text-sm">
+                            <div>
+                              <p className="text-gray-500 text-xs">ML (API, {ref.cantidadVentas} ventas)</p>
+                              <p className="font-bold text-gray-900">{formatCLP(ref.ventasBrutas)}</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-500 text-xs">Calculado en esta auditoría</p>
+                              <p className="font-bold text-gray-900">{formatCLP(auditResult.result!.ventas_brutas)}</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-500 text-xs">Diferencia</p>
+                              <p className={`font-bold ${coincide ? "text-green-700" : "text-yellow-700"}`}>
+                                {diferencia >= 0 ? "+" : ""}{formatCLP(diferencia)} ({diferenciaPct >= 0 ? "+" : ""}{diferenciaPct.toFixed(1)}%)
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    {auditResult.result && !auditResult.referenciaML && (
+                      <p className="text-xs text-gray-400">
+                        No se pudo obtener la referencia de Mercado Libre para comparar (revisar conexión OAuth).
+                      </p>
+                    )}
 
                     {/* Ajustes Flex */}
                     {(auditResult.result.flex_credito > 0 || auditResult.result.flex_debito > 0) && (
