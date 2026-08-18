@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import axios from "axios";
 import { readSheet, batchWriteSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
+import { withMlRetry } from "@/lib/http-retry";
 
 export async function POST() {
   try {
@@ -9,15 +10,18 @@ export async function POST() {
     const mlClient = axios.create({
       baseURL: "https://api.mercadolibre.com",
       headers: { Authorization: `Bearer ${token}` },
+      timeout: 8000,
     });
 
-    const { data: user } = await mlClient.get("/users/me");
+    const { data: user } = await withMlRetry(() => mlClient.get("/users/me"));
     const userId = user.id;
 
     const mlIds = new Set<string>();
     let offset = 0;
     while (true) {
-      const { data } = await mlClient.get(`/users/${userId}/items/search?limit=100&offset=${offset}`);
+      const { data } = await withMlRetry(() =>
+        mlClient.get(`/users/${userId}/items/search?limit=100&offset=${offset}`)
+      );
       data.results.forEach((id: string) => mlIds.add(id));
       if (mlIds.size >= data.paging.total || data.results.length === 0) break;
       offset += 100;
