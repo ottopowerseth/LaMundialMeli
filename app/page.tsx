@@ -15,6 +15,8 @@ type SyncResult = {
   productosNuevos?: ProductoNuevo[];
   cambiosStock?: StockChange[];
   ventasNuevas?: VentaNueva[];
+  erroresValidacion?: string[];
+  erroresSync?: string[];
   timestamp?: string;
   error?: string;
 } | null;
@@ -422,6 +424,28 @@ export default function Home() {
                               </div>
                               <div className="text-gray-400 mt-0.5">Cant: {v.cantidad} · {v.comprador} · {v.fecha}</div>
                             </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(syncResult.erroresSync?.length ?? 0) > 0 && (
+                      <div>
+                        <h3 className="font-semibold text-red-700 mb-2">Errores de sincronización ({syncResult.erroresSync!.length})</h3>
+                        <div className="space-y-1 max-h-48 overflow-y-auto">
+                          {syncResult.erroresSync!.map((e, i) => (
+                            <div key={i} className="text-sm bg-red-50 text-red-700 rounded-lg px-3 py-2">{e}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(syncResult.erroresValidacion?.length ?? 0) > 0 && (
+                      <div>
+                        <h3 className="font-semibold text-amber-700 mb-2">Datos incompletos ({syncResult.erroresValidacion!.length})</h3>
+                        <div className="space-y-1 max-h-48 overflow-y-auto">
+                          {syncResult.erroresValidacion!.map((e, i) => (
+                            <div key={i} className="text-sm bg-amber-50 text-amber-700 rounded-lg px-3 py-2">{e}</div>
                           ))}
                         </div>
                       </div>
