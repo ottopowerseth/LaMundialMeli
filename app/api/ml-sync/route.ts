@@ -224,14 +224,23 @@ export async function POST() {
     let ventasNuevas: { titulo: unknown; cantidad: unknown; total: unknown; comprador: unknown; fecha: string }[] = [];
 
     try {
-      // Ventas — paginado
+      // Ventas — paginado por fecha, no por offset fijo: el forecast necesita
+      // 30 días completos de historial, y un tope de offset arbitrario se
+      // queda corto o se pasa de largo según el volumen de ventas del momento.
+      // Paramos cuando la orden más vieja de la página ya excede la ventana
+      // (data.results viene ordenado date_desc), con un tope de offset alto
+      // como salvaguarda contra un loop indefinido.
+      const ventanaHistorial = new Date(Date.now() - 35 * 86400000);
       let ordOffset = 0;
-      while (ordOffset <= 500) {
+      while (ordOffset <= 2000) {
         const { data } = await mlGet<{ results: Record<string, unknown>[]; paging: { total: number } }>(
           `/orders/search?seller=${userId}&sort=date_desc&limit=50&offset=${ordOffset}`
         );
+        if (data.results.length === 0) break;
         orders.push(...data.results);
-        if (orders.length >= data.paging.total || data.results.length === 0) break;
+        const ultimaOrdenPagina = data.results[data.results.length - 1];
+        const fechaUltima = new Date(ultimaOrdenPagina.date_created as string);
+        if (fechaUltima < ventanaHistorial || orders.length >= data.paging.total) break;
         ordOffset += 50;
       }
 
