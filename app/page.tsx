@@ -2,6 +2,7 @@
 
 import { Fragment, CSSProperties, useEffect, useState, useRef } from "react";
 import Image from "next/image";
+import * as XLSX from "xlsx";
 
 type MLStatus = { ok: boolean; nickname?: string } | null;
 
@@ -233,6 +234,53 @@ export default function Home() {
     } finally {
       setLoadingForecast(false);
     }
+  }
+
+  function getFilasParaPedido(): ForecastRow[] {
+    if (!forecastResult?.ok || !forecastResult.rows) return [];
+    const prioridadesPedido: Prioridad[] = ["SIN_STOCK", "URGENTE", "PRONTO"];
+    return forecastResult.rows.filter(
+      r => prioridadesPedido.includes(r.prioridad) && r.cantidadSugerida > 0
+    );
+  }
+
+  function descargarListaPedido() {
+    const filas = getFilasParaPedido();
+    if (filas.length === 0) return;
+
+    const headers = [
+      "PRODUCTO", "STOCK ACTUAL", "VENTAS 30 DÍAS", "VELOCIDAD DIARIA",
+      "DÍAS RESTANTES", "FECHA ESTIMADA DE QUIEBRE", "CANTIDAD A PEDIR", "PRIORIDAD",
+    ];
+    const data = filas.map(r => [
+      r.titulo,
+      r.stockActual,
+      r.ventas30d,
+      r.velocidadDiaria,
+      r.diasRestantes ?? "",
+      r.fechaQuiebre ?? "",
+      r.cantidadSugerida,
+      r.prioridad,
+    ]);
+
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...data]);
+
+    // Ancho de columna ajustado al contenido más largo de cada columna (con piso/techo)
+    const MIN_WIDTH = 10;
+    const MAX_WIDTH = 45;
+    worksheet["!cols"] = headers.map((h, colIdx) => {
+      const maxLen = Math.max(
+        h.length,
+        ...data.map(row => String(row[colIdx] ?? "").length)
+      );
+      return { wch: Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, maxLen + 2)) };
+    });
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Pedido sugerido");
+
+    const fecha = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(workbook, `pedido-sugerido-${fecha}.xlsx`);
   }
 
   useEffect(() => {
@@ -956,6 +1004,32 @@ export default function Home() {
             {forecastResult && !forecastResult.ok && (
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
                 <p className="text-red-600 text-sm">✗ Error: {forecastResult.error}</p>
+              </div>
+            )}
+
+            {forecastResult?.ok && forecastResult.rows && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 flex items-center justify-between">
+                {getFilasParaPedido().length > 0 ? (
+                  <>
+                    <p className="text-sm text-gray-500">
+                      {getFilasParaPedido().length} producto{getFilasParaPedido().length === 1 ? "" : "s"} con reposición pendiente
+                    </p>
+                    <button onClick={descargarListaPedido}
+                      className="font-bold py-2.5 px-4 rounded-xl text-white"
+                      style={{ backgroundColor: "#0F9D58" }}>
+                      Descargar lista de pedido
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm text-gray-500">Nada que pedir por ahora</p>
+                    <button disabled
+                      className="font-bold py-2.5 px-4 rounded-xl text-white opacity-40 cursor-not-allowed"
+                      style={{ backgroundColor: "#0F9D58" }}>
+                      Descargar lista de pedido
+                    </button>
+                  </>
+                )}
               </div>
             )}
 
