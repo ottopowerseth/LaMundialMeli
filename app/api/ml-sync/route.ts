@@ -235,7 +235,9 @@ export async function POST() {
         ordOffset += 50;
       }
 
-      const ordHeaders = ["ID Orden", "Fecha", "Producto", "SKU", "Cantidad", "Precio Unit.", "Total", "Comprador", "Estado"];
+      // Columna J (ID Item) se agrega al final, no en medio, para no correr
+      // los índices que ya leen esta hoja por posición (page.tsx, forecast/route.ts).
+      const ordHeaders = ["ID Orden", "Fecha", "Producto", "SKU", "Cantidad", "Precio Unit.", "Total", "Comprador", "Estado", "ID Item"];
       const ordRows = orders.map((order) => {
         const item = (order.order_items as Record<string, unknown>[])?.[0];
         return [
@@ -248,6 +250,7 @@ export async function POST() {
           order.total_amount,
           (order.buyer as Record<string, unknown>)?.nickname ?? "",
           order.status,
+          (item?.item as Record<string, unknown>)?.id ?? "",
         ];
       });
 

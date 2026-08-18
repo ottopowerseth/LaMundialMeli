@@ -29,6 +29,27 @@ type DeletedResult = {
   error?: string;
 } | null;
 
+type Prioridad = "SIN_STOCK" | "URGENTE" | "PRONTO" | "OK" | "SIN_DATOS";
+type ForecastRow = {
+  id: string;
+  titulo: string;
+  stockActual: number;
+  ventas30d: number;
+  velocidadDiaria: number;
+  diasRestantes: number | null;
+  fechaQuiebre: string | null;
+  cantidadSugerida: number;
+  prioridad: Prioridad;
+  estadoML: string;
+};
+type ForecastApiResult = {
+  ok: boolean;
+  leadTimeDays?: number;
+  safetyDays?: number;
+  rows?: ForecastRow[];
+  error?: string;
+} | null;
+
 type ErrorType = "comision_incorrecta" | "envio_incorrecto" | "devolucion_sin_reembolso" | "comision_venta_anulada";
 
 type TransaccionError = {
@@ -102,7 +123,7 @@ const FILE_ZONES: FileZone[] = [
 ];
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"sync" | "auditoria">("sync");
+  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast">("sync");
 
   // --- Sync state ---
   const [mlStatus, setMlStatus] = useState<MLStatus>(null);
@@ -129,6 +150,13 @@ export default function Home() {
   const [expandedMes, setExpandedMes] = useState<string | null>(null);
   const [deletingRowIdx, setDeletingRowIdx] = useState<number | null>(null);
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  // --- Forecast state ---
+  const [leadTimeDays, setLeadTimeDays] = useState(15);
+  const [safetyDays, setSafetyDays] = useState(7);
+  const [loadingForecast, setLoadingForecast] = useState(false);
+  const [forecastResult, setForecastResult] = useState<ForecastApiResult>(null);
+  const [filtroPrioridad, setFiltroPrioridad] = useState<Prioridad | "TODOS">("TODOS");
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(setMlStatus).catch(() => setMlStatus({ ok: false }));
@@ -193,8 +221,23 @@ export default function Home() {
     } catch { /* silencioso */ }
   }
 
+  async function loadForecast(customLeadTime?: number, customSafety?: number) {
+    setLoadingForecast(true);
+    try {
+      const lt = customLeadTime ?? leadTimeDays;
+      const sd = customSafety ?? safetyDays;
+      const res = await fetch(`/api/forecast?leadTimeDays=${lt}&safetyDays=${sd}`);
+      setForecastResult(await res.json());
+    } catch {
+      setForecastResult({ ok: false, error: "Error de red" });
+    } finally {
+      setLoadingForecast(false);
+    }
+  }
+
   useEffect(() => {
     if (activeTab === "auditoria") loadHistorial();
+    if (activeTab === "forecast") loadForecast();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -322,6 +365,11 @@ export default function Home() {
             className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "auditoria" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "auditoria" ? { backgroundColor: "#C41230" } : {}}>
             Auditoría
+          </button>
+          <button onClick={() => setActiveTab("forecast")}
+            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "forecast" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            style={activeTab === "forecast" ? { backgroundColor: "#C41230" } : {}}>
+            Forecast
           </button>
         </div>
       </div>
@@ -871,6 +919,125 @@ export default function Home() {
                   </table>
                 </div>
               </div>
+            )}
+          </>
+        )}
+
+        {/* === TAB: FORECAST === */}
+        {activeTab === "forecast" && (
+          <>
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+              <div>
+                <h2 className="font-bold text-gray-900 text-lg">Reposición sugerida</h2>
+                <p className="text-sm text-gray-500 mt-1">Calcula qué productos pedir según la velocidad de venta de los últimos 30 días.</p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Tiempo de reposición (días)</label>
+                  <input type="number" min={1} value={leadTimeDays}
+                    onChange={e => setLeadTimeDays(Number(e.target.value) || 0)}
+                    className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Margen de seguridad (días)</label>
+                  <input type="number" min={0} value={safetyDays}
+                    onChange={e => setSafetyDays(Number(e.target.value) || 0)}
+                    className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
+                </div>
+                <button onClick={() => loadForecast()} disabled={loadingForecast}
+                  className="font-bold py-2.5 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: "#C41230" }}>
+                  {loadingForecast ? <><Spinner />Calculando...</> : "Recalcular"}
+                </button>
+              </div>
+            </div>
+
+            {forecastResult && !forecastResult.ok && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                <p className="text-red-600 text-sm">✗ Error: {forecastResult.error}</p>
+              </div>
+            )}
+
+            {forecastResult?.ok && forecastResult.rows && (
+              <>
+                {/* Tarjetas resumen */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {([
+                    { key: "SIN_STOCK", label: "Sin stock", color: "#DC2626" },
+                    { key: "URGENTE", label: "Urgente", color: "#DC2626" },
+                    { key: "PRONTO", label: "Pronto", color: "#D97706" },
+                    { key: "OK", label: "OK", color: "#059669" },
+                  ] as const).map(({ key, label, color }) => (
+                    <div key={key} className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4">
+                      <p className="text-sm text-gray-500">{label}</p>
+                      <p className="text-2xl font-bold" style={{ color }}>
+                        {forecastResult.rows!.filter(r => r.prioridad === key).length}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Filtro + tabla */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-gray-800">Detalle por producto</h3>
+                    <select value={filtroPrioridad} onChange={e => setFiltroPrioridad(e.target.value as Prioridad | "TODOS")}
+                      className="border border-gray-300 rounded-xl px-3 py-1.5 text-sm">
+                      <option value="TODOS">Todas las prioridades</option>
+                      <option value="SIN_STOCK">Sin stock</option>
+                      <option value="URGENTE">Urgente</option>
+                      <option value="PRONTO">Pronto</option>
+                      <option value="OK">OK</option>
+                      <option value="SIN_DATOS">Sin datos</option>
+                    </select>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-gray-500 border-b border-gray-200">
+                          <th className="py-2 pr-3">Producto</th>
+                          <th className="py-2 pr-3">Stock</th>
+                          <th className="py-2 pr-3">Ventas 30d</th>
+                          <th className="py-2 pr-3">Vel. diaria</th>
+                          <th className="py-2 pr-3">Días rest.</th>
+                          <th className="py-2 pr-3">Quiebre est.</th>
+                          <th className="py-2 pr-3">Pedir</th>
+                          <th className="py-2 pr-3">Prioridad</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {forecastResult.rows!
+                          .filter(r => filtroPrioridad === "TODOS" || r.prioridad === filtroPrioridad)
+                          .map((r) => {
+                            const badge = {
+                              SIN_STOCK: "bg-red-100 text-red-700",
+                              URGENTE: "bg-red-100 text-red-700",
+                              PRONTO: "bg-amber-100 text-amber-700",
+                              OK: "bg-green-100 text-green-700",
+                              SIN_DATOS: "bg-gray-100 text-gray-500",
+                            }[r.prioridad];
+                            return (
+                              <tr key={r.id} className="border-b border-gray-100 last:border-0">
+                                <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{r.titulo}</td>
+                                <td className="py-2 pr-3 text-gray-700">{r.stockActual}</td>
+                                <td className="py-2 pr-3 text-gray-700">{r.ventas30d}</td>
+                                <td className="py-2 pr-3 text-gray-700">{r.velocidadDiaria}</td>
+                                <td className="py-2 pr-3 text-gray-700">{r.diasRestantes ?? "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{r.fechaQuiebre ?? "-"}</td>
+                                <td className="py-2 pr-3 font-semibold text-gray-900">{r.cantidadSugerida || "-"}</td>
+                                <td className="py-2 pr-3">
+                                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badge}`}>{r.prioridad}</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
             )}
           </>
         )}
