@@ -1,11 +1,19 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { ensureSheets, clearSheet, readSheet, writeSheet } from "@/lib/sheets";
+import { ensureSheets, clearSheet, readSheet, writeSheet, appendSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
-import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
+import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
+
+// Tope de shipments NUEVOS (no vistos en ShippingCache) a resolver por sync.
+// Las órdenes que no lleguen a procesarse por este tope (no por error) quedan
+// sin "Logístico" y se resuelven solas en el próximo sync — al no estar en
+// el cache, vuelven a intentarse. Con ~1450 órdenes de backlog y 150/sync,
+// hacen falta ~10 syncs para cubrir el histórico completo.
+const MAX_SHIPMENTS_NUEVOS_POR_SYNC = 150;
+const SHIPMENT_BATCH_SIZE = 8;
 
 function getComisionPct(listingType: string, catalogListing: boolean) {
   // Fuente: API MercadoLibre /sites/MLC/listing_types (junio 2026)
@@ -72,7 +80,7 @@ export async function POST() {
   const erroresSync: string[] = [];
 
   try {
-    await ensureSheets(["Publicaciones", "Ventas"]);
+    await ensureSheets(["Publicaciones", "Ventas", "ShippingCache"]);
 
     const token = await getValidAccessToken();
     const mlClient = axios.create({
@@ -244,13 +252,71 @@ export async function POST() {
         ordOffset += 50;
       }
 
-      // Columna J (ID Item) se agrega al final, no en medio, para no correr
-      // los índices que ya leen esta hoja por posición (page.tsx, forecast/route.ts).
-      const ordHeaders = ["ID Orden", "Fecha", "Producto", "SKU", "Cantidad", "Precio Unit.", "Total", "Comprador", "Estado", "ID Item"];
+      // ShippingCache: persiste logistic_type por orden entre syncs (Ventas se
+      // reescribe completa cada vez, así que el cache no puede vivir ahí).
+      // Append-only, nunca se limpia. Columnas: ID Orden | Shipping ID |
+      // Logistic Type | Fecha Consulta.
+      const cacheLogisticoPorOrden = new Map<string, string>();
+      try {
+        const cacheRows = await readSheet("ShippingCache!A2:D100000");
+        for (const r of cacheRows) {
+          if (r[0] && r[2]) cacheLogisticoPorOrden.set(String(r[0]), r[2]);
+        }
+      } catch { /* primera vez, hoja recién creada */ }
+
+      // Órdenes en `orders` ya vienen date_desc (más recientes primero) desde
+      // la paginación de arriba, así que iterar en ese orden natural ya
+      // prioriza lo más reciente sin lógica extra.
+      const ordenesSinCache = orders.filter((o) => !cacheLogisticoPorOrden.has(String(o.id)));
+      const ordenesAProcesar = ordenesSinCache.slice(0, MAX_SHIPMENTS_NUEVOS_POR_SYNC);
+
+      for (let i = 0; i < ordenesAProcesar.length; i += SHIPMENT_BATCH_SIZE) {
+        const lote = ordenesAProcesar.slice(i, i + SHIPMENT_BATCH_SIZE);
+        const resultados = await Promise.all(
+          lote.map(async (order) => {
+            const shippingId = (order.shipping as Record<string, unknown>)?.id;
+            if (!shippingId) return { orderId: String(order.id), logisticType: null };
+            try {
+              const { data } = await mlGet<{ logistic_type?: string }>(`/shipments/${shippingId}`);
+              return { orderId: String(order.id), shippingId, logisticType: data.logistic_type ?? "" };
+            } catch (err) {
+              if (err instanceof SyncRetryBudgetExceededError) throw err;
+              erroresValidacion.push(`Orden ${order.id}: no se pudo obtener el tipo de envío (${String(err)})`);
+              return { orderId: String(order.id), shippingId, logisticType: null };
+            }
+          })
+        );
+
+        // Se guarda al final de cada batch, no al final de todos: si el
+        // budget corta la ejecución (o cualquier excepción escapa del loop)
+        // a mitad de camino, los shipments de batches anteriores ya quedaron
+        // persistidos y no se pierden.
+        const nuevasEntradasBatch: string[][] = [];
+        for (const r of resultados) {
+          if (r.logisticType !== null) {
+            cacheLogisticoPorOrden.set(r.orderId, r.logisticType);
+            // Prefijo "'" fuerza texto literal en Sheets (USER_ENTERED
+            // autoformatea IDs numéricos largos a notación científica, lo
+            // que rompería el matching por ID Orden en el próximo sync).
+            nuevasEntradasBatch.push([`'${r.orderId}`, `'${String(r.shippingId ?? "")}`, r.logisticType, new Date().toISOString()]);
+          }
+        }
+        if (nuevasEntradasBatch.length > 0) {
+          await appendSheet("ShippingCache!A:D", nuevasEntradasBatch);
+        }
+      }
+
+      // Columnas J (ID Item) y K (Logístico) se agregan al final, no en medio,
+      // para no correr los índices que ya leen esta hoja por posición
+      // (page.tsx, forecast/route.ts).
+      const ordHeaders = ["ID Orden", "Fecha", "Producto", "SKU", "Cantidad", "Precio Unit.", "Total", "Comprador", "Estado", "ID Item", "Logístico"];
       const ordRows = orders.map((order) => {
         const item = (order.order_items as Record<string, unknown>[])?.[0];
         return [
-          String(order.id),
+          // Prefijo "'" fuerza texto literal en Sheets — sin esto, IDs
+          // numéricos largos se autoformatean a notación científica y
+          // rompen el matching por ID Orden contra ShippingCache.
+          `'${String(order.id)}`,
           new Date(order.date_created as string).toLocaleDateString("es-CL"),
           (item?.item as Record<string, unknown>)?.title ?? "",
           (item?.item as Record<string, unknown>)?.seller_sku ?? "",
@@ -260,6 +326,7 @@ export async function POST() {
           (order.buyer as Record<string, unknown>)?.nickname ?? "",
           order.status,
           (item?.item as Record<string, unknown>)?.id ?? "",
+          cacheLogisticoPorOrden.get(String(order.id)) ?? "",
         ];
       });
 
