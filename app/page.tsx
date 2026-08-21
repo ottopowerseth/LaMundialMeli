@@ -188,6 +188,10 @@ export default function Home() {
   const [seleccionados, setSeleccionados] = useState<number[]>([]);
   const [ventasSemana, setVentasSemana] = useState<VentaNueva[]>([]);
   const [loadingVentas, setLoadingVentas] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillProgreso, setBackfillProgreso] = useState({ procesadas: 0, nuevasEnCache: 0 });
+  const [backfillError, setBackfillError] = useState<string | null>(null);
+  const backfillCancelado = useRef(false);
 
   // --- Auditoría state ---
   const [mes, setMes] = useState(() => {
@@ -390,6 +394,36 @@ export default function Home() {
     }
   }
 
+  async function handleBackfillShipping() {
+    setBackfilling(true);
+    setBackfillError(null);
+    setBackfillProgreso({ procesadas: 0, nuevasEnCache: 0 });
+    backfillCancelado.current = false;
+    try {
+      // Loop automático: cada llamada procesa un lote limitado por el
+      // maxDuration del endpoint. Mientras "completo" venga false, todavía
+      // queda backlog por resolver — seguimos llamando hasta terminar o
+      // hasta que el usuario cancele.
+      while (!backfillCancelado.current) {
+        const res = await fetch("/api/backfill-shipping", { method: "POST" });
+        const data = await res.json();
+        if (!data.ok) {
+          setBackfillError(data.error ?? "Error de red");
+          break;
+        }
+        setBackfillProgreso(prev => ({
+          procesadas: prev.procesadas + data.procesadas,
+          nuevasEnCache: prev.nuevasEnCache + data.nuevasEnCache,
+        }));
+        if (data.completo) break;
+      }
+    } catch {
+      setBackfillError("Error de red");
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
   async function borrarDelSheet(filas: number[]) {
     setBorrandoFilas(filas);
     try {
@@ -526,6 +560,35 @@ export default function Home() {
                   className="w-full bg-gray-900 hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-xl">
                   {detecting ? <><Spinner />Detectando...</> : "Detectar eliminados"}
                 </button>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div>
+                  <h2 className="font-bold text-gray-900 text-lg">Historial de envíos</h2>
+                  <p className="text-sm text-gray-500 mt-1">Completa el tipo de envío (Full u otro) de ventas antiguas, hasta cubrir todo el histórico.</p>
+                </div>
+                {backfilling ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-600">
+                      Procesadas: {backfillProgreso.procesadas} · Nuevas en caché: {backfillProgreso.nuevasEnCache}
+                    </p>
+                    <button onClick={() => { backfillCancelado.current = true; }}
+                      className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-3 px-4 rounded-xl">
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={handleBackfillShipping} disabled={!mlStatus?.ok}
+                    className="w-full bg-gray-900 hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-xl">
+                    Completar historial de envíos
+                  </button>
+                )}
+                {backfillError && <p className="text-red-600 text-sm">✗ Error: {backfillError}</p>}
+                {!backfilling && backfillProgreso.procesadas > 0 && !backfillError && (
+                  <p className="text-sm text-gray-500">
+                    Última corrida: {backfillProgreso.procesadas} procesadas, {backfillProgreso.nuevasEnCache} nuevas en caché.
+                  </p>
+                )}
               </div>
             </div>
 
