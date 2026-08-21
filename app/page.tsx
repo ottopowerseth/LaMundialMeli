@@ -51,6 +51,42 @@ type ForecastApiResult = {
   error?: string;
 } | null;
 
+type Periodo = "dia" | "semana" | "mes";
+type VentasMetrics = {
+  ok: boolean;
+  totalVendido?: number;
+  unidades?: number;
+  cantidadOrdenes?: number;
+  ticketPromedio?: number;
+  error?: string;
+};
+type ReputacionMetrics = {
+  ok: boolean;
+  levelId?: string;
+  powerSellerStatus?: string;
+  ventasCompletadas?: number;
+  ventasCanceladas?: number;
+  claims?: { rate: number; value: number; period: string };
+  cancellations?: { rate: number; value: number; period: string };
+  delayedHandlingTime?: { rate: number; value: number; period: string };
+  error?: string;
+};
+type VisitaPorPublicacion = { id: string; titulo: string; visitas: number; ventas: number; conversion: number | null };
+type VisitasMetrics = {
+  ok: boolean;
+  totalVisitas?: number;
+  porPublicacion?: VisitaPorPublicacion[];
+  error?: string;
+};
+type MetricsApiResult = {
+  ok: boolean;
+  periodo?: Periodo;
+  ventas?: VentasMetrics;
+  reputacion?: ReputacionMetrics;
+  visitas?: VisitasMetrics;
+  error?: string;
+} | null;
+
 type ErrorType = "comision_incorrecta" | "envio_incorrecto" | "devolucion_sin_reembolso" | "comision_venta_anulada";
 
 type TransaccionError = {
@@ -124,7 +160,7 @@ const FILE_ZONES: FileZone[] = [
 ];
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast">("sync");
+  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast" | "metricas">("sync");
 
   // --- Sync state ---
   const [mlStatus, setMlStatus] = useState<MLStatus>(null);
@@ -158,6 +194,11 @@ export default function Home() {
   const [loadingForecast, setLoadingForecast] = useState(false);
   const [forecastResult, setForecastResult] = useState<ForecastApiResult>(null);
   const [filtroPrioridad, setFiltroPrioridad] = useState<Prioridad | "TODOS">("TODOS");
+
+  // --- Métricas state ---
+  const [periodoMetrics, setPeriodoMetrics] = useState<Periodo>("mes");
+  const [loadingMetrics, setLoadingMetrics] = useState(false);
+  const [metricsResult, setMetricsResult] = useState<MetricsApiResult>(null);
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(setMlStatus).catch(() => setMlStatus({ ok: false }));
@@ -236,6 +277,19 @@ export default function Home() {
     }
   }
 
+  async function loadMetrics(customPeriodo?: Periodo) {
+    setLoadingMetrics(true);
+    try {
+      const p = customPeriodo ?? periodoMetrics;
+      const res = await fetch(`/api/metrics?periodo=${p}`);
+      setMetricsResult(await res.json());
+    } catch {
+      setMetricsResult({ ok: false, error: "Error de red" });
+    } finally {
+      setLoadingMetrics(false);
+    }
+  }
+
   function getFilasParaPedido(): ForecastRow[] {
     if (!forecastResult?.ok || !forecastResult.rows) return [];
     const prioridadesPedido: Prioridad[] = ["SIN_STOCK", "URGENTE", "PRONTO"];
@@ -286,6 +340,7 @@ export default function Home() {
   useEffect(() => {
     if (activeTab === "auditoria") loadHistorial();
     if (activeTab === "forecast") loadForecast();
+    if (activeTab === "metricas") loadMetrics();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -418,6 +473,11 @@ export default function Home() {
             className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "forecast" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "forecast" ? { backgroundColor: "#C41230" } : {}}>
             Forecast
+          </button>
+          <button onClick={() => setActiveTab("metricas")}
+            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "metricas" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            style={activeTab === "metricas" ? { backgroundColor: "#C41230" } : {}}>
+            Métricas
           </button>
         </div>
       </div>
@@ -1110,6 +1170,147 @@ export default function Home() {
                       </tbody>
                     </table>
                   </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {/* === TAB: MÉTRICAS === */}
+        {activeTab === "metricas" && (
+          <>
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+              <div>
+                <h2 className="font-bold text-gray-900 text-lg">Métricas</h2>
+                <p className="text-sm text-gray-500 mt-1">Ventas, reputación y conversión, calculados en vivo contra Mercado Libre.</p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+                  {([
+                    { key: "dia", label: "Hoy" },
+                    { key: "semana", label: "7 días" },
+                    { key: "mes", label: "Este mes" },
+                  ] as const).map(({ key, label }) => (
+                    <button key={key}
+                      onClick={() => { setPeriodoMetrics(key); loadMetrics(key); }}
+                      className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${periodoMetrics === key ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {loadingMetrics && <Spinner />}
+              </div>
+            </div>
+
+            {metricsResult && !metricsResult.ok && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                <p className="text-red-600 text-sm">✗ Error: {metricsResult.error}</p>
+              </div>
+            )}
+
+            {metricsResult?.ok && (
+              <>
+                {/* Ventas */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">Ventas</h3>
+                  {metricsResult.ventas?.ok ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                      <div>
+                        <p className="text-sm text-gray-500">Total vendido</p>
+                        <p className="text-xl font-bold text-gray-900">${(metricsResult.ventas.totalVendido ?? 0).toLocaleString("es-CL")}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Unidades</p>
+                        <p className="text-xl font-bold text-gray-900">{metricsResult.ventas.unidades ?? 0}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Órdenes</p>
+                        <p className="text-xl font-bold text-gray-900">{metricsResult.ventas.cantidadOrdenes ?? 0}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Ticket promedio</p>
+                        <p className="text-xl font-bold text-gray-900">${(metricsResult.ventas.ticketPromedio ?? 0).toLocaleString("es-CL")}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.ventas?.error ? ` (${metricsResult.ventas.error})` : ""}.</p>
+                  )}
+                </div>
+
+                {/* Reputación */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">Reputación</h3>
+                  {metricsResult.reputacion?.ok ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                      <div>
+                        <p className="text-sm text-gray-500">Nivel</p>
+                        <p className="text-xl font-bold text-gray-900">{metricsResult.reputacion.levelId ?? "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Power Seller</p>
+                        <p className="text-xl font-bold text-gray-900 capitalize">{metricsResult.reputacion.powerSellerStatus ?? "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Ventas completadas</p>
+                        <p className="text-xl font-bold text-gray-900">{metricsResult.reputacion.ventasCompletadas ?? 0}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Cancelaciones</p>
+                        <p className="text-xl font-bold text-gray-900">{metricsResult.reputacion.ventasCanceladas ?? 0}</p>
+                      </div>
+                      {metricsResult.reputacion.claims && (
+                        <div>
+                          <p className="text-sm text-gray-500">Reclamos ({metricsResult.reputacion.claims.period})</p>
+                          <p className="text-xl font-bold text-gray-900">{metricsResult.reputacion.claims.value} <span className="text-sm font-normal text-gray-400">({(metricsResult.reputacion.claims.rate * 100).toFixed(2)}%)</span></p>
+                        </div>
+                      )}
+                      {metricsResult.reputacion.delayedHandlingTime && (
+                        <div>
+                          <p className="text-sm text-gray-500">Despacho tardío ({metricsResult.reputacion.delayedHandlingTime.period})</p>
+                          <p className="text-xl font-bold text-gray-900">{metricsResult.reputacion.delayedHandlingTime.value} <span className="text-sm font-normal text-gray-400">({(metricsResult.reputacion.delayedHandlingTime.rate * 100).toFixed(2)}%)</span></p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.reputacion?.error ? ` (${metricsResult.reputacion.error})` : ""}.</p>
+                  )}
+                </div>
+
+                {/* Visitas y conversión */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">Visitas y conversión</h3>
+                  {metricsResult.visitas?.ok ? (
+                    <>
+                      <p className="text-sm text-gray-500">Total de visitas en el período: <span className="font-bold text-gray-900">{(metricsResult.visitas.totalVisitas ?? 0).toLocaleString("es-CL")}</span></p>
+                      {(metricsResult.visitas.porPublicacion?.length ?? 0) > 0 && (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-gray-500 border-b border-gray-200">
+                                <th className="py-2 pr-3">Producto</th>
+                                <th className="py-2 pr-3">Visitas</th>
+                                <th className="py-2 pr-3">Ventas</th>
+                                <th className="py-2 pr-3">Conversión</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {metricsResult.visitas.porPublicacion!.map((v) => (
+                                <tr key={v.id} className="border-b border-gray-100 last:border-0">
+                                  <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{v.titulo}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{v.visitas}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{v.ventas}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{v.conversion !== null ? `${v.conversion}%` : "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.visitas?.error ? ` (${metricsResult.visitas.error})` : ""}.</p>
+                  )}
                 </div>
               </>
             )}
