@@ -78,12 +78,28 @@ type VisitasMetrics = {
   porPublicacion?: VisitaPorPublicacion[];
   error?: string;
 };
+type PreguntasMetrics = {
+  ok: boolean;
+  total?: number;
+  sinResponder?: number;
+  tiempoRespuestaPromedioHoras?: number | null;
+  error?: string;
+};
+type ReclamosMetrics = {
+  ok: boolean;
+  total?: number;
+  porStatus?: Record<string, number>;
+  porTipo?: Record<string, number>;
+  error?: string;
+};
 type MetricsApiResult = {
   ok: boolean;
   periodo?: Periodo;
   ventas?: VentasMetrics;
   reputacion?: ReputacionMetrics;
   visitas?: VisitasMetrics;
+  preguntas?: PreguntasMetrics;
+  reclamos?: ReclamosMetrics;
   error?: string;
 } | null;
 
@@ -1310,6 +1326,54 @@ export default function Home() {
                     </>
                   ) : (
                     <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.visitas?.error ? ` (${metricsResult.visitas.error})` : ""}.</p>
+                  )}
+                </div>
+
+                {/* Preguntas */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">Preguntas</h3>
+                  {metricsResult.preguntas?.ok ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                      <div>
+                        <p className="text-sm text-gray-500">Total del período</p>
+                        <p className="text-xl font-bold text-gray-900">{metricsResult.preguntas.total ?? 0}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Sin responder</p>
+                        <p className="text-xl font-bold text-gray-900">{metricsResult.preguntas.sinResponder ?? 0}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Tiempo de respuesta promedio</p>
+                        <p className="text-xl font-bold text-gray-900">
+                          {metricsResult.preguntas.tiempoRespuestaPromedioHoras !== null && metricsResult.preguntas.tiempoRespuestaPromedioHoras !== undefined
+                            ? `${metricsResult.preguntas.tiempoRespuestaPromedioHoras}h`
+                            : "-"}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.preguntas?.error ? ` (${metricsResult.preguntas.error})` : ""}.</p>
+                  )}
+                </div>
+
+                {/* Reclamos */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">Reclamos</h3>
+                  {metricsResult.reclamos?.ok ? (
+                    <>
+                      <p className="text-sm text-gray-500">Total del período: <span className="font-bold text-gray-900">{metricsResult.reclamos.total ?? 0}</span></p>
+                      {metricsResult.reclamos.porStatus && Object.keys(metricsResult.reclamos.porStatus).length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries(metricsResult.reclamos.porStatus).map(([status, cant]) => (
+                            <span key={status} className="text-xs font-medium bg-gray-100 text-gray-700 rounded-full px-3 py-1">
+                              {status}: {cant}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.reclamos?.error ? ` (${metricsResult.reclamos.error})` : ""}.</p>
                   )}
                 </div>
               </>

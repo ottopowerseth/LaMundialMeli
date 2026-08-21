@@ -40,6 +40,22 @@ type VisitasMetrics = {
   error?: string;
 };
 
+type PreguntasMetrics = {
+  ok: boolean;
+  total?: number;
+  sinResponder?: number;
+  tiempoRespuestaPromedioHoras?: number | null;
+  error?: string;
+};
+
+type ReclamosMetrics = {
+  ok: boolean;
+  total?: number;
+  porStatus?: Record<string, number>;
+  porTipo?: Record<string, number>;
+  error?: string;
+};
+
 // Mismo criterio que fetchReferenciaML en audit/analyze/route.ts: límites de
 // período construidos con Date.UTC, no new Date(...) en hora local — para un
 // mes ya cerrado, una construcción en hora local corre el borde del día 1 y
@@ -85,9 +101,11 @@ export async function GET(req: NextRequest) {
     // Ventas primero (no en paralelo con Visitas): el top de publicaciones
     // por ventas del período define qué items consultar en Visitas.
     const ventas = await calcularVentas(mlGet, userId, desde, hasta);
-    const [reputacion, visitas] = await Promise.all([
+    const [reputacion, visitas, preguntas, reclamos] = await Promise.all([
       Promise.resolve(calcularReputacion(user)),
       calcularVisitas(mlGet, userId, desde, hasta, ventas),
+      calcularPreguntas(mlGet, userId, desde, hasta),
+      calcularReclamos(mlGet, userId, desde, hasta),
     ]);
 
     return NextResponse.json({
@@ -98,6 +116,8 @@ export async function GET(req: NextRequest) {
       ventas,
       reputacion,
       visitas,
+      preguntas,
+      reclamos,
     });
   } catch (error) {
     console.error("[metrics]", error);
@@ -252,6 +272,118 @@ async function calcularVisitas(
       totalVisitas: totalData.total_visits ?? 0,
       porPublicacion,
     };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+// ── Preguntas ────────────────────────────────────────────────────────────
+// /questions/search no tiene filtro de fecha en available_filters (confirmado
+// empíricamente) — se trae por status y se filtra por date_created acá. La
+// API sí filtra por status=UNANSWERED, así que "sin responder" no necesita
+// el filtro de fecha del período: es el estado actual, no algo del período.
+async function calcularPreguntas(
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>) => Promise<{ data: T }>,
+  userId: string,
+  desde: Date,
+  hasta: Date
+): Promise<PreguntasMetrics> {
+  try {
+    const { data: sinResponderData } = await mlGet<{ total: number }>("/questions/search", {
+      seller_id: userId,
+      status: "UNANSWERED",
+      limit: 1,
+    });
+
+    // date_created de /questions/search viene en hora Chile (-04:00), no UTC
+    // — hay que normalizar antes de comparar contra desde/hasta (que sí son UTC).
+    let total = 0;
+    let sumaHoras = 0;
+    let respondidas = 0;
+    let offset = 0;
+    while (offset <= 1000) {
+      const { data } = await mlGet<{
+        total: number;
+        questions: { date_created: string; answer: { date_created: string } | null }[];
+      }>("/questions/search", {
+        seller_id: userId,
+        limit: 50,
+        offset,
+        sort_fields: "date_created",
+        sort_types: "DESC",
+      });
+      for (const q of data.questions ?? []) {
+        const fechaPregunta = new Date(q.date_created);
+        if (fechaPregunta < desde || fechaPregunta >= hasta) continue;
+        total++;
+        if (q.answer) {
+          const horas = (new Date(q.answer.date_created).getTime() - fechaPregunta.getTime()) / 3600000;
+          sumaHoras += horas;
+          respondidas++;
+        }
+      }
+      // Como viene ordenado DESC por date_created, en cuanto la más vieja de
+      // la página ya quedó antes de `desde` no hay más preguntas del período
+      // más atrás — se puede cortar sin recorrer el resto del histórico.
+      const masVieja = data.questions?.[data.questions.length - 1];
+      if (!masVieja || new Date(masVieja.date_created) < desde) break;
+      if (offset + (data.questions?.length ?? 0) >= data.total) break;
+      offset += 50;
+    }
+
+    return {
+      ok: true,
+      total,
+      sinResponder: sinResponderData.total ?? 0,
+      tiempoRespuestaPromedioHoras: respondidas > 0 ? Math.round((sumaHoras / respondidas) * 10) / 10 : null,
+    };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+// ── Reclamos (post-purchase) ────────────────────────────────────────────
+// /post-purchase/v1/claims/search ignora silenciosamente cualquier parámetro
+// de fecha probado (date_created.from/to, date_from/to) — confirmado
+// empíricamente: paging.total no cambia con o sin esos params. Por eso se
+// trae todo paginado y se filtra por date_created en el código, igual que
+// Preguntas. Hoy son 234 registros históricos (liviano); si el histórico
+// crece mucho, esto puede volverse la parte más lenta del endpoint — en ese
+// caso conviene cachear el resultado (ej. en Sheets, como ya se hace con
+// logistic_type en ml-sync) en vez de traer todo en cada request.
+async function calcularReclamos(
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>) => Promise<{ data: T }>,
+  userId: string,
+  desde: Date,
+  hasta: Date
+): Promise<ReclamosMetrics> {
+  try {
+    const porStatus: Record<string, number> = {};
+    const porTipo: Record<string, number> = {};
+    let total = 0;
+    let offset = 0;
+    while (offset <= 1000) {
+      const { data } = await mlGet<{
+        paging: { total: number };
+        data: { status: string; type: string; date_created: string }[];
+      }>("/post-purchase/v1/claims/search", {
+        player_role: "respondent",
+        player_user_id: userId,
+        limit: 50,
+        offset,
+      });
+      for (const claim of data.data ?? []) {
+        const fecha = new Date(claim.date_created); // hora Chile (-04:00), Date la normaliza a UTC internamente
+        if (fecha < desde || fecha >= hasta) continue;
+        total++;
+        porStatus[claim.status] = (porStatus[claim.status] ?? 0) + 1;
+        porTipo[claim.type] = (porTipo[claim.type] ?? 0) + 1;
+      }
+      if (!data.data || data.data.length === 0 || offset + data.data.length >= data.paging.total) break;
+      offset += 50;
+    }
+
+    return { ok: true, total, porStatus, porTipo };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
