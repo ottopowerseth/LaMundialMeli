@@ -92,6 +92,26 @@ type ReclamosMetrics = {
   porTipo?: Record<string, number>;
   error?: string;
 };
+type CampanaRoas = {
+  id: number;
+  nombre: string;
+  estado: string;
+  presupuesto: number;
+  clics: number;
+  impresiones: number;
+  ctr: number;
+  costo: number;
+  roas: number;
+  acos: number;
+};
+type RoasMetrics = {
+  ok: boolean;
+  inversionTotal?: number;
+  ventasAtribuidasTotal?: number;
+  roasAgregado?: number | null;
+  campanas?: CampanaRoas[];
+  error?: string;
+};
 type MetricsApiResult = {
   ok: boolean;
   periodo?: Periodo;
@@ -100,6 +120,7 @@ type MetricsApiResult = {
   visitas?: VisitasMetrics;
   preguntas?: PreguntasMetrics;
   reclamos?: ReclamosMetrics;
+  roas?: RoasMetrics;
   error?: string;
 } | null;
 
@@ -1437,6 +1458,69 @@ export default function Home() {
                     </>
                   ) : (
                     <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.reclamos?.error ? ` (${metricsResult.reclamos.error})` : ""}.</p>
+                  )}
+                </div>
+
+                {/* ROAS / Publicidad */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">ROAS / Publicidad</h3>
+                  {metricsResult.roas?.ok ? (
+                    <>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                        <div>
+                          <p className="text-sm text-gray-500">Inversión total</p>
+                          <p className="text-xl font-bold text-gray-900">${(metricsResult.roas.inversionTotal ?? 0).toLocaleString("es-CL")}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">Ventas atribuidas</p>
+                          <p className="text-xl font-bold text-gray-900">${(metricsResult.roas.ventasAtribuidasTotal ?? 0).toLocaleString("es-CL")}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">ROAS agregado</p>
+                          <p className="text-xl font-bold text-gray-900">
+                            {metricsResult.roas.roasAgregado !== null && metricsResult.roas.roasAgregado !== undefined
+                              ? metricsResult.roas.roasAgregado.toFixed(2)
+                              : "-"}
+                          </p>
+                        </div>
+                      </div>
+                      {(metricsResult.roas.campanas?.length ?? 0) > 0 && (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-gray-500 border-b border-gray-200">
+                                <th className="py-2 pr-3">Campaña</th>
+                                <th className="py-2 pr-3">Estado</th>
+                                <th className="py-2 pr-3">Presupuesto</th>
+                                <th className="py-2 pr-3">Clics</th>
+                                <th className="py-2 pr-3">Impresiones</th>
+                                <th className="py-2 pr-3">CTR</th>
+                                <th className="py-2 pr-3">Costo</th>
+                                <th className="py-2 pr-3">ROAS</th>
+                                <th className="py-2 pr-3">ACOS</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {metricsResult.roas.campanas!.map((c) => (
+                                <tr key={c.id} className="border-b border-gray-100 last:border-0">
+                                  <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{c.nombre}</td>
+                                  <td className="py-2 pr-3 text-gray-700 capitalize">{c.estado}</td>
+                                  <td className="py-2 pr-3 text-gray-700">${c.presupuesto.toLocaleString("es-CL")}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.clics}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.impresiones}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.ctr}%</td>
+                                  <td className="py-2 pr-3 text-gray-700">${c.costo.toLocaleString("es-CL")}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.costo > 0 ? c.roas.toFixed(2) : "sin actividad en el período"}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.costo > 0 ? `${c.acos}%` : "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.roas?.error ? ` (${metricsResult.roas.error})` : ""}.</p>
                   )}
                 </div>
               </>

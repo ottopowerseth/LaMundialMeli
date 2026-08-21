@@ -56,6 +56,27 @@ type ReclamosMetrics = {
   error?: string;
 };
 
+type CampanaRoas = {
+  id: number;
+  nombre: string;
+  estado: string;
+  presupuesto: number;
+  clics: number;
+  impresiones: number;
+  ctr: number;
+  costo: number;
+  roas: number;
+  acos: number;
+};
+type RoasMetrics = {
+  ok: boolean;
+  inversionTotal?: number;
+  ventasAtribuidasTotal?: number;
+  roasAgregado?: number | null;
+  campanas?: CampanaRoas[];
+  error?: string;
+};
+
 // Mismo criterio que fetchReferenciaML en audit/analyze/route.ts: límites de
 // período construidos con Date.UTC, no new Date(...) en hora local — para un
 // mes ya cerrado, una construcción en hora local corre el borde del día 1 y
@@ -91,8 +112,8 @@ export async function GET(req: NextRequest) {
       timeout: 8000,
     });
     const budget = createSyncBudget();
-    const mlGet = <T = unknown>(url: string, params?: Record<string, unknown>) =>
-      withMlRetry(() => mlClient.get<T>(url, { params }), { budget });
+    const mlGet = <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) =>
+      withMlRetry(() => mlClient.get<T>(url, { params, headers }), { budget });
 
     const { data: user } = await mlGet<{ id: string; seller_reputation?: Record<string, unknown> }>("/users/me");
     const userId = user.id;
@@ -101,11 +122,12 @@ export async function GET(req: NextRequest) {
     // Ventas primero (no en paralelo con Visitas): el top de publicaciones
     // por ventas del período define qué items consultar en Visitas.
     const ventas = await calcularVentas(mlGet, userId, desde, hasta);
-    const [reputacion, visitas, preguntas, reclamos] = await Promise.all([
+    const [reputacion, visitas, preguntas, reclamos, roas] = await Promise.all([
       Promise.resolve(calcularReputacion(user)),
       calcularVisitas(mlGet, userId, desde, hasta, ventas),
       calcularPreguntas(mlGet, userId, desde, hasta),
       calcularReclamos(mlGet, userId, desde, hasta),
+      calcularRoas(mlGet, desde, hasta),
     ]);
 
     return NextResponse.json({
@@ -118,6 +140,7 @@ export async function GET(req: NextRequest) {
       visitas,
       preguntas,
       reclamos,
+      roas,
     });
   } catch (error) {
     console.error("[metrics]", error);
@@ -131,7 +154,7 @@ export async function GET(req: NextRequest) {
 // y no filtra por status, así que para que el número cuadre con Auditoría
 // hace falta la misma fuente que usa Auditoría.
 async function calcularVentas(
-  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>) => Promise<{ data: T }>,
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
   userId: string,
   desde: Date,
   hasta: Date
@@ -218,7 +241,7 @@ const TOP_PUBLICACIONES_VISITAS = 10;
 // top de publicaciones por ventas del período para no disparar decenas de
 // requests — no tiene sentido pedir visitas de publicaciones sin ventas acá.
 async function calcularVisitas(
-  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>) => Promise<{ data: T }>,
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
   userId: string,
   desde: Date,
   hasta: Date,
@@ -283,7 +306,7 @@ async function calcularVisitas(
 // API sí filtra por status=UNANSWERED, así que "sin responder" no necesita
 // el filtro de fecha del período: es el estado actual, no algo del período.
 async function calcularPreguntas(
-  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>) => Promise<{ data: T }>,
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
   userId: string,
   desde: Date,
   hasta: Date
@@ -352,7 +375,7 @@ async function calcularPreguntas(
 // caso conviene cachear el resultado (ej. en Sheets, como ya se hace con
 // logistic_type en ml-sync) en vez de traer todo en cada request.
 async function calcularReclamos(
-  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>) => Promise<{ data: T }>,
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
   userId: string,
   desde: Date,
   hasta: Date
@@ -384,6 +407,92 @@ async function calcularReclamos(
     }
 
     return { ok: true, total, porStatus, porTipo };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+// ── ROAS / Publicidad (Product Ads) ─────────────────────────────────────
+// Path confirmado empíricamente: la doc pública apuntaba a
+// /advertising/advertisers/{id}/product_ads/campaigns (sin /marketplace ni
+// /search), que devuelve 404 vacío — ML migró el endpoint. El correcto es
+// /marketplace/advertising/{site}/advertisers/{id}/product_ads/campaigns/search.
+// advertiser_id no se hardcodea: se resuelve en runtime vía
+// /advertising/advertisers, mismo criterio que userId con /users/me — es un
+// ID de cuenta, no algo que deba fijarse en el código.
+//
+// A diferencia de Visits, este endpoint SÍ tolera date_to en el futuro
+// (confirmado empíricamente) — no hace falta el cap que usa calcularVisitas.
+//
+// roas/acos por campaña vienen calculados por ML (no recalcular, evita
+// divergencias si ML cambia su fórmula). El roasAgregado del período sí es
+// un cálculo propio (total_amount / cost sumado entre campañas) porque no
+// existe un endpoint de resumen agregado a nivel cuenta — no confundir con
+// los roas por campaña, que son valores directos de ML.
+const ROAS_METRICS_FIELDS = "clicks,prints,ctr,cost,cpc,acos,roas,organic_units_quantity,organic_units_amount,direct_amount,indirect_amount,total_amount";
+
+async function calcularRoas(
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
+  desde: Date,
+  hasta: Date
+): Promise<RoasMetrics> {
+  try {
+    const { data: advertisersData } = await mlGet<{ advertisers: { advertiser_id: number; site_id: string }[] }>(
+      "/advertising/advertisers",
+      { product_id: "PADS" },
+      { "Api-Version": "1" }
+    );
+    const advertiser = advertisersData.advertisers?.[0];
+    if (!advertiser) return { ok: false, error: "No hay advertiser de Product Ads asociado a esta cuenta" };
+
+    const dateFrom = desde.toISOString().slice(0, 10);
+    const dateTo = hasta.toISOString().slice(0, 10);
+
+    const { data } = await mlGet<{
+      results: {
+        id: number;
+        name: string;
+        status: string;
+        budget: number;
+        metrics?: {
+          clicks: number;
+          prints: number;
+          ctr: number;
+          cost: number;
+          acos: number;
+          roas: number;
+          total_amount: number;
+        };
+      }[];
+    }>(
+      `/marketplace/advertising/${advertiser.site_id}/advertisers/${advertiser.advertiser_id}/product_ads/campaigns/search`,
+      { date_from: dateFrom, date_to: dateTo, metrics: ROAS_METRICS_FIELDS },
+      { "Api-Version": "1", "Content-Type": "application/json" }
+    );
+
+    const campanas: CampanaRoas[] = (data.results ?? []).map((c) => ({
+      id: c.id,
+      nombre: c.name,
+      estado: c.status,
+      presupuesto: c.budget,
+      clics: c.metrics?.clicks ?? 0,
+      impresiones: c.metrics?.prints ?? 0,
+      ctr: c.metrics?.ctr ?? 0,
+      costo: c.metrics?.cost ?? 0,
+      roas: c.metrics?.roas ?? 0,
+      acos: c.metrics?.acos ?? 0,
+    }));
+
+    const inversionTotal = campanas.reduce((sum, c) => sum + c.costo, 0);
+    const ventasAtribuidasTotal = (data.results ?? []).reduce((sum, c) => sum + (c.metrics?.total_amount ?? 0), 0);
+
+    return {
+      ok: true,
+      inversionTotal,
+      ventasAtribuidasTotal,
+      roasAgregado: inversionTotal > 0 ? Math.round((ventasAtribuidasTotal / inversionTotal) * 100) / 100 : null,
+      campanas,
+    };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
