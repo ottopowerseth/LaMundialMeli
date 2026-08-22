@@ -17,7 +17,25 @@ type VentasMetrics = {
   cantidadOrdenes?: number;
   ticketPromedio?: number;
   ventasPorItem?: Record<string, { titulo: string; unidades: number; monto: number }>;
+  ranking?: ProductoRanking[];
+  comparacion?: ComparacionPeriodo | null;
   error?: string;
+};
+
+type ProductoRanking = { id: string; titulo: string; monto: number; unidades: number };
+
+// Variación % genérica entre un valor actual y uno del período anterior —
+// null cuando el anterior es 0 (división por cero no tiene una variación
+// % con sentido; el cliente debe mostrar "sin datos previos", no "+Infinity%").
+type VariacionPct = { actual: number; anterior: number; variacionPct: number | null };
+
+// Reutilizable por cualquier sección futura que quiera comparar contra el
+// período anterior (hoy solo Ventas la usa) — de ahí que viva a nivel de
+// módulo y no anidada dentro de VentasMetrics.
+type ComparacionPeriodo = {
+  totalVendido: VariacionPct;
+  unidades: VariacionPct;
+  ticketPromedio: VariacionPct;
 };
 
 type ReputacionMetrics = {
@@ -99,6 +117,22 @@ function rangoFechas(periodo: Periodo): { desde: Date; hasta: Date } {
   return { desde, hasta };
 }
 
+// Rango inmediatamente anterior de igual duración — reutilizable por
+// cualquier sección de Métricas que quiera comparar contra el período previo
+// (hoy solo la usa Ventas, ver calcularComparacionVentas). Para "mes" no se
+// resta la duración en ms (un mes anterior puede tener 28-31 días, distinto
+// al actual) — se calcula el mes calendario anterior explícitamente. Para
+// "dia"/"semana", restar la duración exacta ya da el período correcto.
+function rangoAnterior(periodo: Periodo, desde: Date, hasta: Date): { desde: Date; hasta: Date } {
+  if (periodo === "mes") {
+    const anteriorDesde = new Date(Date.UTC(desde.getUTCFullYear(), desde.getUTCMonth() - 1, 1));
+    const anteriorHasta = new Date(Date.UTC(desde.getUTCFullYear(), desde.getUTCMonth(), 1));
+    return { desde: anteriorDesde, hasta: anteriorHasta };
+  }
+  const duracionMs = hasta.getTime() - desde.getTime();
+  return { desde: new Date(desde.getTime() - duracionMs), hasta: desde };
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const periodoParam = searchParams.get("periodo");
@@ -122,13 +156,26 @@ export async function GET(req: NextRequest) {
     // Ventas primero (no en paralelo con Visitas): el top de publicaciones
     // por ventas del período define qué items consultar en Visitas.
     const ventas = await calcularVentas(mlGet, userId, desde, hasta);
-    const [reputacion, visitas, preguntas, reclamos, roas] = await Promise.all([
+    const { desde: desdeAnterior, hasta: hastaAnterior } = rangoAnterior(periodo, desde, hasta);
+    const [reputacion, visitas, preguntas, reclamos, roas, ventasAnterior] = await Promise.all([
       Promise.resolve(calcularReputacion(user)),
       calcularVisitas(mlGet, userId, desde, hasta, ventas),
       calcularPreguntas(mlGet, userId, desde, hasta),
       calcularReclamos(mlGet, userId, desde, hasta),
       calcularRoas(mlGet, desde, hasta),
+      calcularVentas(mlGet, userId, desdeAnterior, hastaAnterior),
     ]);
+
+    if (ventas.ok) {
+      ventas.ranking = armarRanking(ventas.ventasPorItem);
+      ventas.comparacion = ventasAnterior.ok
+        ? {
+            totalVendido: calcularVariacionPct(ventas.totalVendido ?? 0, ventasAnterior.totalVendido ?? 0),
+            unidades: calcularVariacionPct(ventas.unidades ?? 0, ventasAnterior.unidades ?? 0),
+            ticketPromedio: calcularVariacionPct(ventas.ticketPromedio ?? 0, ventasAnterior.ticketPromedio ?? 0),
+          }
+        : null;
+    }
 
     return NextResponse.json({
       ok: true,
@@ -146,6 +193,33 @@ export async function GET(req: NextRequest) {
     console.error("[metrics]", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
+}
+
+const TOP_RANKING_PRODUCTOS = 10;
+
+// Top N productos por monto vendido — deriva de ventasPorItem, que ya se
+// calcula en calcularVentas para alimentar el top de Visitas. No hace falta
+// ninguna llamada nueva a ML ni cambio de sync: el detalle por item ya
+// viene desagregado en /orders/search (order_items).
+function armarRanking(
+  ventasPorItem: Record<string, { titulo: string; unidades: number; monto: number }> | undefined
+): ProductoRanking[] {
+  if (!ventasPorItem) return [];
+  return Object.entries(ventasPorItem)
+    .map(([id, info]) => ({ id, titulo: info.titulo, monto: info.monto, unidades: info.unidades }))
+    .sort((a, b) => b.monto - a.monto)
+    .slice(0, TOP_RANKING_PRODUCTOS);
+}
+
+// Variación % genérica actual vs. anterior — reutilizable por cualquier
+// sección que agregue comparación de período más adelante (ver
+// ComparacionPeriodo). null cuando el valor anterior es 0: no hay una
+// variación % con sentido para mostrar (evita "+Infinity%" o división por 0).
+function calcularVariacionPct(actual: number, anterior: number): VariacionPct {
+  const variacionPct = anterior > 0
+    ? Math.round(((actual - anterior) / anterior) * 1000) / 10
+    : null;
+  return { actual, anterior, variacionPct };
 }
 
 // ── Ventas ───────────────────────────────────────────────────────────────

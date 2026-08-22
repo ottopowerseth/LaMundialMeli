@@ -52,12 +52,25 @@ type ForecastApiResult = {
 } | null;
 
 type Periodo = "dia" | "semana" | "mes";
+// Variación % genérica actual vs. período anterior — mismo shape que
+// calcularVariacionPct en api/metrics/route.ts. null cuando no hay dato
+// del período anterior para comparar (evita mostrar un % sin sentido).
+type VariacionPct = { actual: number; anterior: number; variacionPct: number | null };
+type ComparacionPeriodo = {
+  totalVendido: VariacionPct;
+  unidades: VariacionPct;
+  ticketPromedio: VariacionPct;
+};
+type ProductoRanking = { id: string; titulo: string; monto: number; unidades: number };
+
 type VentasMetrics = {
   ok: boolean;
   totalVendido?: number;
   unidades?: number;
   cantidadOrdenes?: number;
   ticketPromedio?: number;
+  ranking?: ProductoRanking[];
+  comparacion?: ComparacionPeriodo | null;
   error?: string;
 };
 type ReputacionMetrics = {
@@ -196,6 +209,24 @@ function Spinner() {
 
 function formatCLP(n: number) {
   return "$" + Math.round(n).toLocaleString("es-CL");
+}
+
+// Reutilizable por cualquier métrica que muestre comparación de período
+// (hoy solo Ventas, ver ComparacionPeriodo en api/metrics/route.ts).
+function VariacionBadge({ variacion }: { variacion: VariacionPct | undefined }) {
+  if (!variacion || variacion.variacionPct === null) {
+    return <span className="text-xs text-gray-400">— sin dato previo</span>;
+  }
+  const { variacionPct } = variacion;
+  const subio = variacionPct > 0;
+  const igual = variacionPct === 0;
+  const color = igual ? "text-gray-400" : subio ? "text-green-600" : "text-red-600";
+  const flecha = igual ? "→" : subio ? "▲" : "▼";
+  return (
+    <span className={`text-xs font-semibold ${color}`}>
+      {flecha} {subio ? "+" : ""}{variacionPct}% <span className="font-normal text-gray-400">vs. período anterior</span>
+    </span>
+  );
 }
 
 type FileZone = { key: string; label: string; hint: string };
@@ -1405,10 +1436,12 @@ export default function Home() {
                       <div>
                         <p className="text-sm text-gray-500">Total vendido</p>
                         <p className="text-xl font-bold text-gray-900">${(metricsResult.ventas.totalVendido ?? 0).toLocaleString("es-CL")}</p>
+                        <VariacionBadge variacion={metricsResult.ventas.comparacion?.totalVendido} />
                       </div>
                       <div>
                         <p className="text-sm text-gray-500">Unidades</p>
                         <p className="text-xl font-bold text-gray-900">{metricsResult.ventas.unidades ?? 0}</p>
+                        <VariacionBadge variacion={metricsResult.ventas.comparacion?.unidades} />
                       </div>
                       <div>
                         <p className="text-sm text-gray-500">Órdenes</p>
@@ -1417,8 +1450,44 @@ export default function Home() {
                       <div>
                         <p className="text-sm text-gray-500">Ticket promedio</p>
                         <p className="text-xl font-bold text-gray-900">${(metricsResult.ventas.ticketPromedio ?? 0).toLocaleString("es-CL")}</p>
+                        <VariacionBadge variacion={metricsResult.ventas.comparacion?.ticketPromedio} />
                       </div>
                     </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.ventas?.error ? ` (${metricsResult.ventas.error})` : ""}.</p>
+                  )}
+                </div>
+
+                {/* Ranking de productos */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">Ranking de productos</h3>
+                  {metricsResult.ventas?.ok ? (
+                    (metricsResult.ventas.ranking?.length ?? 0) > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-gray-500 border-b border-gray-200">
+                              <th className="py-2 pr-3">#</th>
+                              <th className="py-2 pr-3">Producto</th>
+                              <th className="py-2 pr-3 text-right">Monto</th>
+                              <th className="py-2 pr-3 text-right">Unidades</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {metricsResult.ventas.ranking!.map((p, i) => (
+                              <tr key={p.id} className="border-b border-gray-100 last:border-0">
+                                <td className="py-2 pr-3 text-gray-400">{i + 1}</td>
+                                <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{p.titulo}</td>
+                                <td className="py-2 pr-3 text-right text-gray-900 font-semibold">{formatCLP(p.monto)}</td>
+                                <td className="py-2 pr-3 text-right text-gray-700">{p.unidades}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-400">Sin ventas en el período.</p>
+                    )
                   ) : (
                     <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.ventas?.error ? ` (${metricsResult.ventas.error})` : ""}.</p>
                   )}
