@@ -142,6 +142,7 @@ type AuditResult = {
   ventas_netas: number;
   comisiones_ml: number;
   comisiones_mp: number;
+  comisiones_mp_px: number;
   total_comisiones: number;
   recuperable: number;
   neto_recibido_mp: number;
@@ -152,11 +153,22 @@ type AuditResult = {
   errores: TransaccionError[];
   resumen: string;
   detalle_errores: string[];
+  error_cobertura?: string;
 };
 
 type ReferenciaML = { ventasBrutas: number; cantidadVentas: number } | null;
 
-type AuditApiResult = { ok: boolean; mes?: string; result?: AuditResult; referenciaML?: ReferenciaML; error?: string } | null;
+type MesDetectado = { year: number; month: number; count: number };
+
+type AuditApiResult = {
+  ok: boolean;
+  mes?: string;
+  result?: AuditResult;
+  referenciaML?: ReferenciaML;
+  error?: string;
+  mesesML?: MesDetectado[];
+  mesesMP?: MesDetectado[];
+} | null;
 
 type AuditHistorialRow = {
   mes: string;
@@ -222,6 +234,8 @@ export default function Home() {
   const [auditFiles, setAuditFiles] = useState<Record<string, File | null>>({
     csv_mp: null, facturacion_ml: null, notas_credito_ml: null, notas_credito: null, flex_credito: null, flex_debito: null,
   });
+  const [mesesDetectados, setMesesDetectados] = useState<{ ml: MesDetectado[]; mp: MesDetectado[] } | null>(null);
+  const [detectandoMeses, setDetectandoMeses] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
   const [historial, setHistorial] = useState<AuditHistorialRow[]>([]);
@@ -384,6 +398,30 @@ export default function Home() {
     if (activeTab === "metricas") loadMetrics();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  // Detecta los meses reales contenidos en los archivos de Facturación ML/MP
+  // apenas se suben — el nombre del archivo puede no coincidir con su
+  // contenido (Fase 1 de validación de Auditoría lo confirmó), así que el mes
+  // a auditar debe salir de las fechas reales, no de lo que el usuario adivine.
+  useEffect(() => {
+    const mlFile = auditFiles.facturacion_ml;
+    const mpFile = auditFiles.csv_mp;
+    if (!mlFile && !mpFile) {
+      setMesesDetectados(null);
+      return;
+    }
+    const fd = new FormData();
+    if (mlFile) fd.append("file", mlFile);
+    if (mpFile) fd.append("file", mpFile);
+    setDetectandoMeses(true);
+    fetch("/api/audit/detect-meses", { method: "POST", body: fd })
+      .then(res => res.json())
+      .then(json => {
+        if (json.ok) setMesesDetectados({ ml: json.mesesML ?? [], mp: json.mesesMP ?? [] });
+      })
+      .catch(() => setMesesDetectados(null))
+      .finally(() => setDetectandoMeses(false));
+  }, [auditFiles.facturacion_ml, auditFiles.csv_mp]);
 
   async function handleSync() {
     setSyncing(true);
@@ -835,6 +873,35 @@ export default function Home() {
                 <input type="month" value={mes} onChange={e => setMes(e.target.value)}
                   className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:border-transparent"
                   style={{ "--tw-ring-color": "#C41230" } as CSSProperties} />
+
+                {/* Meses detectados por contenido real del archivo (no por su nombre) */}
+                {detectandoMeses && <p className="text-xs text-gray-400 mt-1.5">Detectando meses en los archivos...</p>}
+                {!detectandoMeses && mesesDetectados && (mesesDetectados.ml.length > 0 || mesesDetectados.mp.length > 0) && (
+                  <div className="mt-2 text-xs">
+                    <p className="text-gray-500 mb-1">Meses detectados en el contenido de los archivos (el nombre del archivo puede no coincidir):</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[...new Map(
+                        [...mesesDetectados.ml, ...mesesDetectados.mp].map(m => [`${m.year}-${m.month}`, m])
+                      ).values()]
+                        .sort((a, b) => a.year - b.year || a.month - b.month)
+                        .map(m => {
+                          const key = `${m.year}-${String(m.month).padStart(2, "0")}`;
+                          const enML = mesesDetectados.ml.some(x => x.year === m.year && x.month === m.month);
+                          const enMP = mesesDetectados.mp.some(x => x.year === m.year && x.month === m.month);
+                          return (
+                            <button key={key} onClick={() => setMes(key)}
+                              className={`px-2 py-1 rounded-lg border ${mes === key ? "border-red-400 bg-red-50 text-red-700" : "border-gray-300 text-gray-600 hover:border-gray-400"}`}>
+                              {key} {enML && enMP ? "(ML+MP)" : enML ? "(solo ML)" : "(solo MP)"}
+                            </button>
+                          );
+                        })}
+                    </div>
+                    {mesesDetectados.ml.length > 0 && mesesDetectados.mp.length > 0 &&
+                      !mesesDetectados.ml.some(a => mesesDetectados.mp.some(b => a.year === b.year && a.month === b.month)) && (
+                        <p className="text-red-600 mt-1.5">⚠ ML y MP no comparten ningún mes en común — el análisis va a rechazar el cálculo.</p>
+                      )}
+                  </div>
+                )}
               </div>
 
               {/* Zonas de archivo */}
@@ -881,6 +948,11 @@ export default function Home() {
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
                 {!auditResult.ok ? (
                   <p className="text-red-600 text-sm">✗ Error: {auditResult.error}</p>
+                ) : auditResult.result?.error_cobertura ? (
+                  <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                    <p className="text-sm font-semibold text-red-700">✗ No se pudo calcular: mismatch de período entre archivos</p>
+                    <p className="text-sm text-red-600 mt-1.5">{auditResult.result.error_cobertura}</p>
+                  </div>
                 ) : auditResult.result && (
                   <>
                     <div>
@@ -906,6 +978,20 @@ export default function Home() {
                         </div>
                       ))}
                     </div>
+
+                    {/* Desglose PX: incluido en Comisiones MP de arriba, pero
+                        mostrado aparte porque su clasificación como ML es una
+                        asunción del usuario, no verificada por cruce de datos
+                        (ver hallazgo Fase 1 de validación de Auditoría). */}
+                    {auditResult.result.comisiones_mp_px !== 0 && (
+                      <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-3 text-sm">
+                        <span className="font-semibold text-yellow-800">PX — asumido ML, no verificado: </span>
+                        <span className="text-yellow-700">{formatCLP(auditResult.result.comisiones_mp_px)}</span>
+                        <span className="text-yellow-600 text-xs block mt-1">
+                          Ya incluido en Comisiones MP. No se pudo confirmar por cruce de datos si "PX" es tráfico del marketplace de ML o de otro canal (ej. Shopify) — se asumió ML según lo indicado por el usuario.
+                        </span>
+                      </div>
+                    )}
 
                     {/* Comparación contra dashboard de Mercado Libre */}
                     {auditResult.referenciaML && (() => {

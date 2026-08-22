@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { parseAuditFiles, calculateAudit } from "@/lib/audit";
+import { parseAuditFiles, calculateAudit, detectarMesesEnArchivo } from "@/lib/audit";
 import { ensureSheets, appendSheet, readSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
@@ -70,8 +70,16 @@ export async function POST(request: Request) {
     }
 
     const auditData = parseAuditFiles(files);
+    const mesesML = detectarMesesEnArchivo(auditData.facturacionML);
+    const mesesMP = detectarMesesEnArchivo(auditData.facturacionMP);
     const referenciaML = await fetchReferenciaML(mes);
     const result = calculateAudit(mes, auditData, referenciaML?.ventasBrutas);
+
+    // Si hay mismatch de cobertura, el análisis no corrió el cálculo (ver
+    // calculateAudit) — no se guarda una fila vacía/engañosa en Sheets.
+    if (result.error_cobertura) {
+      return NextResponse.json({ ok: true, mes, result, referenciaML, mesesML, mesesMP });
+    }
 
     await ensureSheets(["Auditoría"]);
 
@@ -79,6 +87,7 @@ export async function POST(request: Request) {
       "Mes", "Ventas Brutas", "Ventas Netas", "Comisiones ML", "Comisiones MP",
       "Total Comisiones", "Recuperable", "Neto Recibido MP", "Tasa Efectiva %",
       "Flex Crédito", "Flex Débito", "Errores", "Resumen", "Analizado",
+      "Comisiones MP (PX, no verificado)",
     ];
 
     try {
@@ -103,9 +112,10 @@ export async function POST(request: Request) {
       result.errores_count,
       result.resumen,
       new Date().toLocaleString("es-CL"),
+      result.comisiones_mp_px,
     ]]);
 
-    return NextResponse.json({ ok: true, mes, result, referenciaML });
+    return NextResponse.json({ ok: true, mes, result, referenciaML, mesesML, mesesMP });
   } catch (error) {
     console.error("[audit/analyze]", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });

@@ -32,6 +32,7 @@ export type AuditResult = {
   ventas_netas: number;
   comisiones_ml: number;
   comisiones_mp: number;
+  comisiones_mp_px: number;
   total_comisiones: number;
   recuperable: number;
   neto_recibido_mp: number;
@@ -42,7 +43,131 @@ export type AuditResult = {
   errores: TransaccionError[];
   resumen: string;
   detalle_errores: string[];
+  error_cobertura?: string;
 };
+
+const MESES_ES: Record<string, number> = {
+  ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6,
+  jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
+};
+
+// Extrae {año, mes} de un valor de fecha en cualquiera de los formatos que
+// entregan los reportes de ML/MP (Date nativo, ISO, dd/mm/yyyy, dd-mm-yyyy,
+// "15-ago-2026"). Devuelve null si no se pudo parsear — mismo set de formatos
+// que isInMonth() en calculateAudit, pero sin filtrar por un mes objetivo.
+export function extraerAnioMes(dateVal: unknown): { year: number; month: number } | null {
+  if (!dateVal) return null;
+  if (dateVal instanceof Date) {
+    return { year: dateVal.getFullYear(), month: dateVal.getMonth() + 1 };
+  }
+  const s = String(dateVal).trim();
+  if (!s) return null;
+  const iso = s.match(/(\d{4})-(\d{2})-\d{2}/);
+  if (iso) return { year: +iso[1], month: +iso[2] };
+  const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (dmy) {
+    const y = +dmy[3] < 100 ? 2000 + +dmy[3] : +dmy[3];
+    return { year: y, month: +dmy[2] };
+  }
+  const dmy2 = s.match(/^(\d{1,2})-(\d{2})-(\d{4})/);
+  if (dmy2) return { year: +dmy2[3], month: +dmy2[2] };
+  const sp = s.match(/(\d{1,2})[- ](ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[- ](\d{4})/i);
+  if (sp) return { year: +sp[3], month: MESES_ES[sp[2].toLowerCase()] };
+  try {
+    const d = new Date(s);
+    if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
+      return { year: d.getFullYear(), month: d.getMonth() + 1 };
+    }
+  } catch { /* ignorar */ }
+  return null;
+}
+
+function getValRaw(row: Record<string, unknown>, ...patterns: string[]): unknown {
+  const keys = Object.keys(row);
+  for (const p of patterns) {
+    const np = normBasico(p);
+    const match = keys.find(k => normBasico(k).includes(np));
+    if (match) return row[match];
+  }
+  return undefined;
+}
+
+// Versión standalone de norm() (sin depender del closure de calculateAudit),
+// usada por las funciones de detección de cobertura que corren ANTES de
+// calcular el análisis.
+function normBasico(s: string): string {
+  const s2 = s
+    .replace(/Ã¡/g, "a").replace(/Ã©/g, "e").replace(/Ã­/g, "i")
+    .replace(/Ã³/g, "o").replace(/Ãº/g, "u").replace(/Ã±/g, "n")
+    .replace(/Â°/g, "°");
+  return s2.toLowerCase()
+    .replace(/[áàã]/g, "a").replace(/[éè]/g, "e").replace(/[íì]/g, "i")
+    .replace(/[óòô]/g, "o").replace(/[úùü]/g, "u").replace(/ñ/g, "n");
+}
+
+export type CoberturaMeses = { year: number; month: number; count: number }[];
+
+// Detecta qué meses reales (por contenido, no por nombre de archivo) están
+// presentes en un dataset ya parseado, contando filas por mes.
+export function detectarMesesEnArchivo(rows: Record<string, unknown>[] | undefined): CoberturaMeses {
+  if (!rows?.length) return [];
+  const counts = new Map<string, { year: number; month: number; count: number }>();
+  for (const row of rows) {
+    const am = extraerAnioMes(getValRaw(row, "fecha del cargo", "fecha"));
+    if (!am) continue;
+    const key = `${am.year}-${am.month}`;
+    const entry = counts.get(key);
+    if (entry) entry.count++;
+    else counts.set(key, { ...am, count: 1 });
+  }
+  return [...counts.values()].sort((a, b) => a.year - b.year || a.month - b.month);
+}
+
+// Fase 1 (validación) detectó que Facturación ML y Facturación MP pueden
+// venir con nombres de mes iguales pero contenido de rango real distinto
+// (ej. ML = solo 12 días de un mes, MP = dos meses completos). Si eso pasa,
+// calcular una tasa de comisión mezclando ambos períodos da un número
+// imposible (ej. 413% de comisión). Esta función compara la cobertura real
+// de ambos archivos ANTES de calcular nada.
+export function validarCoberturaMeses(
+  coberturaML: CoberturaMeses,
+  coberturaMP: CoberturaMeses,
+  mesObjetivo: string
+): string | null {
+  const [yearStr, monthStr] = mesObjetivo.split("-");
+  const year = parseInt(yearStr);
+  const month = parseInt(monthStr);
+
+  const mlDelMes = coberturaML.find(m => m.year === year && m.month === month);
+  const mpDelMes = coberturaMP.find(m => m.year === year && m.month === month);
+
+  const fmtCobertura = (c: CoberturaMeses) =>
+    c.length === 0 ? "sin datos" : c.map(m => `${m.year}-${String(m.month).padStart(2, "0")} (${m.count} filas)`).join(", ");
+
+  if (coberturaML.length > 0 && !mlDelMes) {
+    return `Facturación ML no contiene ninguna fila del mes ${mesObjetivo}. ` +
+      `El archivo cubre: ${fmtCobertura(coberturaML)}. ` +
+      `Revisá si el archivo corresponde al mes que estás analizando (el nombre del archivo puede no coincidir con su contenido real).`;
+  }
+  if (coberturaMP.length > 0 && !mpDelMes) {
+    return `Facturación MP no contiene ninguna fila del mes ${mesObjetivo}. ` +
+      `El archivo cubre: ${fmtCobertura(coberturaMP)}. ` +
+      `Revisá si el archivo corresponde al mes que estás analizando (el nombre del archivo puede no coincidir con su contenido real).`;
+  }
+
+  // Ambos tienen datos del mes objetivo, pero si la cantidad de días distintos
+  // cubiertos difiere sustancialmente entre archivos (ej. ML solo trae medio
+  // mes, MP trae el mes completo), la tasa de comisión mezcla dos períodos de
+  // tamaño distinto y da un número engañoso — mismo problema raíz que detectó
+  // la Fase 1 (413% de comisión). Se bloquea igual que el caso anterior.
+  if (coberturaML.length > 1 || coberturaMP.length > 1) {
+    return `Los archivos no cubren exactamente el mismo período: ` +
+      `ML cubre ${fmtCobertura(coberturaML)}; MP cubre ${fmtCobertura(coberturaMP)}. ` +
+      `No se puede calcular una tasa de comisión confiable mezclando períodos de distinto tamaño — revisá que ambos archivos correspondan al mismo rango de fechas.`;
+  }
+
+  return null;
+}
 
 // ── Parsers ──────────────────────────────────────────────────────────────────
 
@@ -156,11 +281,47 @@ function splitLine(line: string, sep: string): string[] {
 
 // ── Calculator ────────────────────────────────────────────────────────────────
 
+function auditResultVacio(detalle_errores: string[], error_cobertura?: string): AuditResult {
+  return {
+    ventas_brutas: 0,
+    ventas_netas: 0,
+    comisiones_ml: 0,
+    comisiones_mp: 0,
+    comisiones_mp_px: 0,
+    total_comisiones: 0,
+    recuperable: 0,
+    neto_recibido_mp: 0,
+    tasa_efectiva: 0,
+    flex_credito: 0,
+    flex_debito: 0,
+    errores_count: 0,
+    errores: [],
+    resumen: error_cobertura ?? "No se pudo calcular el análisis.",
+    detalle_errores,
+    error_cobertura,
+  };
+}
+
 export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: number): AuditResult {
   const [yearStr, monthStr] = mes.split("-");
   const year = parseInt(yearStr);
   const month = parseInt(monthStr);
   const detalle_errores: string[] = [];
+
+  // ── Validación de cobertura de período (Fase 1: hallazgo crítico) ─────────
+  // Antes de calcular cualquier tasa/comisión, verificar que Facturación ML y
+  // Facturación MP cubran el mismo rango real de fechas. Si no, cualquier
+  // tasa resultante mezcla períodos de distinto tamaño y no es confiable
+  // (ver ejemplo real: ML con 12 días de un mes dio una tasa de 413%).
+  const coberturaML = detectarMesesEnArchivo(data.facturacionML);
+  const coberturaMP = detectarMesesEnArchivo(data.facturacionMP);
+  const errorCobertura = validarCoberturaMeses(coberturaML, coberturaMP, mes);
+  if (errorCobertura) {
+    return auditResultVacio(
+      [`[DIAG] Cobertura ML: ${JSON.stringify(coberturaML)}`, `[DIAG] Cobertura MP: ${JSON.stringify(coberturaMP)}`],
+      errorCobertura
+    );
+  }
 
   function parseCLP(val: unknown): number {
     if (typeof val === "number") return Math.round(val);
@@ -337,6 +498,7 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
 
   // ── Procesar Facturación MP ────────────────────────────────────────────────
   let comisiones_mp = 0;
+  let comisiones_mp_px = 0;
   let neto_recibido_mp = 0;
   let ventas_brutas_mp = 0;
 
@@ -366,10 +528,19 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
       const valorCargo = parseCLP(getVal(row, "valor del cargo"));
       const valorOperacion = parseCLP(getVal(row, "valor de la operacion", "valor de la operación"));
       const operacionRelacionada = String(getVal(row, "operacion relacionada", "operación relacionada") ?? "").trim();
-      // "Checkout" a secas = marketplace de Mercado Libre. "CHO API TARJETAS SHOPIFY" y
-      // "Link de pago" son otros canales (tienda propia/Shopify) que no se auditan aquí.
+      // "Checkout" a secas = marketplace de Mercado Libre, confirmado. "PX" se
+      // trata también como marketplace de ML por asunción del usuario (Otto,
+      // dueño de la cuenta) — NO se pudo verificar por cruce de datos en la
+      // Fase 1 de validación (el campo "Cliente" del CSV no coincidió con
+      // ningún comprador real de /orders/search, ni siquiera para filas
+      // "Checkout" que sí son ML con certeza, así que ese cruce no sirvió de
+      // prueba). Por eso "PX" se trackea aparte (comisiones_mp_px) y se
+      // muestra etiquetado como "asumido, no verificado" en vez de mezclarse
+      // invisible en comisiones_mp. "Link de pago" sigue excluido (Shopify).
       const tipoPago = norm(String(getVal(row, "tipo de pago") ?? ""));
-      const esCanalML = tipoPago === "checkout";
+      const esCheckout = tipoPago === "checkout";
+      const esPX = tipoPago === "px";
+      const esCanalML = esCheckout || esPX;
 
       const esAnulacion = cargoAnula !== "" || detalle.includes("anulacion del cargo");
       const esAnuladoEnFactura = estado.includes("anulado en factura");
@@ -379,11 +550,13 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
       if (esAnulacion) {
         // valorCargo viene negativo en las anulaciones → reduce comisión ya sumada
         comisiones_mp += valorCargo;
+        if (esPX) comisiones_mp_px += valorCargo;
         continue;
       }
 
       if (detalle.includes("cobrar con mercado pago") || detalle.includes("cuotas")) {
         comisiones_mp += valorCargo;
+        if (esPX) comisiones_mp_px += valorCargo;
       }
 
       // Neto recibido MP: una vez por operación relacionada, ignorando anuladas.
@@ -505,6 +678,9 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
     `Mes ${mes}: ventas brutas ${clp(ventas_brutas)}.`,
     `Com. ML ${clp(comisiones_ml)} · Com. MP ${clp(comisiones_mp)} · Total ${clp(total_comisiones)} (${tasa_efectiva}%).`,
   ];
+  if (comisiones_mp_px !== 0) {
+    partes.push(`(de los cuales PX — asumido ML, no verificado: ${clp(comisiones_mp_px)}).`);
+  }
   if (recuperable > 0) partes.push(`Recuperable: ${clp(recuperable)}.`);
   if (notasCreditoMLTotal > 0) partes.push(`NC ML aplicadas: -${clp(notasCreditoMLTotal)}.`);
   if (flexCreditoTotal > 0) partes.push(`Flex crédito: -${clp(flexCreditoTotal)}.`);
@@ -516,6 +692,7 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
     ventas_netas,
     comisiones_ml,
     comisiones_mp,
+    comisiones_mp_px,
     total_comisiones,
     recuperable,
     neto_recibido_mp,
