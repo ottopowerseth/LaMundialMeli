@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-08-24 (diseño de Rentabilidad por orden)
+**Última actualización:** 2026-08-24 (gotcha de precisión de punto flotante en Rentabilidad)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -246,6 +246,19 @@ páginas (~400 filas, 8 páginas de 50) y filtrar client-side por
 `campaign_id`, comparando contra el listado de campañas ya obtenido de
 `calcularRoas`. Mismo patrón que otros endpoints de ML que ignoran filtros
 no soportados (ver gotcha de Reclamos, sección 5 arriba).
+
+**Gotcha (Fase 1, implementado):** `Margen neto` con precisión de punto
+flotante — la resta encadenada de floats (`precioVenta - cogs - comision -
+envio - perdida`) puede arrastrar imprecisión de base 2 (ej.
+`-1583.3000000000002` en vez de `-1583.3`). Al escribir ese número con
+muchos dígitos vía `USER_ENTERED` en Sheets, se reinterpreta mal (aparente
+error de separador de miles), corrompiendo el valor guardado (ej.
+`-15.833.000.000.000.000`). Detectado auditando manualmente los resultados
+contra datos reales — no se ve en pruebas superficiales porque solo
+aparece con ciertas combinaciones de decimales. **Fix:** redondear
+(`Math.round(x * 10) / 10`) antes de convertir a string. Aplica a
+cualquier cálculo futuro que escriba montos calculados directamente a
+Sheets, no solo Rentabilidad.
 
 **Método propuesto — prorrateo por unidades vendidas del producto en el
 período de la campaña:**
