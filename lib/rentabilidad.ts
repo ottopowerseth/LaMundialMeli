@@ -130,7 +130,12 @@ export function calcularFilaOrden(
   }
 
   const cogs = costoPorItemId.has(itemId) ? costoPorItemId.get(itemId)! : null;
-  const margenNeto = cogs !== null ? precioVenta - cogs - comision - envio - perdida : null;
+  // Redondeado a 1 decimal: sin esto, el arrastre de punto flotante (ej.
+  // 8490-6350-1274-2449.3 = -1583.3000000000002) escribe un string largo que
+  // Sheets, con USER_ENTERED, reinterpreta como un número gigante corrupto.
+  const margenNeto = cogs !== null
+    ? Math.round((precioVenta - cogs - comision - envio - perdida) * 10) / 10
+    : null;
   const margenPct = margenNeto !== null && precioVenta > 0
     ? Math.round((margenNeto / precioVenta) * 1000) / 10
     : null;
