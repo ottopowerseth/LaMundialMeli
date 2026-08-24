@@ -284,6 +284,7 @@ export default function Home() {
   const [mesesDetectados, setMesesDetectados] = useState<{ ml: MesDetectado[]; mp: MesDetectado[] } | null>(null);
   const [detectandoMeses, setDetectandoMeses] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const analyzingRef = useRef(false); // guarda síncrona: setAnalyzing(true) no bloquea un 2do click en el mismo frame, antes del re-render
   const [auditResult, setAuditResult] = useState<AuditApiResult>(null);
   const [historial, setHistorial] = useState<AuditHistorialRow[]>([]);
   const [expandedMes, setExpandedMes] = useState<string | null>(null);
@@ -655,9 +656,11 @@ export default function Home() {
   }
 
   async function handleAnalyze() {
+    if (analyzingRef.current) return; // guarda síncrona contra doble click en el mismo frame
     const hasFile = Object.values(auditFiles).some(f => f !== null);
     if (!hasFile) return;
 
+    analyzingRef.current = true;
     setAnalyzing(true);
     setAuditResult(null);
     try {
@@ -673,6 +676,7 @@ export default function Home() {
     } catch {
       setAuditResult({ ok: false, error: "Error de red" });
     } finally {
+      analyzingRef.current = false;
       setAnalyzing(false);
     }
   }

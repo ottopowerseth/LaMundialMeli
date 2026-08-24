@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-08-24 (bug conocido de condición de carrera en upsert de Auditoría)
+**Última actualización:** 2026-08-24 (mitigación de condición de carrera en Auditoría: lock backend + guardia cliente)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -132,13 +132,25 @@ inicio del request y luego decidiendo append vs. overwrite por
 todavía" antes de que el primero termine de escribir, resultando en filas
 duplicadas para el mismo mes en vez de que la segunda sobreescriba a la
 primera. Confirmado en producción: 3 filas para 2026-06 (commit `cfee265`,
-hallazgo del 2026-08-24). **Fix pendiente, no implementado:** opciones a
-evaluar cuando se aborde — lock optimista (re-leer y comparar antes de
-escribir), o mover el upsert a una operación atómica del lado de Sheets si
-es posible. Las filas duplicadas ya existentes no se limpiaron a
-propósito; se resolverán solas cuando se re-analice ese mes con datos
-reales post-fix del ciclo 15→14, momento en el que las filas huérfanas se
-podrán borrar con el dato bueno confirmado al lado.
+hallazgo del 2026-08-24). Las filas duplicadas ya existentes no se
+limpiaron a propósito; se resolverán solas cuando se re-analice ese mes
+con datos reales post-fix del ciclo 15→14, momento en el que las filas
+huérfanas se podrán borrar con el dato bueno confirmado al lado.
+
+**Estado (2026-08-24): mitigado, no eliminado al 100%.** Dos capas: (a)
+`AuditoriaLocks` en el backend (commit `6760353`) — reduce la ventana de
+carrera de "todo el procesamiento" a "el instante de la primera
+escritura", pero no la elimina, porque la API de Sheets no ofrece
+compare-and-swap real (confirmado con una prueba directa: 2 llamadas a
+`intentarAdquirirLock` disparadas en el mismo tick de Node ambas
+obtuvieron el lock); (b) guardia del lado del cliente (`app/page.tsx`,
+commit siguiente) — botón deshabilitado mientras el análisis está en
+curso más una guarda síncrona (`useRef`) que no depende del re-render de
+React, previene el caso real más común (doble-click humano) sin depender
+en absoluto del backend. Se investigó cerrar la ventana del backend por
+completo (append incondicional + relectura de confirmación) pero se
+descartó por complejidad desproporcionada al caso de uso real (equipo de
+2 personas, uso manual). Riesgo residual aceptado.
 
 ### Bloque blando de rentabilidad — diagnóstico
 
