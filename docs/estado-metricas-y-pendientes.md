@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-08-24 (Fase 1 de Rentabilidad en producción, Fase 2 en pausa por cobertura de Costo)
+**Última actualización:** 2026-08-24 (nota sobre historial limitado de Auditoría pendiente de re-análisis)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -97,6 +97,32 @@ desde CSV/XLSX. El grupo `MP` tiene la misma contaminación de Shopify que el
 CSV (ningún campo distingue canal), así que no resuelve ese problema por sí
 solo. Ver commits de la Fase de validación de cobertura (`3a06e35`) para el
 detalle de por qué el ciclo real de facturación es 15→14, no el mes calendario.
+
+**Historial real limitado a 1 mes** (2026-06, triplicado en la hoja) y
+calculado ANTES del fix del ciclo 15→14 (`1ea0bdc`) — el número que
+muestra hoy no refleja el ciclo corregido. La variación % mes a mes
+(`9aa6a0c`) está verificada matemáticamente contra datos de prueba, pero
+sin validación con 2+ meses reales consecutivos todavía. **Acción
+pendiente:** re-analizar 2026-06 (y subir más meses) con el ciclo
+corregido para tener historial real utilizable.
+
+**Gotcha — triplicación de la fila 2026-06:** las 3 filas no son
+idénticas. Filas 1 y 2 (mismo timestamp exacto, `04-07-2026 3:52:05 p.m.`)
+tienen los mismos valores (ventas $77.742.142, tasa 2.74%) — condición de
+carrera clásica: 2 requests de análisis disparadas casi simultáneas
+leyeron `existing` (para decidir upsert vs. append en
+`app/api/audit/analyze/route.ts`) antes de que la primera terminara de
+escribir, así que ambas hicieron `appendSheet` en vez de que la segunda
+sobreescribiera a la primera. La fila 3 (38 min después, `4:30:09 p.m.`)
+tiene datos visiblemente anómalos (ventas $1.651.272 — ~47x menor —, tasa
+128.96%, imposible en un negocio real) — un tercer análisis con un archivo
+mal cargado, que además volvió a caer en la misma condición de carrera
+del upsert (`findIndex` por mes debería haber pisado la fila 1, pero
+agregó una fila nueva). **No implementado todavía:** el upsert por mes en
+`audit/analyze/route.ts` no es atómico — dos requests casi simultáneas
+pueden leer el mismo estado "sin fila" y ambas hacer `append`. Mismo tipo
+de problema que el de doble-invocación ya visto en Rentabilidad (Billing
+API, curl timeout ≠ finalización real del server).
 
 ### Bloque blando de rentabilidad — diagnóstico
 
