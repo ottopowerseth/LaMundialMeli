@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-08-24 (nota sobre historial limitado de Auditoría pendiente de re-análisis)
+**Última actualización:** 2026-08-24 (bug conocido de condición de carrera en upsert de Auditoría)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -123,6 +123,22 @@ agregó una fila nueva). **No implementado todavía:** el upsert por mes en
 pueden leer el mismo estado "sin fila" y ambas hacer `append`. Mismo tipo
 de problema que el de doble-invocación ya visto en Rentabilidad (Billing
 API, curl timeout ≠ finalización real del server).
+
+**Bug conocido: condición de carrera en upsert por mes.**
+`app/api/audit/analyze/route.ts` hace upsert por mes leyendo `existing` al
+inicio del request y luego decidiendo append vs. overwrite por
+`findIndex`. Si 2 análisis del mismo mes se disparan casi simultáneos
+(doble click, reintento de red, etc.), ambos pueden leer "no existe
+todavía" antes de que el primero termine de escribir, resultando en filas
+duplicadas para el mismo mes en vez de que la segunda sobreescriba a la
+primera. Confirmado en producción: 3 filas para 2026-06 (commit `cfee265`,
+hallazgo del 2026-08-24). **Fix pendiente, no implementado:** opciones a
+evaluar cuando se aborde — lock optimista (re-leer y comparar antes de
+escribir), o mover el upsert a una operación atómica del lado de Sheets si
+es posible. Las filas duplicadas ya existentes no se limpiaron a
+propósito; se resolverán solas cuando se re-analice ese mes con datos
+reales post-fix del ciclo 15→14, momento en el que las filas huérfanas se
+podrán borrar con el dato bueno confirmado al lado.
 
 ### Bloque blando de rentabilidad — diagnóstico
 
