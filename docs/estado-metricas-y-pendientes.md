@@ -196,6 +196,29 @@ descontinuado o eliminado): `COGS` queda vacío, `Margen neto` no se calcula
 (se muestra "—" o "COGS no disponible") y se lista aparte como advertencia
 — nunca se asume COGS=0, inflaría el margen falsamente.
 
+**Órdenes multi-item — confirmado que no aplica hoy.** Verificado contra
+datos reales de la Billing API (agosto, grupo ML): agrupando las filas `CV`
+(comisión de venta, una por línea de producto) por su propio `order_id`
+dentro de `items_info[]`, **0 de 267 órdenes reales tienen más de un
+`item_id` distinto** — coincide exacto con la medición independiente vía
+`/orders/search` (0 de 1000 órdenes). El diseño asume 1 item por orden
+(`items_info[0]`), pero esto está **verificado, no asumido implícitamente**:
+si en el futuro aparece un caso real, la implementación debe marcar
+explícitamente la fila como multi-item (no calcular un margen tomando solo
+el primer producto en silencio) en vez de prorratear a ciegas sin volver a
+confirmar el volumen real.
+
+**Gotcha descubierto al medir esto**: agrupar por `sales_info[0].order_id`
+en vez de por el `order_id` propio de cada `items_info[]` da un falso
+positivo — los cargos `CXD` (envío) a veces traen `items_info[]` con
+`order_id` de **múltiples órdenes distintas que comparten el mismo
+`pack_id`** (compras separadas del mismo comprador que ML agrupa en un solo
+despacho/envío). Agrupar mal por `sales_info[0].order_id` dio 18.35% de
+"multi-item" (falso), agrupar correctamente por el `order_id` dentro de
+`items_info[]` dio 0%. Cualquier código que procese `items_info[]` de un
+cargo `CXD`/`CFF` debe usar el `order_id` que trae cada item, nunca asumir
+que `sales_info[0].order_id` aplica a todos los items de esa fila.
+
 **Fórmula final por orden:**
 
 ```
