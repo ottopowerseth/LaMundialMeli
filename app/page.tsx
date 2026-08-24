@@ -189,7 +189,9 @@ type AuditHistorialRow = {
   ventas_netas: number;
   comisiones_ml: number;
   comisiones_mp: number;
+  comisiones_mp_px: number;
   total_comisiones: number;
+  notas_credito_ml: number;
   recuperable: number;
   tasa_efectiva: number;
   errores: number;
@@ -352,24 +354,40 @@ export default function Home() {
       const res = await fetch("/api/sheets-data?tab=Auditor%C3%ADa");
       const data = await res.json();
       if (!data.rows) return;
-      // Columnas: Mes(0) VentasBrutas(1) VentasNetas(2) ComisionesML(3) ComisionesMP(4) Total(5) Recuperable(6) NetoRecibidoMP(7) Tasa(8) FlexCredito(9) FlexDebito(10) Errores(11) Resumen(12) Analizado(13)
+      // La hoja Auditoría acumula filas de distintas generaciones de esquema
+      // (el header no se reescribe una vez creado — solo las filas nuevas
+      // usan el layout vigente al momento de analizarse), así que el índice
+      // de cada campo depende de r.length, no es fijo:
+      // - 16 columnas (esquema actual): Mes(0) VentasBrutas(1) VentasNetas(2)
+      //   ComisionesML(3) ComisionesMP(4) ComisionesMP_PX(5) Total(6)
+      //   NotasCreditoML(7) Recuperable(8) NetoRecibidoMP(9) Tasa(10)
+      //   FlexCredito(11) FlexDebito(12) Errores(13) Resumen(14) Analizado(15)
+      // - 14 columnas (esquema anterior, sin PX ni NC ML): Mes(0)
+      //   VentasBrutas(1) VentasNetas(2) ComisionesML(3) ComisionesMP(4)
+      //   Total(5) Recuperable(6) NetoRecibidoMP(7) Tasa(8) FlexCredito(9)
+      //   FlexDebito(10) Errores(11) Resumen(12) Analizado(13)
       const rows: AuditHistorialRow[] = data.rows
         .filter((r: string[]) => r[0])
-        .map((r: string[], i: number) => ({
-          mes: r[0] ?? "",
-          ventas_brutas: Number(r[1]) || 0,
-          ventas_netas: Number(r[2]) || 0,
-          comisiones_ml: Number(r[3]) || 0,
-          comisiones_mp: Number(r[4]) || 0,
-          total_comisiones: Number(r[5]) || 0,
-          recuperable: Number(r[6]) || 0,
-          tasa_efectiva: Number(r[8]) || 0,
-          errores: Number(r[11]) || 0,
-          resumen: r[12] ?? "",
-          analizado: r[13] ?? "",
-          rowIndex: i + 1, // +1 porque fila 0 es el header en el Sheet
-        }))
-        .reverse(); // más reciente primero
+        .map((r: string[], i: number) => {
+          const esquemaViejo = r.length <= 14;
+          return {
+            mes: r[0] ?? "",
+            ventas_brutas: Number(r[1]) || 0,
+            ventas_netas: Number(r[2]) || 0,
+            comisiones_ml: Number(r[3]) || 0,
+            comisiones_mp: Number(r[4]) || 0,
+            comisiones_mp_px: esquemaViejo ? 0 : Number(r[5]) || 0,
+            total_comisiones: Number(r[esquemaViejo ? 5 : 6]) || 0,
+            notas_credito_ml: esquemaViejo ? 0 : Number(r[7]) || 0,
+            recuperable: Number(r[esquemaViejo ? 6 : 8]) || 0,
+            tasa_efectiva: Number(r[esquemaViejo ? 8 : 10]) || 0,
+            errores: Number(r[esquemaViejo ? 11 : 13]) || 0,
+            resumen: r[esquemaViejo ? 12 : 14] ?? "",
+            analizado: r[esquemaViejo ? 13 : 15] ?? "",
+            rowIndex: i + 1, // +1 porque fila 0 es el header en el Sheet
+          };
+        })
+        .sort((a: AuditHistorialRow, b: AuditHistorialRow) => a.mes.localeCompare(b.mes)); // cronológico ascendente, para calcular variación mes a mes
       setHistorial(rows);
     } catch { /* silencioso */ }
   }
@@ -1289,26 +1307,50 @@ export default function Home() {
                       <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
                         <th className="pb-2 pr-4">Mes</th>
                         <th className="pb-2 pr-4 text-right">Ventas Brutas</th>
+                        <th className="pb-2 pr-4 text-right">Var. Ventas</th>
                         <th className="pb-2 pr-4 text-right">Com. ML</th>
                         <th className="pb-2 pr-4 text-right">Com. MP</th>
                         <th className="pb-2 pr-4 text-right">Total Com.</th>
+                        <th className="pb-2 pr-4 text-right">Var. Com.</th>
                         <th className="pb-2 pr-4 text-right">Tasa</th>
+                        <th className="pb-2 pr-4 text-right">NC ML</th>
                         <th className="pb-2 pr-4 text-right">Recuperable</th>
                         <th className="pb-2 w-8"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {historial.map((row) => (
+                      {/* historial está ordenado cronológico ascendente (para calcular
+                          variación % contra el mes anterior); se invierte solo al
+                          renderizar para mostrar el más reciente arriba. */}
+                      {[...historial].reverse().map((row) => {
+                        const idx = historial.findIndex(h => h.rowIndex === row.rowIndex);
+                        const anterior = idx > 0 ? historial[idx - 1] : null;
+                        const varVentas = anterior && anterior.ventas_brutas > 0
+                          ? ((row.ventas_brutas - anterior.ventas_brutas) / anterior.ventas_brutas) * 100
+                          : null;
+                        const varComisiones = anterior && anterior.total_comisiones > 0
+                          ? ((row.total_comisiones - anterior.total_comisiones) / anterior.total_comisiones) * 100
+                          : null;
+                        const fmtVar = (v: number | null) => v === null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
+                        const colorVar = (v: number | null, invertido = false) => {
+                          if (v === null) return "text-gray-400";
+                          const bueno = invertido ? v < 0 : v > 0;
+                          return bueno ? "text-green-600" : v === 0 ? "text-gray-500" : "text-red-600";
+                        };
+                        return (
                         <Fragment key={row.rowIndex}>
                           <tr
                             className="hover:bg-gray-50 cursor-pointer group"
                             onClick={() => setExpandedMes(expandedMes === row.mes ? null : row.mes)}>
                             <td className="py-2.5 pr-4 font-semibold text-gray-800">{row.mes}</td>
                             <td className="py-2.5 pr-4 text-right text-gray-700">${Math.round(row.ventas_brutas).toLocaleString("es-CL")}</td>
+                            <td className={`py-2.5 pr-4 text-right ${colorVar(varVentas)}`}>{fmtVar(varVentas)}</td>
                             <td className="py-2.5 pr-4 text-right text-orange-600">${Math.round(row.comisiones_ml).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 pr-4 text-right text-orange-600">${Math.round(row.comisiones_mp).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 pr-4 text-right font-semibold text-red-700">${Math.round(row.total_comisiones).toLocaleString("es-CL")}</td>
+                            <td className={`py-2.5 pr-4 text-right ${colorVar(varComisiones, true)}`}>{fmtVar(varComisiones)}</td>
                             <td className="py-2.5 pr-4 text-right text-red-700">{Number(row.tasa_efectiva).toFixed(2)}%</td>
+                            <td className="py-2.5 pr-4 text-right text-gray-600">${Math.round(row.notas_credito_ml).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 pr-4 text-right text-green-600">${Math.round(row.recuperable).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 text-right">
                               <button
@@ -1322,16 +1364,20 @@ export default function Home() {
                           </tr>
                           {expandedMes === row.mes && (
                             <tr>
-                              <td colSpan={8} className="py-2 pb-3">
+                              <td colSpan={11} className="py-2 pb-3">
                                 <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs text-gray-600 space-y-1">
                                   <p>{row.resumen}</p>
+                                  {row.comisiones_mp_px !== 0 && (
+                                    <p className="text-yellow-700">PX — asumido ML, no verificado: {formatCLP(row.comisiones_mp_px)}</p>
+                                  )}
                                   <p className="text-gray-400">Analizado: {row.analizado}</p>
                                 </div>
                               </td>
                             </tr>
                           )}
                         </Fragment>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
