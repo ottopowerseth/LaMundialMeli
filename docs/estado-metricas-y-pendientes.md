@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-08-24 (gotcha de precisión de punto flotante en Rentabilidad)
+**Última actualización:** 2026-08-24 (Fase 1 de Rentabilidad en producción, Fase 2 en pausa por cobertura de Costo)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -151,6 +151,15 @@ fuente real de esta cifra en dinero.
 | Pérdidas (devolución) | Billing API, `CDSD` | Sí (`order_id` confirmado) | Sí (al menos 1 caso real en feb-2026) | Bajo — mismo patrón que el bloque duro ya validado |
 
 ### Diseño de Rentabilidad por orden (Fase 1 y 2)
+
+**Estado (2026-08-24):** Fase 1 implementada y en producción (commit
+`bb72bcd` + fix `b589417`). Cobertura real limitada: solo 11 de 85 órdenes
+con COGS calculable, causa 100% operativa — solo 7 de 400 productos en
+Publicaciones tienen columna Costo cargada. Fase 2 (Ads atribuido) queda
+en pausa hasta resolver la carga de costos del catálogo; no tiene sentido
+construir sobre una base con <2% de cobertura. Próximo paso: cargar Costo
+para el resto del catálogo, luego retomar Fase 2 según diseño ya
+documentado.
 
 Diseño completo (sin implementar), construido sobre el diagnóstico del
 bloque blando de arriba. COGS: columna `Costo` (F) de la hoja
