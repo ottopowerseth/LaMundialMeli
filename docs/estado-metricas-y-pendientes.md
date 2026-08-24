@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-08-24
+**Última actualización:** 2026-08-24 (diseño de Rentabilidad por orden)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -149,6 +149,143 @@ fuente real de esta cifra en dinero.
 | Almacenamiento (Full) | Billing API, `CFWA` | No (agregado) | Sí, activamente (66% de órdenes) | Bajo para traer el dato; requiere decisión de diseño para no romper la premisa "por orden" |
 | Penalizaciones | No encontrado | — | No, en los períodos revisados | No estimable — sin caso real que capturar |
 | Pérdidas (devolución) | Billing API, `CDSD` | Sí (`order_id` confirmado) | Sí (al menos 1 caso real en feb-2026) | Bajo — mismo patrón que el bloque duro ya validado |
+
+### Diseño de Rentabilidad por orden (Fase 1 y 2)
+
+Diseño completo (sin implementar), construido sobre el diagnóstico del
+bloque blando de arriba. COGS: columna `Costo` (F) de la hoja
+**Publicaciones**, ya sincronizada por `ml-sync`, cargada/editada a mano y
+preservada entre syncs.
+
+**Esquema de datos — hoja nueva `Rentabilidad`**, una fila por orden,
+append-only con upsert por `ID Orden` (mismo patrón que Auditoría: si se
+re-calcula un período ya guardado, se sobreescribe la fila existente en vez
+de duplicarla).
+
+| Columna | Origen | Notas |
+|---|---|---|
+| `ID Orden` | Billing API `sales_info.order_id` | Llave de la fila. Prefijo `'` (texto literal), mismo criterio que Ventas/ShippingCache. |
+| `Fecha` | Billing API `sales_info.sale_date_time` | |
+| `ID Item` | Billing API `items_info[].item_id` | Llave para cruzar contra Publicaciones. |
+| `Producto` | Billing API `items_info[].item_title` | |
+| `Precio de venta` | Billing API `sales_info.transaction_amount` | |
+| `COGS` | Cruce contra `Publicaciones!F` por `ID Item` | Snapshot copiado en el momento del cálculo, no referenciado en vivo — si el costo del producto cambia después, el margen de una orden vieja no debe moverse solo. |
+| `Comisión` | Billing API, suma de filas `CV` de esa orden | |
+| `Envío efectivo` | Billing API, suma de filas `CXD`/`CFF` de esa orden | |
+| `Pérdida/devolución` | Billing API, suma de filas `CDSD` de esa orden (0 si no aplica) | |
+| `Ads atribuido` | Cálculo propio, ver fórmula abajo | Columna separada, no mezclada en "Comisión", para que quede auditable. |
+| `Margen neto` | Fórmula abajo | Fórmula de Sheets o valor calculado en backend, a decidir en implementación. |
+| `Margen %` | `Margen neto / Precio de venta` | |
+| `Logístico` | Cruce contra `ShippingCache` por `ID Orden` | Full vs. estándar — no es un costo, es contexto (por qué una orden Full no tiene línea de Almacenamiento: ese costo está agregado, no acá). |
+| `Analizado` | timestamp | |
+
+No se duplica `Publicaciones!F` ni `ShippingCache` — ambas se leen por llave
+en el momento del cálculo, sin re-guardarlas en `Rentabilidad`.
+
+**Almacenamiento Full**: en vez de una hoja nueva de una sola columna, se
+agrega como columna a la hoja **Auditoría** ya existente (ya es "una fila
+por mes"). Esto es un **préstamo intencional de esquema, no que el dato
+pertenezca a Auditoría** — conceptualmente es parte de Rentabilidad (costo
+operativo que reduce el margen del negocio, no una comisión de venta). Para
+que quede claro en el propio Sheet sin depender de este documento, el
+nombre de columna debe ser explícito: **`Almacenamiento_Full_Rentabilidad`**,
+no algo genérico como "Almacenamiento".
+
+**COGS sin match** (producto vendido que ya no tiene fila en Publicaciones,
+descontinuado o eliminado): `COGS` queda vacío, `Margen neto` no se calcula
+(se muestra "—" o "COGS no disponible") y se lista aparte como advertencia
+— nunca se asume COGS=0, inflaría el margen falsamente.
+
+**Fórmula final por orden:**
+
+```
+Margen neto = Precio de venta − COGS − Comisión − Envío efectivo − Ads atribuido − Pérdida/devolución
+```
+
+Almacenamiento queda fuera de esta fórmula (tarjeta de resumen a nivel
+período, no resta del margen de ninguna orden puntual).
+
+**El problema de Ads — resuelto con investigación real.** ML no expone
+atribución de Ads a nivel de venta individual (`calcularRoas` solo trae
+costo por campaña/período). Confirmado contra la cuenta real de La Mundial
+que el mapeo campaña→producto sí existe:
+`GET /marketplace/advertising/{site}/advertisers/{id}/product_ads/ads/search`
+(mismo grupo de endpoints que ROAS, mismo header `Api-Version: 1`) devuelve
+68 publicaciones reales repartidas entre las 2 campañas de la cuenta
+(`358688613` "Top Ventas", `353997794` "Elvive Serum"), cada una con
+`item_id` + `campaign_id`.
+
+**Gotcha:** el filtro server-side de `/product_ads/ads/search` por campaña
+(`campaign_id`, `campaign_ids`, `campaignId` — se probaron las 3 variantes)
+**no funciona** — el endpoint siempre devuelve el total de la cuenta (396
+ads en la prueba real), ignorando el parámetro. Hay que traer todas las
+páginas (~400 filas, 8 páginas de 50) y filtrar client-side por
+`campaign_id`, comparando contra el listado de campañas ya obtenido de
+`calcularRoas`. Mismo patrón que otros endpoints de ML que ignoran filtros
+no soportados (ver gotcha de Reclamos, sección 5 arriba).
+
+**Método propuesto — prorrateo por unidades vendidas del producto en el
+período de la campaña:**
+
+```
+Ads atribuido a una orden =
+  (costo total de la campaña en el período, de calcularRoas)
+  × (unidades de ESE producto en ESA orden)
+  ÷ (unidades totales vendidas de ese producto durante el período de la campaña)
+```
+
+Limitación que sigue en pie (el mapeo se resolvió, esto no): es prorrateo
+uniforme, no atribución real — una campaña puede generar ventas orgánicas
+del mismo producto, y este método les carga el mismo costo de Ads a todas
+las unidades por igual. Es una limitación estructural de la API de Product
+Ads (no expone atribución por clic-a-venta), no algo que el mapeo de items
+resuelva. Recomendación: marcar `Ads atribuido` como estimación
+explícitamente etiquetada en la UI ("Ads (prorrateado, no exacto)"), mismo
+criterio que ya usa el ROAS agregado ("cálculo propio, no de ML").
+
+**UI propuesta — pestaña propia "Rentabilidad", no sección 8 de Métricas.**
+Razones: Métricas hoy son tarjetas de lectura rápida; Rentabilidad necesita
+una tabla densa por orden (potencialmente cientos de filas/mes) — mismo
+criterio que ya separó Auditoría y Forecast de Métricas. Evita además
+alargar el tiempo de respuesta de Métricas (hoy ~20-26s) con más llamadas a
+la Billing API (rate limit 5 req/min). Tres niveles de detalle: (1)
+tarjetas de resumen del período (margen neto total, margen % promedio,
+órdenes con margen negativo, tarjeta separada de Almacenamiento), (2)
+resumen por producto (agregado, como el Ranking), (3) tabla por orden
+(detalle colapsable, como el histórico de Auditoría). Almacenamiento se
+muestra con texto explícito ("costo operativo, no incluido en el margen por
+orden porque ML no lo liga a ventas específicas") — mismo criterio que "PX
+— asumido ML, no verificado" en Auditoría: visible, etiquetado, sin
+esconder el número aunque no encaje limpio en el cálculo principal.
+
+**Costo de implementación y fasamiento:**
+
+| Bloque | Esfuerzo |
+|---|---|
+| Comisión + Envío + Pérdidas por orden (Billing API, ya validada) | Medio |
+| COGS por orden (lectura de Sheets, sin llamada nueva) | Bajo |
+| Almacenamiento agregado (mismo request de Billing API, filtro `CFWA`) | Bajo |
+| Ads atribuido (`/product_ads/ads/search`, mapeo confirmado, sigue siendo prorrateo) | Medio |
+| Pestaña nueva completa (tabla densa, filtros, 3 niveles de detalle) | Medio-Alto |
+
+Gotcha transversal: la Billing API tiene rate limit de 5 req/min — traer el
+detalle completo de un mes ya toma ~1 minuto solo en llamadas. Para
+Rentabilidad esto es más exigente que para Auditoría (acá se necesita el
+detalle completo por orden, no solo totales agregados) — hay que diseñar
+con caché en mente desde el principio (guardar en `Rentabilidad` lo ya
+calculado, no repetir la consulta si la orden ya está en la hoja).
+
+**Fasamiento recomendado:**
+1. **Fase 1 — bloque duro sin Ads**: Comisión + Envío + COGS + Pérdidas por
+   orden, hoja `Rentabilidad`, pestaña nueva con los 3 niveles de detalle,
+   Almacenamiento como columna en Auditoría. Todo con datos y endpoints ya
+   100% validados — menor riesgo.
+2. **Fase 2 — Ads atribuido**: el mapeo campaña→producto ya está confirmado,
+   así que ya no depende de investigación previa — implementa el prorrateo
+   directamente. Sigue separada de Fase 1 porque es una pieza aparte
+   (llamada adicional, lógica de prorrateo, disclaimer en UI) que no
+   bloquea al resto del esquema, y conviene validar el bloque duro
+   (100% confirmado) antes de sumar la complejidad de una estimación.
 
 ### rangoAnterior() no generaliza a rangos custom (diagnosticado, no bloqueante)
 
