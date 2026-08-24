@@ -91,6 +91,14 @@ export async function POST(request: Request) {
       "Comisiones MP (PX, no verificado)", "Total Comisiones", "Notas Crédito ML",
       "Recuperable", "Neto Recibido MP", "Tasa Efectiva %", "Flex Crédito",
       "Flex Débito", "Errores", "Resumen", "Analizado",
+      // Préstamo intencional de esquema para Rentabilidad (ver
+      // docs/estado-metricas-y-pendientes.md, sección "Diseño de
+      // Rentabilidad por orden"): este dato conceptualmente pertenece a
+      // Rentabilidad, no a Auditoría — se reutiliza esta hoja porque ya
+      // tiene la forma correcta ("una fila por mes"). Se llena desde
+      // /api/rentabilidad/analyze, no desde este endpoint — acá solo se
+      // reserva la columna en el header para que quede vacía por defecto.
+      "Almacenamiento_Full_Rentabilidad",
     ];
 
     const fila = [

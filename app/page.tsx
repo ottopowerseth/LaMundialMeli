@@ -198,6 +198,20 @@ type AuditHistorialRow = {
   rowIndex: number; // índice 0-based en Google Sheets (fila real, incluye header)
 };
 
+type RentabilidadRow = {
+  idOrden: string;
+  fecha: string;
+  producto: string;
+  precioVenta: number;
+  cogs: number | null;
+  comision: number;
+  envio: number;
+  perdida: number;
+  margenNeto: number | null;
+  margenPct: number | null;
+  multiItem: boolean;
+};
+
 function Spinner() {
   return (
     <svg className="animate-spin h-4 w-4 inline mr-2" viewBox="0 0 24 24" fill="none">
@@ -240,7 +254,7 @@ const FILE_ZONES: FileZone[] = [
 ];
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast" | "metricas">("sync");
+  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast" | "metricas" | "rentabilidad">("sync");
 
   // --- Sync state ---
   const [mlStatus, setMlStatus] = useState<MLStatus>(null);
@@ -285,6 +299,17 @@ export default function Home() {
   const [periodoMetrics, setPeriodoMetrics] = useState<Periodo>("mes");
   const [loadingMetrics, setLoadingMetrics] = useState(false);
   const [metricsResult, setMetricsResult] = useState<MetricsApiResult>(null);
+
+  // --- Rentabilidad state ---
+  const [mesRentabilidad, setMesRentabilidad] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [analizandoRentabilidad, setAnalizandoRentabilidad] = useState(false);
+  const [progresoRentabilidad, setProgresoRentabilidad] = useState({ filasProcesadas: 0, ordenesNuevas: 0, multiItemDetectadas: 0 });
+  const [errorRentabilidad, setErrorRentabilidad] = useState<string | null>(null);
+  const [rentabilidadRows, setRentabilidadRows] = useState<RentabilidadRow[]>([]);
+  const rentabilidadCancelado = useRef(false);
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(setMlStatus).catch(() => setMlStatus({ ok: false }));
@@ -346,6 +371,32 @@ export default function Home() {
         }))
         .reverse(); // más reciente primero
       setHistorial(rows);
+    } catch { /* silencioso */ }
+  }
+
+  async function loadRentabilidad() {
+    try {
+      const res = await fetch("/api/sheets-data?tab=Rentabilidad");
+      const data = await res.json();
+      if (!data.rows) return;
+      // Columnas: IDOrden(0) Fecha(1) IDItem(2) Producto(3) PrecioVenta(4)
+      // COGS(5) Comision(6) Envio(7) Perdida(8) MargenNeto(9) MargenPct(10) MultiItem(11) Analizado(12)
+      const rows: RentabilidadRow[] = data.rows
+        .filter((r: string[]) => r[0])
+        .map((r: string[]) => ({
+          idOrden: (r[0] ?? "").replace(/^'/, ""),
+          fecha: r[1] ?? "",
+          producto: r[3] ?? "",
+          precioVenta: Number(r[4]) || 0,
+          cogs: r[5] === "" || r[5] == null ? null : Number(r[5]),
+          comision: Number(r[6]) || 0,
+          envio: Number(r[7]) || 0,
+          perdida: Number(r[8]) || 0,
+          margenNeto: r[9] === "" || r[9] == null ? null : Number(r[9]),
+          margenPct: r[10] === "" || r[10] == null ? null : Number(r[10]),
+          multiItem: r[11] === "Sí",
+        }));
+      setRentabilidadRows(rows);
     } catch { /* silencioso */ }
   }
 
@@ -427,6 +478,7 @@ export default function Home() {
     if (activeTab === "auditoria") loadHistorial();
     if (activeTab === "forecast") loadForecast();
     if (activeTab === "metricas") loadMetrics();
+    if (activeTab === "rentabilidad") loadRentabilidad();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -511,6 +563,41 @@ export default function Home() {
       setBackfillError("Error de red");
     } finally {
       setBackfilling(false);
+    }
+  }
+
+  async function handleAnalizarRentabilidad() {
+    setAnalizandoRentabilidad(true);
+    setErrorRentabilidad(null);
+    setProgresoRentabilidad({ filasProcesadas: 0, ordenesNuevas: 0, multiItemDetectadas: 0 });
+    rentabilidadCancelado.current = false;
+    try {
+      // Mismo patrón que handleBackfillShipping: la Billing API tiene rate
+      // limit de 5 req/min, así que un mes completo necesita varias
+      // invocaciones — seguimos llamando hasta "completo" o cancelación.
+      while (!rentabilidadCancelado.current) {
+        const res = await fetch("/api/rentabilidad/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mes: mesRentabilidad }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          setErrorRentabilidad(data.error ?? "Error de red");
+          break;
+        }
+        setProgresoRentabilidad(prev => ({
+          filasProcesadas: prev.filasProcesadas + data.filasProcesadas,
+          ordenesNuevas: prev.ordenesNuevas + data.ordenesNuevas,
+          multiItemDetectadas: prev.multiItemDetectadas + data.multiItemDetectadas,
+        }));
+        if (data.completo) break;
+      }
+      await loadRentabilidad();
+    } catch {
+      setErrorRentabilidad("Error de red");
+    } finally {
+      setAnalizandoRentabilidad(false);
     }
   }
 
@@ -618,6 +705,11 @@ export default function Home() {
             className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "metricas" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "metricas" ? { backgroundColor: "#C41230" } : {}}>
             Métricas
+          </button>
+          <button onClick={() => setActiveTab("rentabilidad")}
+            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "rentabilidad" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            style={activeTab === "rentabilidad" ? { backgroundColor: "#C41230" } : {}}>
+            Rentabilidad
           </button>
         </div>
       </div>
@@ -1680,6 +1772,131 @@ export default function Home() {
                 </div>
               </>
             )}
+          </>
+        )}
+
+        {/* === TAB: RENTABILIDAD === */}
+        {activeTab === "rentabilidad" && (
+          <>
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+              <div>
+                <h2 className="font-bold text-gray-900 text-lg">Rentabilidad por orden</h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  Fase 1: comisión, envío efectivo y pérdidas/devoluciones por orden, vía la Billing API de Mercado Libre. Ads atribuido queda para una fase posterior.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Mes a analizar</label>
+                <input type="month" value={mesRentabilidad} onChange={e => setMesRentabilidad(e.target.value)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:border-transparent"
+                  style={{ "--tw-ring-color": "#C41230" } as CSSProperties} />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button onClick={handleAnalizarRentabilidad}
+                  disabled={analizandoRentabilidad}
+                  className="font-bold py-2.5 px-5 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: "#C41230" }}>
+                  {analizandoRentabilidad ? <><Spinner />Analizando...</> : "Analizar"}
+                </button>
+                {analizandoRentabilidad && (
+                  <button onClick={() => { rentabilidadCancelado.current = true; }}
+                    className="text-sm text-gray-500 hover:text-gray-700 underline">
+                    Cancelar
+                  </button>
+                )}
+              </div>
+
+              {(progresoRentabilidad.filasProcesadas > 0 || errorRentabilidad) && (
+                <div className="text-sm text-gray-500 space-y-1">
+                  <p>Filas de cargo procesadas: {progresoRentabilidad.filasProcesadas} · Órdenes nuevas: {progresoRentabilidad.ordenesNuevas}</p>
+                  {progresoRentabilidad.multiItemDetectadas > 0 && (
+                    <p className="text-yellow-700">⚠ {progresoRentabilidad.multiItemDetectadas} orden(es) con más de un producto detectada(s) — no calculada(s) automáticamente (caso no esperado, ver docs).</p>
+                  )}
+                  {errorRentabilidad && <p className="text-red-600">✗ Error: {errorRentabilidad}</p>}
+                </div>
+              )}
+            </div>
+
+            {rentabilidadRows.length > 0 && (() => {
+              const calculables = rentabilidadRows.filter(r => r.margenNeto !== null);
+              const margenTotal = calculables.reduce((sum, r) => sum + (r.margenNeto ?? 0), 0);
+              const margenPctPromedio = calculables.length > 0
+                ? calculables.reduce((sum, r) => sum + (r.margenPct ?? 0), 0) / calculables.length
+                : 0;
+              const conMargenNegativo = calculables.filter(r => (r.margenNeto ?? 0) < 0).length;
+              const sinCogs = rentabilidadRows.filter(r => r.cogs === null && !r.multiItem).length;
+
+              return (
+                <>
+                  {/* Resumen agregado */}
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                    <h3 className="font-semibold text-gray-800">Resumen del período</h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                      <div>
+                        <p className="text-sm text-gray-500">Margen neto total</p>
+                        <p className="text-xl font-bold text-gray-900">{formatCLP(margenTotal)}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Margen % promedio</p>
+                        <p className="text-xl font-bold text-gray-900">{margenPctPromedio.toFixed(1)}%</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Órdenes con margen negativo</p>
+                        <p className={`text-xl font-bold ${conMargenNegativo > 0 ? "text-red-600" : "text-gray-900"}`}>{conMargenNegativo}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Órdenes totales</p>
+                        <p className="text-xl font-bold text-gray-900">{rentabilidadRows.length}</p>
+                      </div>
+                    </div>
+                    {sinCogs > 0 && (
+                      <p className="text-sm text-yellow-700">⚠ {sinCogs} orden(es) sin COGS disponible en Publicaciones — margen no calculable para esas filas.</p>
+                    )}
+                  </div>
+
+                  {/* Tabla por orden */}
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                    <h3 className="font-semibold text-gray-800">Detalle por orden</h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-gray-500 border-b border-gray-200">
+                            <th className="py-2 pr-3">Fecha</th>
+                            <th className="py-2 pr-3">Producto</th>
+                            <th className="py-2 pr-3 text-right">Precio Venta</th>
+                            <th className="py-2 pr-3 text-right">COGS</th>
+                            <th className="py-2 pr-3 text-right">Comisión</th>
+                            <th className="py-2 pr-3 text-right">Envío</th>
+                            <th className="py-2 pr-3 text-right">Pérdida</th>
+                            <th className="py-2 pr-3 text-right">Margen Neto</th>
+                            <th className="py-2 pr-3 text-right">Margen %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rentabilidadRows.map((r) => (
+                            <tr key={r.idOrden} className="border-b border-gray-100 last:border-0">
+                              <td className="py-2 pr-3 text-gray-500">{r.fecha}</td>
+                              <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{r.producto}</td>
+                              <td className="py-2 pr-3 text-right text-gray-900">{formatCLP(r.precioVenta)}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{r.cogs === null ? "COGS no disponible" : formatCLP(r.cogs)}</td>
+                              <td className="py-2 pr-3 text-right text-orange-600">{formatCLP(r.comision)}</td>
+                              <td className="py-2 pr-3 text-right text-orange-600">{formatCLP(r.envio)}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{r.perdida > 0 ? formatCLP(r.perdida) : "-"}</td>
+                              <td className={`py-2 pr-3 text-right font-semibold ${r.margenNeto === null ? "text-gray-400" : r.margenNeto < 0 ? "text-red-600" : "text-green-600"}`}>
+                                {r.multiItem ? "Multi-item, no calculado" : r.margenNeto === null ? "—" : formatCLP(r.margenNeto)}
+                              </td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{r.margenPct === null ? "—" : `${r.margenPct}%`}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </>
         )}
 
