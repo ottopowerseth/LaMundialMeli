@@ -4,6 +4,40 @@ import { parseAuditFiles, calculateAudit, detectarMesesEnArchivo, cicloEsperado 
 import { ensureSheets, appendSheet, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
+// Lock a nivel de aplicación para el upsert por mes (ver "Bug conocido:
+// condición de carrera en upsert por mes" en docs/estado-metricas-y-pendientes.md).
+// La API de Sheets no tiene compare-and-swap ni ETag para values.update, y un
+// lock en memoria de proceso no sirve en Vercel (serverless, sin garantía de
+// misma instancia entre requests) — se persiste en una hoja de control chica,
+// igual que RentabilidadProgreso. Cubre el caso real (doble click/reintento
+// del mismo usuario), no concurrencia masiva.
+const LOCK_TTL_MS = 60000;
+
+async function intentarAdquirirLock(mes: string): Promise<{ ok: true; fila: number | null } | { ok: false }> {
+  const rows = await readSheet("AuditoriaLocks!A:B");
+  const idx = rows.findIndex(r => r[0] === mes);
+  const ahora = Date.now();
+  if (idx >= 0) {
+    const timestamp = Number(rows[idx][1]) || 0;
+    if (ahora - timestamp < LOCK_TTL_MS) return { ok: false };
+  }
+  const fila = idx >= 0 ? idx + 1 : null;
+  if (fila !== null) {
+    await writeSheet(`AuditoriaLocks!A${fila}:B${fila}`, [[mes, String(ahora)]]);
+  } else {
+    await appendSheet("AuditoriaLocks!A:B", [[mes, String(ahora)]]);
+  }
+  return { ok: true, fila };
+}
+
+async function liberarLock(mes: string) {
+  const rows = await readSheet("AuditoriaLocks!A:B");
+  const idx = rows.findIndex(r => r[0] === mes);
+  if (idx >= 0) {
+    await writeSheet(`AuditoriaLocks!A${idx + 1}:B${idx + 1}`, [["", ""]]);
+  }
+}
+
 async function fetchReferenciaML(mes: string) {
   const [yearStr, monthStr] = mes.split("-");
   const year = parseInt(yearStr);
@@ -56,9 +90,21 @@ async function fetchReferenciaML(mes: string) {
 }
 
 export async function POST(request: Request) {
+  let mesLockeado: string | null = null;
   try {
     const formData = await request.formData();
     const mes = (formData.get("mes") as string) ?? "Sin especificar";
+
+    await ensureSheets(["Auditoría", "AuditoriaLocks"]);
+
+    const lock = await intentarAdquirirLock(mes);
+    if (!lock.ok) {
+      return NextResponse.json(
+        { ok: false, error: `Ya hay un análisis en curso para ${mes} — esperá unos segundos e intentá de nuevo.` },
+        { status: 409 }
+      );
+    }
+    mesLockeado = mes;
 
     const files: { name: string; buffer: Buffer }[] = [];
     for (const [, value] of formData.entries()) {
@@ -83,8 +129,6 @@ export async function POST(request: Request) {
     if (result.error_cobertura) {
       return NextResponse.json({ ok: true, mes, result, referenciaML, mesesML, mesesMP });
     }
-
-    await ensureSheets(["Auditoría"]);
 
     const headers = [
       "Mes", "Ventas Brutas", "Ventas Netas", "Comisiones ML", "Comisiones MP",
@@ -141,5 +185,10 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("[audit/analyze]", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
+  } finally {
+    // Libera el lock en cualquier salida (éxito, error de cobertura,
+    // archivos faltantes, o excepción) — nunca solo en el camino feliz,
+    // para no dejar un mes bloqueado 60s por un error a mitad de camino.
+    if (mesLockeado) await liberarLock(mesLockeado);
   }
 }
