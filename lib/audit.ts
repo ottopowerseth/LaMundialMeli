@@ -34,6 +34,7 @@ export type AuditResult = {
   comisiones_mp: number;
   comisiones_mp_px: number;
   total_comisiones: number;
+  notas_credito_ml: number;
   recuperable: number;
   neto_recibido_mp: number;
   tasa_efectiva: number;
@@ -123,47 +124,157 @@ export function detectarMesesEnArchivo(rows: Record<string, unknown>[] | undefin
   return [...counts.values()].sort((a, b) => a.year - b.year || a.month - b.month);
 }
 
-// Fase 1 (validación) detectó que Facturación ML y Facturación MP pueden
-// venir con nombres de mes iguales pero contenido de rango real distinto
-// (ej. ML = solo 12 días de un mes, MP = dos meses completos). Si eso pasa,
-// calcular una tasa de comisión mezclando ambos períodos da un número
-// imposible (ej. 413% de comisión). Esta función compara la cobertura real
-// de ambos archivos ANTES de calcular nada.
-export function validarCoberturaMeses(
-  coberturaML: CoberturaMeses,
-  coberturaMP: CoberturaMeses,
-  mesObjetivo: string
-): string | null {
+// Extrae la fecha completa (no solo año-mes) de un valor de fecha, en
+// cualquiera de los formatos que entregan los reportes de ML/MP. Se usa para
+// el rango real día a día, más preciso que el bucket de año-mes.
+function extraerFecha(dateVal: unknown): Date | null {
+  if (!dateVal) return null;
+  if (dateVal instanceof Date) return dateVal;
+  const s = String(dateVal).trim();
+  if (!s) return null;
+  const iso = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return new Date(Date.UTC(+iso[1], +iso[2] - 1, +iso[3]));
+  const dmy = s.match(/^(\d{1,2})-(\d{2})-(\d{4})/);
+  if (dmy) return new Date(Date.UTC(+dmy[3], +dmy[2] - 1, +dmy[1]));
+  const dmySlash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (dmySlash) {
+    const y = +dmySlash[3] < 100 ? 2000 + +dmySlash[3] : +dmySlash[3];
+    return new Date(Date.UTC(y, +dmySlash[2] - 1, +dmySlash[1]));
+  }
+  try {
+    const d = new Date(s);
+    if (!isNaN(d.getTime()) && d.getFullYear() > 2000) return d;
+  } catch { /* ignorar */ }
+  return null;
+}
+
+export type RangoFechas = { desde: Date; hasta: Date; count: number } | null;
+
+// Rango real (fecha mínima y máxima) de un dataset ya parseado, usando el
+// campo "Fecha del cargo"/"Fecha". Más preciso que detectarMesesEnArchivo
+// para detectar truncamiento parcial dentro de un mismo mes.
+export function detectarRangoFechas(rows: Record<string, unknown>[] | undefined): RangoFechas {
+  if (!rows?.length) return null;
+  let desde: Date | null = null;
+  let hasta: Date | null = null;
+  let count = 0;
+  for (const row of rows) {
+    const d = extraerFecha(getValRaw(row, "fecha del cargo", "fecha"));
+    if (!d) continue;
+    count++;
+    if (!desde || d < desde) desde = d;
+    if (!hasta || d > hasta) hasta = d;
+  }
+  if (!desde || !hasta) return null;
+  return { desde, hasta, count };
+}
+
+// El ciclo de facturación real de ML/MP NO es el mes calendario — confirmado
+// con 6 meses reales (ver Fase de validación de cobertura): el reporte
+// nombrado "MesX" cubre del día 15 del mes anterior al día 14 de "MesX". Por
+// ejemplo "Mar2026" cubre 2026-02-15 → 2026-03-14. Esta función calcula ese
+// ciclo esperado a partir del string "YYYY-MM" que ya usa el resto del código.
+export function cicloEsperado(mesObjetivo: string): { desde: Date; hasta: Date } {
   const [yearStr, monthStr] = mesObjetivo.split("-");
   const year = parseInt(yearStr);
   const month = parseInt(monthStr);
+  const desde = new Date(Date.UTC(year, month - 2, 15)); // día 15 del mes anterior
+  const hasta = new Date(Date.UTC(year, month - 1, 14)); // día 14 del mes nombrado
+  return { desde, hasta };
+}
 
-  const mlDelMes = coberturaML.find(m => m.year === year && m.month === month);
-  const mpDelMes = coberturaMP.find(m => m.year === year && m.month === month);
+function fmtFecha(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
 
-  const fmtCobertura = (c: CoberturaMeses) =>
-    c.length === 0 ? "sin datos" : c.map(m => `${m.year}-${String(m.month).padStart(2, "0")} (${m.count} filas)`).join(", ");
+// Trunca a medianoche UTC — los timestamps reales de "Fecha del cargo"
+// vienen con hora (ej. 2026-01-15T03:00:45.000Z), mientras que cicloEsperado
+// devuelve exactamente medianoche. Comparar getTime() directo sin truncar
+// hace que un archivo que sí arranca el día correcto (pero a las 03:00) se
+// marque como "truncado" por error — hay que comparar por día calendario.
+function truncarADia(d: Date): number {
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
 
-  if (coberturaML.length > 0 && !mlDelMes) {
-    return `Facturación ML no contiene ninguna fila del mes ${mesObjetivo}. ` +
-      `El archivo cubre: ${fmtCobertura(coberturaML)}. ` +
-      `Revisá si el archivo corresponde al mes que estás analizando (el nombre del archivo puede no coincidir con su contenido real).`;
+// Fase 1 (validación) detectó que Facturación ML y Facturación MP pueden
+// venir truncados respecto al ciclo de facturación real de 30 días (15→14),
+// no respecto al mes calendario. Si un archivo viene recortado en cualquier
+// punto del ciclo (al inicio, al final, o ambos), calcular una tasa de
+// comisión mezclando ese período parcial contra el ciclo completo del otro
+// archivo da un número imposible (ej. 413% de comisión, visto con datos
+// reales de marzo). Esta función compara el rango real de cada archivo
+// contra el ciclo completo esperado ANTES de calcular nada — no contra el
+// mes calendario, que generaba falsos positivos en meses que sí venían
+// completos (confirmado con datos reales de febrero y junio).
+export function validarCoberturaMeses(
+  coberturaML: CoberturaMeses,
+  coberturaMP: CoberturaMeses,
+  mesObjetivo: string,
+  rangoML?: RangoFechas,
+  rangoMP?: RangoFechas
+): string | null {
+  const { desde: cicloDesde, hasta: cicloHasta } = cicloEsperado(mesObjetivo);
+  const cicloStr = `${fmtFecha(cicloDesde)} → ${fmtFecha(cicloHasta)}`;
+
+  // Si falta directamente uno de los 2 archivos, no hay nada que comparar —
+  // sin esto, comisiones_ml (o comisiones_mp) queda en 0 silenciosamente y
+  // el total mezcla "sin datos" con datos reales del otro archivo, dando una
+  // tasa sin sentido (visto con datos reales de abril: $0 en comisiones ML
+  // vs $6.165.005 en comisiones MP).
+  if (coberturaML.length === 0) {
+    return `Falta Facturación ML para el ciclo de facturación de ${mesObjetivo} (${cicloStr}). Subí ese archivo antes de calcular.`;
   }
-  if (coberturaMP.length > 0 && !mpDelMes) {
-    return `Facturación MP no contiene ninguna fila del mes ${mesObjetivo}. ` +
-      `El archivo cubre: ${fmtCobertura(coberturaMP)}. ` +
-      `Revisá si el archivo corresponde al mes que estás analizando (el nombre del archivo puede no coincidir con su contenido real).`;
+  if (coberturaMP.length === 0) {
+    return `Falta Facturación MP para el ciclo de facturación de ${mesObjetivo} (${cicloStr}). Subí ese archivo antes de calcular.`;
+  }
+  if (!rangoML) {
+    return `Facturación ML no tiene fechas legibles — no se pudo determinar su cobertura real.`;
+  }
+  if (!rangoMP) {
+    return `Facturación MP no tiene fechas legibles — no se pudo determinar su cobertura real.`;
   }
 
-  // Ambos tienen datos del mes objetivo, pero si la cantidad de días distintos
-  // cubiertos difiere sustancialmente entre archivos (ej. ML solo trae medio
-  // mes, MP trae el mes completo), la tasa de comisión mezcla dos períodos de
-  // tamaño distinto y da un número engañoso — mismo problema raíz que detectó
-  // la Fase 1 (413% de comisión). Se bloquea igual que el caso anterior.
-  if (coberturaML.length > 1 || coberturaMP.length > 1) {
-    return `Los archivos no cubren exactamente el mismo período: ` +
-      `ML cubre ${fmtCobertura(coberturaML)}; MP cubre ${fmtCobertura(coberturaMP)}. ` +
-      `No se puede calcular una tasa de comisión confiable mezclando períodos de distinto tamaño — revisá que ambos archivos correspondan al mismo rango de fechas.`;
+  const cicloDesdeDia = truncarADia(cicloDesde);
+  const cicloHastaDia = truncarADia(cicloHasta);
+
+  // Un archivo "cubre" el ciclo si su rango real se solapa con el ciclo
+  // esperado — si no se solapa en absoluto, el archivo es de otro período.
+  const seSolapa = (r: RangoFechas) => !!r && truncarADia(r.hasta) >= cicloDesdeDia && truncarADia(r.desde) <= cicloHastaDia;
+
+  if (rangoML && !seSolapa(rangoML)) {
+    return `Facturación ML no contiene ninguna fila del ciclo de facturación de ${mesObjetivo} (${cicloStr}). ` +
+      `El archivo cubre ${fmtFecha(rangoML.desde)} → ${fmtFecha(rangoML.hasta)}. ` +
+      `Revisá si subiste el archivo correspondiente a este mes.`;
+  }
+  if (rangoMP && !seSolapa(rangoMP)) {
+    return `Facturación MP no contiene ninguna fila del ciclo de facturación de ${mesObjetivo} (${cicloStr}). ` +
+      `El archivo cubre ${fmtFecha(rangoMP.desde)} → ${fmtFecha(rangoMP.hasta)}. ` +
+      `Revisá si subiste el archivo correspondiente a este mes.`;
+  }
+
+  // Ambos se solapan con el ciclo, pero si alguno viene truncado (no arranca
+  // en el día 15 del mes anterior, o no llega hasta el día 14 del mes
+  // nombrado), el archivo está incompleto — probablemente una descarga
+  // parcial o interrumpida, no un bug: hay que volver a descargarlo.
+  const truncado: string[] = [];
+  if (rangoML) {
+    if (truncarADia(rangoML.desde) > cicloDesdeDia) {
+      truncado.push(`Facturación ML empieza el ${fmtFecha(rangoML.desde)}, debería empezar el ${fmtFecha(cicloDesde)} — faltan los primeros días del ciclo.`);
+    }
+    if (truncarADia(rangoML.hasta) < cicloHastaDia) {
+      truncado.push(`Facturación ML termina el ${fmtFecha(rangoML.hasta)}, debería llegar hasta el ${fmtFecha(cicloHasta)} — faltan los últimos días del ciclo.`);
+    }
+  }
+  if (rangoMP) {
+    if (truncarADia(rangoMP.desde) > cicloDesdeDia) {
+      truncado.push(`Facturación MP empieza el ${fmtFecha(rangoMP.desde)}, debería empezar el ${fmtFecha(cicloDesde)} — faltan los primeros días del ciclo.`);
+    }
+    if (truncarADia(rangoMP.hasta) < cicloHastaDia) {
+      truncado.push(`Facturación MP termina el ${fmtFecha(rangoMP.hasta)}, debería llegar hasta el ${fmtFecha(cicloHasta)} — faltan los últimos días del ciclo.`);
+    }
+  }
+  if (truncado.length > 0) {
+    return `El ciclo de facturación de ${mesObjetivo} es ${cicloStr}, pero al menos un archivo viene incompleto (probablemente una descarga parcial/interrumpida — hay que volver a descargarlo, no es un error de cálculo): ${truncado.join(" ")}`;
   }
 
   return null;
@@ -289,6 +400,7 @@ function auditResultVacio(detalle_errores: string[], error_cobertura?: string): 
     comisiones_mp: 0,
     comisiones_mp_px: 0,
     total_comisiones: 0,
+    notas_credito_ml: 0,
     recuperable: 0,
     neto_recibido_mp: 0,
     tasa_efectiva: 0,
@@ -303,19 +415,20 @@ function auditResultVacio(detalle_errores: string[], error_cobertura?: string): 
 }
 
 export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: number): AuditResult {
-  const [yearStr, monthStr] = mes.split("-");
-  const year = parseInt(yearStr);
-  const month = parseInt(monthStr);
   const detalle_errores: string[] = [];
 
   // ── Validación de cobertura de período (Fase 1: hallazgo crítico) ─────────
   // Antes de calcular cualquier tasa/comisión, verificar que Facturación ML y
-  // Facturación MP cubran el mismo rango real de fechas. Si no, cualquier
+  // Facturación MP cubran el ciclo de facturación real del mes (día 15 del
+  // mes anterior a día 14 del mes nombrado — NO el mes calendario, confirmado
+  // con 6 meses reales que ese es el ciclo verdadero de ML/MP). Si no, la
   // tasa resultante mezcla períodos de distinto tamaño y no es confiable
-  // (ver ejemplo real: ML con 12 días de un mes dio una tasa de 413%).
+  // (ver ejemplo real: ML truncado dio una tasa de 413%).
   const coberturaML = detectarMesesEnArchivo(data.facturacionML);
   const coberturaMP = detectarMesesEnArchivo(data.facturacionMP);
-  const errorCobertura = validarCoberturaMeses(coberturaML, coberturaMP, mes);
+  const rangoMLReal = detectarRangoFechas(data.facturacionML);
+  const rangoMPReal = detectarRangoFechas(data.facturacionMP);
+  const errorCobertura = validarCoberturaMeses(coberturaML, coberturaMP, mes, rangoMLReal, rangoMPReal);
   if (errorCobertura) {
     return auditResultVacio(
       [`[DIAG] Cobertura ML: ${JSON.stringify(coberturaML)}`, `[DIAG] Cobertura MP: ${JSON.stringify(coberturaMP)}`],
@@ -355,31 +468,20 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
       .replace(/[óòô]/g, "o").replace(/[úùü]/g, "u").replace(/ñ/g, "n");
   }
 
+  // El ciclo real de facturación de ML/MP es 15→14 (ver cicloEsperado), no
+  // el mes calendario — confirmado con 6 meses reales. isInMonth filtra
+  // contra ese ciclo, para que el cálculo cuente exactamente las mismas
+  // filas que ya validó validarCoberturaMeses como pertenecientes al mes.
+  const { desde: cicloDesde, hasta: cicloHasta } = cicloEsperado(mes);
+
+  const cicloDesdeDia = truncarADia(cicloDesde);
+  const cicloHastaDia = truncarADia(cicloHasta);
+
   function isInMonth(dateVal: unknown): boolean {
-    if (!dateVal) return false;
-    if (dateVal instanceof Date) {
-      return dateVal.getFullYear() === year && (dateVal.getMonth() + 1) === month;
-    }
-    const s = String(dateVal).trim();
-    if (!s) return false;
-    const iso = s.match(/(\d{4})-(\d{2})-\d{2}/);
-    if (iso) return +iso[1] === year && +iso[2] === month;
-    const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-    if (dmy) {
-      const y = +dmy[3] < 100 ? 2000 + +dmy[3] : +dmy[3];
-      return y === year && +dmy[2] === month;
-    }
-    const dmy2 = s.match(/^(\d{1,2})-(\d{2})-(\d{4})/);
-    if (dmy2) return +dmy2[3] === year && +dmy2[2] === month;
-    const sp = s.match(/(\d{1,2})[- ](ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[- ](\d{4})/i);
-    if (sp) return +sp[3] === year && MESES_ES[sp[2].toLowerCase()] === month;
-    try {
-      const d = new Date(s);
-      if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
-        return d.getFullYear() === year && (d.getMonth() + 1) === month;
-      }
-    } catch { /* ignorar */ }
-    return false;
+    const d = extraerFecha(dateVal);
+    if (!d) return false;
+    const dDia = truncarADia(d);
+    return dDia >= cicloDesdeDia && dDia <= cicloHastaDia;
   }
 
   function findKey(row: Record<string, unknown>, ...patterns: string[]): string | null {
@@ -694,6 +796,7 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
     comisiones_mp,
     comisiones_mp_px,
     total_comisiones,
+    notas_credito_ml: notasCreditoMLTotal,
     recuperable,
     neto_recibido_mp,
     tasa_efectiva,

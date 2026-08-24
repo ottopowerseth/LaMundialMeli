@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { parseAuditFiles, calculateAudit, detectarMesesEnArchivo } from "@/lib/audit";
-import { ensureSheets, appendSheet, readSheet } from "@/lib/sheets";
+import { parseAuditFiles, calculateAudit, detectarMesesEnArchivo, cicloEsperado } from "@/lib/audit";
+import { ensureSheets, appendSheet, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 
 async function fetchReferenciaML(mes: string) {
@@ -10,8 +10,11 @@ async function fetchReferenciaML(mes: string) {
   const month = parseInt(monthStr);
   if (!year || !month) return null;
 
-  const desde = new Date(Date.UTC(year, month - 1, 1));
-  const hasta = new Date(Date.UTC(year, month, 1));
+  // Ciclo real de facturación (15→14, ver cicloEsperado en lib/audit.ts), no
+  // el mes calendario — para que ventas_brutas quede en el mismo rango de
+  // fechas que las comisiones calculadas desde los archivos de Facturación.
+  const { desde, hasta: cicloHasta } = cicloEsperado(mes);
+  const hasta = new Date(cicloHasta.getTime() + 86400000); // +1 día: /orders/search usa "hasta" exclusivo
 
   try {
     const token = await getValidAccessToken();
@@ -85,25 +88,20 @@ export async function POST(request: Request) {
 
     const headers = [
       "Mes", "Ventas Brutas", "Ventas Netas", "Comisiones ML", "Comisiones MP",
-      "Total Comisiones", "Recuperable", "Neto Recibido MP", "Tasa Efectiva %",
-      "Flex Crédito", "Flex Débito", "Errores", "Resumen", "Analizado",
-      "Comisiones MP (PX, no verificado)",
+      "Comisiones MP (PX, no verificado)", "Total Comisiones", "Notas Crédito ML",
+      "Recuperable", "Neto Recibido MP", "Tasa Efectiva %", "Flex Crédito",
+      "Flex Débito", "Errores", "Resumen", "Analizado",
     ];
 
-    try {
-      const existing = await readSheet("Auditoría!A1:A1");
-      if (!existing.length || !existing[0]?.length) {
-        await appendSheet("Auditoría!A1", [headers]);
-      }
-    } catch { /* continue */ }
-
-    await appendSheet("Auditoría!A1", [[
+    const fila = [
       mes,
       result.ventas_brutas,
       result.ventas_netas,
       result.comisiones_ml,
       result.comisiones_mp,
+      result.comisiones_mp_px,
       result.total_comisiones,
+      result.notas_credito_ml,
       result.recuperable,
       result.neto_recibido_mp,
       result.tasa_efectiva,
@@ -112,8 +110,24 @@ export async function POST(request: Request) {
       result.errores_count,
       result.resumen,
       new Date().toLocaleString("es-CL"),
-      result.comisiones_mp_px,
-    ]]);
+    ];
+
+    // Cada mes es una fila única (a diferencia del patrón de snapshots
+    // append-only de Métricas/Competencia): si ya existe una fila para este
+    // mes, se sobreescribe en el mismo lugar en vez de duplicarla — permite
+    // re-analizar un mes (ej. tras corregir un archivo) sin acumular
+    // versiones viejas en el histórico.
+    const existing = await readSheet("Auditoría!A:A");
+    if (!existing.length || !existing[0]?.length) {
+      await appendSheet("Auditoría!A1", [headers]);
+    }
+    const filaExistente = existing.findIndex((r) => r[0] === mes);
+    if (filaExistente >= 0) {
+      const numeroFila = filaExistente + 1; // 1-indexed para el rango de Sheets
+      await writeSheet(`Auditoría!A${numeroFila}:P${numeroFila}`, [fila]);
+    } else {
+      await appendSheet("Auditoría!A1", [fila]);
+    }
 
     return NextResponse.json({ ok: true, mes, result, referenciaML, mesesML, mesesMP });
   } catch (error) {
