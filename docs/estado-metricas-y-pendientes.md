@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-08-24 (mitigación de condición de carrera en Auditoría: lock backend + guardia cliente)
+**Última actualización:** 2026-09-26 (Fases A, C y F: campos ROAS ampliados, tabla por producto, aviso de cobertura de Costo)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -29,11 +29,19 @@
    `/items/{id}/visits` (top 10 publicaciones por ventas del período, límite
    para no disparar decenas de requests).
    **Gotcha:** la API de Visits devuelve 400 si `date_to` cae en el futuro
-   (a diferencia de `/orders/search`, que sí lo tolera). El cap se aplica
-   **solo en esa llamada puntual** (`hastaVisitas = min(hasta, ahora)`), no
-   en `rangoFechas()` ni en el resto de las secciones — para el período
-   "mes" en curso, el `hasta` real (usado por Ventas/Auditoría) sigue siendo
-   el primer día del mes siguiente.
+   (a diferencia de `/orders/search`, que sí lo tolera), y además **no acepta
+   más de 1 id por llamada** (`ids=id1,id2` da 400 explícito "maximum amount
+   of items to query is 1") — no hay forma de batchear visitas, hay que
+   seguir 1 request por publicación.
+   El cap de fecha vive en un helper único, **`hastaEfectivo(hasta)`**
+   (`hastaEfectivo = min(hasta, ahora)`), usado por esta sección y por la
+   Tabla por producto (sección 8) — única fuente de verdad para este gotcha
+   en todo el endpoint. No se aplica en `rangoFechas()` ni en el resto de
+   las secciones — para el período "mes" en curso, el `hasta` real (usado
+   por Ventas/Auditoría/Ads) sigue siendo el primer día del mes siguiente.
+   Se olvidó reutilizar este helper una vez (Fase C, ver historial de
+   commits) — cualquier llamada nueva a Visits debe usarlo, no repetir el
+   cálculo inline.
 4. **Preguntas** — `/questions/search`, filtrado por fecha en el código (el
    endpoint no soporta filtro de fecha nativo). `date_created` viene en hora
    Chile (-04:00), no UTC — se normaliza antes de comparar contra el rango.
@@ -46,14 +54,39 @@
 6. **ROAS / Publicidad** — `/advertising/advertisers` +
    `/marketplace/advertising/{site}/advertisers/{id}/product_ads/campaigns/search`.
    Inversión, ventas atribuidas, ROAS agregado (cálculo propio, no de ML) y
-   tabla de campañas.
+   tabla de campañas con: estado, estrategia, `acos_target`, presupuesto
+   diario, **uso de presupuesto** (cálculo propio, ver gotcha abajo), clics,
+   impresiones, CTR, CPC, costo, montos directo/indirecto, ROAS, ACOS,
+   unidades y monto orgánicos *(campos ampliados — commit `4a173e6`)*.
    **Gotcha (no es de código):** el bloqueo inicial para implementar esta
    sección no fue técnico — el scope **"Publicidad de un producto"** estaba
    en **"Sin acceso"** en el DevCenter de la aplicación. Hubo que cambiarlo a
    **"Lectura"** y volver a autorizar la app (re-consentimiento OAuth) para
    que emitiera un token nuevo con ese permiso — el token viejo no lo
    adquiere solo con el cambio de scope en el panel.
-7. **Ranking de productos + Comparación de período** *(nuevo — commit `83e4497`)*
+   **Gotcha (fechas, al revés que Visits):** este endpoint SÍ tolera
+   `date_to` en el futuro — no aplicar el cap de `hastaEfectivo` acá.
+   **Uso de presupuesto** (`usoPresupuesto = costo del período / (daily_budget
+   × días TRANSCURRIDOS))` — no días del período completo. Bug encontrado y
+   corregido (commit `8b3b280`): al principio se usaba `(hasta - desde)` sin
+   capear, que para "mes" en curso son 30 días (mes calendario completo,
+   incluyendo días futuros que todavía no gastaron nada) — daba 84.8% en vez
+   del ~98% real. Fix: usar `hastaEfectivo(hasta)` (mismo helper de Visits,
+   por una razón distinta — no es que la API lo rechace, es que el cálculo
+   estaba mal planteado).
+   **Campaña sin metadata (`338628484`):** existe una 3ra campaña, vista solo
+   indirectamente vía el `campaign_id` de sus ítems en `/ads/search` (503
+   ítems, marca "Issue", `catalog_listing`, mayormente `idle`/`hold`) — no
+   aparece en `/campaigns/search` y `GET /product_ads/campaigns/{id}` por id
+   directo da 404 explícito (no existe endpoint de metadata propia). Costo,
+   clics e impresiones = 0 en el período probado (2026-09). Decisión
+   (2026-09-26): no incluirla en `inversionTotal`/`roasAgregado` mientras
+   siga en cero — no hay nada que ganar y no hay forma de mostrarla como fila
+   de campaña sin metadata. Si en algún sync futuro aparece con costo > 0,
+   tratarla ahí como "campaña sin metadata, solo agregados".
+7. **Ranking de productos + Comparación de período** *(commit `83e4497`)*
+   — ver detalle abajo.
+8. **Tabla por producto** *(nuevo — commit `bd8d412`, fixes `351562c`/`8b3b280`)*
    — ver detalle abajo.
 
 ### 7. Ranking de productos + Comparación de período
@@ -78,6 +111,67 @@
   verificado con `periodo=semana` contra la API real (rango de 7 días,
   período anterior de igual duración calculado correctamente).
 
+### 8. Tabla por producto
+
+**Commits:** `bd8d412` (feature) + `351562c`, `8b3b280` (fixes) — todos del
+2026-09-26.
+
+Filas: unión de top 50 por ventas del período (`TABLA_PRODUCTOS_TOP_VENTAS`)
+y todo ítem con costo de ads > 0 en el período — así no se pierde ningún
+producto que ya tiene inversión activa aunque no esté en el top de ventas.
+Columnas por fila: ventas $/unidades, visitas, conversión, stock, Full
+sí/no, precio, Costo/margen % (desde Sheets, `null` si no hay Costo
+cargado — nunca 0% ni NaN), campaña, estado del anuncio, y métricas de ads
+por ítem (clics, impresiones, CTR, CPC, costo, ACOS, ROAS).
+
+**Fuente de las métricas de ads por ítem:**
+`GET /marketplace/advertising/{site}/advertisers/{id}/product_ads/ads/search`
+— mismo grupo de endpoints y parámetro `metrics=` que la sección ROAS, pero
+a nivel `item_id` en vez de campaña.
+**Gotcha:** el parámetro `campaign_id` en la query se **ignora
+silenciosamente** (mismo patrón que el filtro de fecha roto de Reclamos,
+sección 5) — confirmado probando los 2 ids reales y sin filtro: siempre
+devuelve el mismo total paginado. Hay que traer todas las páginas y
+filtrar por el `campaign_id` que trae cada resultado, client-side.
+Verificado por consistencia: sumando costo/clics/impresiones de los ítems
+de una campaña, el total calza con el agregado de esa campaña (diferencia
+<0.3%, dentro del margen de redondeo).
+
+**Etiquetas automáticas** (umbrales como constantes comentadas en el
+código — `TABLA_PRODUCTOS_TOP_VENTAS`, `STOCK_BAJO_DIAS_COBERTURA`,
+`ACOS_REVISAR_MARGEN_RELATIVO`):
+- **Candidato** — top ventas, sin campaña activa, stock en Full, conversión
+  ≥ mediana de la tabla (mediana calculada solo sobre filas con visitas > 0,
+  para no sesgar con "sin datos" tratado como 0% de conversión).
+- **Revisar** — ACOS de la campaña del ítem por encima de su `acos_target`
+  con un 20% de margen relativo, o costo de ads > 0 con cero ventas
+  atribuidas (roas = 0).
+- **Stock bajo** — en campaña activa, con menos de `STOCK_BAJO_DIAS_COBERTURA`
+  días de cobertura al ritmo de ventas del período. Requiere ventas > 0 en
+  el período para estimar velocidad — un ítem con 0 ventas no se etiqueta
+  aunque tenga poco stock (no hay forma de distinguir "stock bajo" de "sin
+  rotación" sin ese dato). Verificado con datos reales: 0 candidatos para
+  esta etiqueta en la cuenta al momento de implementarla (ningún ítem en
+  campaña activa bajaba de 41 días de cobertura) — no es un umbral roto,
+  es que la cuenta no tiene hoy ningún caso real.
+
+**Bug encontrado y corregido antes del push (`351562c`, `8b3b280`):** la
+llamada a `/items/{id}/visits` dentro de esta sección no usaba el cap de
+`hastaEfectivo` (mandaba el `hasta` real, futuro para "mes" en curso) — la
+API la rechazaba con 400 y el `catch` silencioso dejaba `visitas=null` en
+**todas** las filas sin ningún error visible. Efecto en cascada: mediana de
+conversión = `NaN` → la etiqueta "Candidato" nunca se disparaba (0 siempre,
+sin importar los datos reales). Se extrajo el helper `hastaEfectivo` (ver
+sección 3) como única fuente de verdad. Verificado post-fix contra datos
+reales: 8-9 candidatos reales con conversión 6%-26% (mediana ~5.4%).
+
+**Viabilidad medida con llamadas reales:** la tabla agrega ~7s sobre el
+resto del endpoint (paginación de `/ads/search` + visitas con concurrencia
+8 + batch stock/Full de 20 + lectura de Sheets para Costo/Precio) — total
+~17-33s en corridas reales (dev y producción), con margen holgado contra
+el límite de 60s de Vercel Hobby. Se descartó separar en endpoint aparte
+por este motivo.
+
 ## Historial de commits relevantes
 
 | Commit | Descripción |
@@ -86,6 +180,11 @@
 | `3a06e35` | Corrige 3 hallazgos de la validación de Auditoría (Fase 1): validación de cobertura contra el ciclo real de facturación 15→14, fix de truncado de timestamp, `isInMonth`/`fetchReferenciaML` alineados al ciclo real |
 | `2f35371` | *chore: eliminar código muerto* — `lib/mercadolibre.ts` eliminado (cliente ML redundante con `lib/ml-token.ts`, sin refresh automático, sin ningún import en el proyecto) y `@anthropic-ai/sdk` removido de `package.json`/`package-lock.json` (declarado pero nunca usado en ningún archivo) |
 | `83e4497` | *feat: agregar ranking de productos y comparación de período a Métricas* — ver sección 7 arriba |
+| `4a173e6` | *feat: exponer campos ROAS descartados y cancelaciones/porTipo en Métricas* — Fase A: cpc, direct_amount, indirect_amount, organic_units_quantity/amount, strategy, acos_target, daily_budget + uso de presupuesto (con bug inicial, ver `8b3b280`); reputacion.cancellations y reclamos.porTipo ya se calculaban pero no se renderizaban |
+| `b855cd0` | *feat: aviso de cobertura del campo Costo en Publicaciones* — Fase F: aviso en el Log de sincronización con % de activas sin Costo (por cantidad y volumen) y top 20 sin costo por ventas |
+| `bd8d412` | *feat: tabla por producto en Métricas para decidir candidatos a campaña* — Fase C, ver sección 8 arriba (con bug inicial de visitas, ver `351562c`) |
+| `351562c` | *fix: capear date_to futuro en visitas de la tabla por producto* — extrae `hastaEfectivo`, corrige el bug de "Candidato" nunca se disparaba |
+| `8b3b280` | *fix: uso de presupuesto con días transcurridos, no días del período completo* — corrige el 84.8% → 97.9% de "Top Ventas" |
 
 ## Pendiente / sin decidir
 
@@ -423,3 +522,35 @@ la publicación sigue activa, está pausada, o sin stock.
 - **Pendiente de decidir**: qué mostrar si un producto vendido en el período
   ya no tiene fila en Publicaciones (por ejemplo, se descontinuó o se borró
   la publicación) — el cruce por `ID` no encontraría match en ese caso.
+
+### Fases B, D, E — pendientes (roadmap de revisión periódica y decisión de campañas)
+
+Ver investigación completa del 2026-09-26 (Fases A/C/F ya implementadas,
+secciones 6 y 8 arriba). Quedan 3 fases del roadmap original sin implementar:
+
+**Fase B — Comparación de período anterior en todas las secciones.**
+Hoy solo Ventas la tiene (`rangoAnterior`/`calcularVariacionPct`/
+`VariacionBadge`, ya reutilizables — ver sección 7). Extenderla a
+Reputación, Visitas, Preguntas, Reclamos y ROAS es aplicar el mismo patrón
+ya validado, sin investigación nueva pendiente. Da contexto de tendencia
+para revisión periódica (ej. "reclamos +40% vs. mes anterior").
+
+**Fase D — Botón "Exportar para revisión".** Formato texto compacto (no
+JSON) pensado para pegar en un chat: todas las métricas del período +
+comparación con el período anterior equivalente (depende de que Fase B
+esté lista para todas las secciones, no solo Ventas) + la tabla por
+producto (sección 8, ya implementada). Diseño de formato ya propuesto en
+la investigación del 2026-09-26 — falta implementar el ensamblado y el
+botón en la UI.
+
+**Fase E — Tabla por producto completa (519 activas, no solo top 50).**
+La Fase C (sección 8) cubre top 50 por ventas + ítems con costo de ads > 0
+— deja afuera "candidatos ocultos" (buena conversión, pocas ventas
+históricas, fuera del top). Cubrir las 519 publicaciones activas no cabe
+en el mismo request de `metrics/route.ts` sin arriesgar el límite de 60s
+(519 llamadas a `/items/{id}/visits`, 1 por ítem, sin batch posible — ver
+gotcha de la sección 3). **Solo implementar si la Fase C, en uso real,
+demuestra que deja afuera candidatos que sí importan** — si el top 50
+alcanza para las decisiones de campaña de Otto, no vale el esfuerzo de un
+endpoint separado (`/api/tabla-productos`, maxDuration 60 propio) solo para
+cubrir el resto del catálogo.
