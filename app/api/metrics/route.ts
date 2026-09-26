@@ -78,13 +78,22 @@ type CampanaRoas = {
   id: number;
   nombre: string;
   estado: string;
+  estrategia: string;
+  acosTarget: number;
+  presupuestoDiario: number;
   presupuesto: number;
   clics: number;
   impresiones: number;
   ctr: number;
+  cpc: number;
   costo: number;
   roas: number;
   acos: number;
+  montoDirecto: number;
+  montoIndirecto: number;
+  unidadesOrganicas: number;
+  montoOrganico: number;
+  usoPresupuesto: number | null;
 };
 type RoasMetrics = {
   ok: boolean;
@@ -503,6 +512,13 @@ async function calcularReclamos(
 // un cálculo propio (total_amount / cost sumado entre campañas) porque no
 // existe un endpoint de resumen agregado a nivel cuenta — no confundir con
 // los roas por campaña, que son valores directos de ML.
+//
+// usoPresupuesto también es cálculo propio: ML no expone un % de uso del
+// presupuesto por período, solo daily_budget (presupuesto diario fijo). Se
+// compara el costo real del período contra daily_budget × cantidad de días
+// del período — una aproximación, no lo que ML usaría internamente para
+// pausar la campaña por presupuesto agotado (esa lógica es diaria, no de
+// período completo).
 const ROAS_METRICS_FIELDS = "clicks,prints,ctr,cost,cpc,acos,roas,organic_units_quantity,organic_units_amount,direct_amount,indirect_amount,total_amount";
 
 async function calcularRoas(
@@ -527,15 +543,23 @@ async function calcularRoas(
         id: number;
         name: string;
         status: string;
+        strategy: string;
+        acos_target: number;
         budget: number;
+        daily_budget: number;
         metrics?: {
           clicks: number;
           prints: number;
           ctr: number;
           cost: number;
+          cpc: number;
           acos: number;
           roas: number;
+          direct_amount: number;
+          indirect_amount: number;
           total_amount: number;
+          organic_units_quantity: number;
+          organic_units_amount: number;
         };
       }[];
     }>(
@@ -544,18 +568,38 @@ async function calcularRoas(
       { "Api-Version": "1", "Content-Type": "application/json" }
     );
 
-    const campanas: CampanaRoas[] = (data.results ?? []).map((c) => ({
-      id: c.id,
-      nombre: c.name,
-      estado: c.status,
-      presupuesto: c.budget,
-      clics: c.metrics?.clicks ?? 0,
-      impresiones: c.metrics?.prints ?? 0,
-      ctr: c.metrics?.ctr ?? 0,
-      costo: c.metrics?.cost ?? 0,
-      roas: c.metrics?.roas ?? 0,
-      acos: c.metrics?.acos ?? 0,
-    }));
+    // Días del período para "uso de presupuesto" — mismo criterio que el resto
+    // del endpoint: se usa el rango real (desde/hasta), no una duración fija,
+    // porque el período puede ser día/semana/mes con distinta cantidad de días.
+    const diasPeriodo = Math.max(1, Math.round((hasta.getTime() - desde.getTime()) / 86400000));
+
+    const campanas: CampanaRoas[] = (data.results ?? []).map((c) => {
+      const costo = c.metrics?.cost ?? 0;
+      const presupuestoTotalPeriodo = c.daily_budget * diasPeriodo;
+      return {
+        id: c.id,
+        nombre: c.name,
+        estado: c.status,
+        estrategia: c.strategy,
+        acosTarget: c.acos_target,
+        presupuestoDiario: c.daily_budget,
+        presupuesto: c.budget,
+        clics: c.metrics?.clicks ?? 0,
+        impresiones: c.metrics?.prints ?? 0,
+        ctr: c.metrics?.ctr ?? 0,
+        cpc: c.metrics?.cpc ?? 0,
+        costo,
+        roas: c.metrics?.roas ?? 0,
+        acos: c.metrics?.acos ?? 0,
+        montoDirecto: c.metrics?.direct_amount ?? 0,
+        montoIndirecto: c.metrics?.indirect_amount ?? 0,
+        unidadesOrganicas: c.metrics?.organic_units_quantity ?? 0,
+        montoOrganico: c.metrics?.organic_units_amount ?? 0,
+        usoPresupuesto: presupuestoTotalPeriodo > 0
+          ? Math.round((costo / presupuestoTotalPeriodo) * 1000) / 10
+          : null,
+      };
+    });
 
     const inversionTotal = campanas.reduce((sum, c) => sum + c.costo, 0);
     const ventasAtribuidasTotal = (data.results ?? []).reduce((sum, c) => sum + (c.metrics?.total_amount ?? 0), 0);

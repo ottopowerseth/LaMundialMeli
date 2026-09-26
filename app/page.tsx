@@ -109,13 +109,22 @@ type CampanaRoas = {
   id: number;
   nombre: string;
   estado: string;
+  estrategia: string;
+  acosTarget: number;
+  presupuestoDiario: number;
   presupuesto: number;
   clics: number;
   impresiones: number;
   ctr: number;
+  cpc: number;
   costo: number;
   roas: number;
   acos: number;
+  montoDirecto: number;
+  montoIndirecto: number;
+  unidadesOrganicas: number;
+  montoOrganico: number;
+  usoPresupuesto: number | null;
 };
 type RoasMetrics = {
   ok: boolean;
@@ -1662,6 +1671,12 @@ export default function Home() {
                           <p className="text-xl font-bold text-gray-900">{metricsResult.reputacion.claims.value} <span className="text-sm font-normal text-gray-400">({(metricsResult.reputacion.claims.rate * 100).toFixed(2)}%)</span></p>
                         </div>
                       )}
+                      {metricsResult.reputacion.cancellations && (
+                        <div>
+                          <p className="text-sm text-gray-500">Cancelaciones ({metricsResult.reputacion.cancellations.period})</p>
+                          <p className="text-xl font-bold text-gray-900">{metricsResult.reputacion.cancellations.value} <span className="text-sm font-normal text-gray-400">({(metricsResult.reputacion.cancellations.rate * 100).toFixed(2)}%)</span></p>
+                        </div>
+                      )}
                       {metricsResult.reputacion.delayedHandlingTime && (
                         <div>
                           <p className="text-sm text-gray-500">Despacho tardío ({metricsResult.reputacion.delayedHandlingTime.period})</p>
@@ -1752,6 +1767,15 @@ export default function Home() {
                           ))}
                         </div>
                       )}
+                      {metricsResult.reclamos.porTipo && Object.keys(metricsResult.reclamos.porTipo).length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries(metricsResult.reclamos.porTipo).map(([tipo, cant]) => (
+                            <span key={tipo} className="text-xs font-medium bg-blue-50 text-blue-700 rounded-full px-3 py-1">
+                              {tipo}: {cant}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </>
                   ) : (
                     <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.reclamos?.error ? ` (${metricsResult.reclamos.error})` : ""}.</p>
@@ -1788,13 +1812,21 @@ export default function Home() {
                               <tr className="text-left text-gray-500 border-b border-gray-200">
                                 <th className="py-2 pr-3">Campaña</th>
                                 <th className="py-2 pr-3">Estado</th>
-                                <th className="py-2 pr-3">Presupuesto</th>
+                                <th className="py-2 pr-3">Estrategia</th>
+                                <th className="py-2 pr-3">Presup. diario</th>
+                                <th className="py-2 pr-3">Uso presup.</th>
                                 <th className="py-2 pr-3">Clics</th>
                                 <th className="py-2 pr-3">Impresiones</th>
                                 <th className="py-2 pr-3">CTR</th>
+                                <th className="py-2 pr-3">CPC</th>
                                 <th className="py-2 pr-3">Costo</th>
+                                <th className="py-2 pr-3">Directo</th>
+                                <th className="py-2 pr-3">Indirecto</th>
                                 <th className="py-2 pr-3">ROAS</th>
                                 <th className="py-2 pr-3">ACOS</th>
+                                <th className="py-2 pr-3">ACOS target</th>
+                                <th className="py-2 pr-3">Uds. orgánicas</th>
+                                <th className="py-2 pr-3">Monto orgánico</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1802,13 +1834,21 @@ export default function Home() {
                                 <tr key={c.id} className="border-b border-gray-100 last:border-0">
                                   <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{c.nombre}</td>
                                   <td className="py-2 pr-3 text-gray-700 capitalize">{c.estado}</td>
-                                  <td className="py-2 pr-3 text-gray-700">${c.presupuesto.toLocaleString("es-CL")}</td>
+                                  <td className="py-2 pr-3 text-gray-700 capitalize">{c.estrategia}</td>
+                                  <td className="py-2 pr-3 text-gray-700">${c.presupuestoDiario.toLocaleString("es-CL")}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.usoPresupuesto !== null ? `${c.usoPresupuesto}%` : "-"}</td>
                                   <td className="py-2 pr-3 text-gray-700">{c.clics}</td>
                                   <td className="py-2 pr-3 text-gray-700">{c.impresiones}</td>
                                   <td className="py-2 pr-3 text-gray-700">{c.ctr}%</td>
+                                  <td className="py-2 pr-3 text-gray-700">${c.cpc.toLocaleString("es-CL")}</td>
                                   <td className="py-2 pr-3 text-gray-700">${c.costo.toLocaleString("es-CL")}</td>
+                                  <td className="py-2 pr-3 text-gray-700">${c.montoDirecto.toLocaleString("es-CL")}</td>
+                                  <td className="py-2 pr-3 text-gray-700">${c.montoIndirecto.toLocaleString("es-CL")}</td>
                                   <td className="py-2 pr-3 text-gray-700">{c.costo > 0 ? c.roas.toFixed(2) : "sin actividad en el período"}</td>
                                   <td className="py-2 pr-3 text-gray-700">{c.costo > 0 ? `${c.acos}%` : "-"}</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.acosTarget}%</td>
+                                  <td className="py-2 pr-3 text-gray-700">{c.unidadesOrganicas}</td>
+                                  <td className="py-2 pr-3 text-gray-700">${c.montoOrganico.toLocaleString("es-CL")}</td>
                                 </tr>
                               ))}
                             </tbody>
