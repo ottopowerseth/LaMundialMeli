@@ -99,6 +99,14 @@ export async function POST() {
     let publicacionesOk = false;
     let productosNuevos: { id: string; titulo: string; precio: number; estado: string }[] = [];
     let cambiosStock: { titulo: string; antes: number; despues: number; diferencia: number }[] = [];
+    let coberturaCosto: {
+      activasTotal: number;
+      activasConCosto: number;
+      activasSinCosto: number;
+      vendidosActivasConCosto: number;
+      vendidosActivasSinCosto: number;
+      topSinCosto: { id: string; titulo: string; vendidos: number }[];
+    } | null = null;
 
     try {
       // Publicaciones — buscar en todos los estados para incluir productos nuevos
@@ -197,6 +205,38 @@ export async function POST() {
       await clearSheet("Publicaciones");
       await writeSheet("Publicaciones!A1", [headers, ...rows]);
       publicacionesOk = true;
+
+      // Cobertura del campo Costo (columna F, manual) entre publicaciones
+      // activas — solo activas: una pausada/cerrada sin costo no es urgente
+      // de completar. Se usa el manual.costo YA leído arriba (preservado
+      // entre syncs), no lo que trae ML, porque Costo nunca viene de la API.
+      const activasSinCosto: { id: string; titulo: string; vendidos: number }[] = [];
+      let activasCount = 0;
+      let activasConCostoCount = 0;
+      let vendidosActivasConCosto = 0;
+      let vendidosActivasSinCosto = 0;
+      for (const item of items) {
+        if (item.status !== "active") continue;
+        activasCount++;
+        const id = String(item.id);
+        const vendidos = resolveNumeric(item.sold_quantity) ?? 0;
+        const tieneCosto = !!datosManual[id]?.costo;
+        if (tieneCosto) {
+          activasConCostoCount++;
+          vendidosActivasConCosto += vendidos;
+        } else {
+          vendidosActivasSinCosto += vendidos;
+          activasSinCosto.push({ id, titulo: item.title as string, vendidos });
+        }
+      }
+      coberturaCosto = {
+        activasTotal: activasCount,
+        activasConCosto: activasConCostoCount,
+        activasSinCosto: activasCount - activasConCostoCount,
+        vendidosActivasConCosto,
+        vendidosActivasSinCosto,
+        topSinCosto: activasSinCosto.sort((a, b) => b.vendidos - a.vendidos).slice(0, 20),
+      };
 
       // Detectar productos nuevos (IDs que no estaban en la hoja anterior)
       productosNuevos = items
@@ -359,6 +399,7 @@ export async function POST() {
       ventas: ventasOk ? orders.length : null,
       productosNuevos,
       cambiosStock,
+      coberturaCosto,
       ventasNuevas,
       erroresValidacion,
       erroresSync,
