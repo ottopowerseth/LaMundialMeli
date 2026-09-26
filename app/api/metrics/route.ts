@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
+import { readSheet } from "@/lib/sheets";
 
 // Endpoint separado de ml-sync (no reutiliza su maxDuration ni su budget):
 // mismo criterio que backfill-shipping, para no arriesgar timeouts en rutas
@@ -104,6 +105,38 @@ type RoasMetrics = {
   error?: string;
 };
 
+type EtiquetaProducto = "Candidato" | "Revisar" | "Stock bajo";
+
+type FilaTablaProducto = {
+  id: string;
+  titulo: string;
+  ventasMonto: number;
+  ventasUnidades: number;
+  visitas: number | null;
+  conversion: number | null;
+  stock: number | null;
+  full: boolean;
+  precio: number | null;
+  costo: number | null;
+  margenPct: number | null;
+  campana: string | null;
+  campanaId: number | null;
+  statusAnuncio: string | null;
+  clics: number;
+  impresiones: number;
+  ctr: number;
+  cpc: number;
+  costoAds: number;
+  acos: number;
+  roas: number;
+  etiquetas: EtiquetaProducto[];
+};
+type TablaProductosMetrics = {
+  ok: boolean;
+  filas?: FilaTablaProducto[];
+  error?: string;
+};
+
 // Mismo criterio que fetchReferenciaML en audit/analyze/route.ts: límites de
 // período construidos con Date.UTC, no new Date(...) en hora local — para un
 // mes ya cerrado, una construcción en hora local corre el borde del día 1 y
@@ -166,7 +199,7 @@ export async function GET(req: NextRequest) {
     // por ventas del período define qué items consultar en Visitas.
     const ventas = await calcularVentas(mlGet, userId, desde, hasta);
     const { desde: desdeAnterior, hasta: hastaAnterior } = rangoAnterior(periodo, desde, hasta);
-    const [reputacion, visitas, preguntas, reclamos, roas, ventasAnterior] = await Promise.all([
+    const [reputacion, visitas, preguntas, reclamos, roasResultado, ventasAnterior] = await Promise.all([
       Promise.resolve(calcularReputacion(user)),
       calcularVisitas(mlGet, userId, desde, hasta, ventas),
       calcularPreguntas(mlGet, userId, desde, hasta),
@@ -174,6 +207,7 @@ export async function GET(req: NextRequest) {
       calcularRoas(mlGet, desde, hasta),
       calcularVentas(mlGet, userId, desdeAnterior, hastaAnterior),
     ]);
+    const roas = roasResultado.metrics;
 
     if (ventas.ok) {
       ventas.ranking = armarRanking(ventas.ventasPorItem);
@@ -186,6 +220,11 @@ export async function GET(req: NextRequest) {
         : null;
     }
 
+    // Después de Ventas y ROAS (no en el Promise.all de arriba): necesita
+    // ventasPorItem para el top de ventas y roas.campanas para acos_target
+    // por campaña — ambos ya resueltos acá.
+    const tablaProductos = await calcularTablaProductos(mlGet, desde, hasta, ventas, roas, roasResultado.advertiser);
+
     return NextResponse.json({
       ok: true,
       periodo,
@@ -197,6 +236,7 @@ export async function GET(req: NextRequest) {
       preguntas,
       reclamos,
       roas,
+      tablaProductos,
     });
   } catch (error) {
     console.error("[metrics]", error);
@@ -521,11 +561,16 @@ async function calcularReclamos(
 // período completo).
 const ROAS_METRICS_FIELDS = "clicks,prints,ctr,cost,cpc,acos,roas,organic_units_quantity,organic_units_amount,direct_amount,indirect_amount,total_amount";
 
+// Se exporta junto al resultado de negocio (RoasMetrics) para que
+// calcularTablaProductos no tenga que resolver el advertiser de nuevo — es
+// el mismo dato, pedirlo dos veces solo gastaría una llamada más sin razón.
+type RoasResultado = { metrics: RoasMetrics; advertiser: { advertiser_id: number; site_id: string } | null };
+
 async function calcularRoas(
   mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
   desde: Date,
   hasta: Date
-): Promise<RoasMetrics> {
+): Promise<RoasResultado> {
   try {
     const { data: advertisersData } = await mlGet<{ advertisers: { advertiser_id: number; site_id: string }[] }>(
       "/advertising/advertisers",
@@ -533,7 +578,7 @@ async function calcularRoas(
       { "Api-Version": "1" }
     );
     const advertiser = advertisersData.advertisers?.[0];
-    if (!advertiser) return { ok: false, error: "No hay advertiser de Product Ads asociado a esta cuenta" };
+    if (!advertiser) return { metrics: { ok: false, error: "No hay advertiser de Product Ads asociado a esta cuenta" }, advertiser: null };
 
     const dateFrom = desde.toISOString().slice(0, 10);
     const dateTo = hasta.toISOString().slice(0, 10);
@@ -605,12 +650,288 @@ async function calcularRoas(
     const ventasAtribuidasTotal = (data.results ?? []).reduce((sum, c) => sum + (c.metrics?.total_amount ?? 0), 0);
 
     return {
-      ok: true,
-      inversionTotal,
-      ventasAtribuidasTotal,
-      roasAgregado: inversionTotal > 0 ? Math.round((ventasAtribuidasTotal / inversionTotal) * 100) / 100 : null,
-      campanas,
+      metrics: {
+        ok: true,
+        inversionTotal,
+        ventasAtribuidasTotal,
+        roasAgregado: inversionTotal > 0 ? Math.round((ventasAtribuidasTotal / inversionTotal) * 100) / 100 : null,
+        campanas,
+      },
+      advertiser,
     };
+  } catch (err) {
+    return { metrics: { ok: false, error: String(err) }, advertiser: null };
+  }
+}
+
+// ── Tabla por producto (para decidir candidatos a campaña) ──────────────
+// Filas: unión de (a) top N por ventas del período y (b) todo ítem con
+// costo de ads > 0 en el período — así no se pierde ningún producto que ya
+// tiene inversión activa aunque no esté en el top de ventas (ej. recién
+// lanzado a campaña, todavía sin volumen). Umbrales como constantes acá,
+// no hardcodeados en el cuerpo de la función, para que sean fáciles de
+// ajustar sin tener que releer la lógica completa.
+const TABLA_PRODUCTOS_TOP_VENTAS = 50;
+
+// "Stock bajo" para un ítem en campaña activa: menos de este número de días
+// de cobertura al ritmo de ventas del período consultado (unidades del
+// período / días del período). Con ventas 0 en el período no se puede
+// estimar velocidad — esas filas no se etiquetan "Stock bajo" (ver
+// calcularEtiquetas), no porque no puedan tener poco stock, sino porque no
+// hay dato para distinguir "bajo" de "sin rotación".
+const STOCK_BAJO_DIAS_COBERTURA = 7;
+
+// "Revisar" cuando el ACOS de la campaña del ítem supera su acos_target en
+// más de este margen relativo — un ítem apenas por encima del target no es
+// una alarma, ML tolera variación día a día; 20% por encima sí es señal de
+// que la campaña se está saliendo del objetivo que Otto configuró.
+const ACOS_REVISAR_MARGEN_RELATIVO = 1.2;
+
+function resolveStockTabla(item: Record<string, unknown>): number | null {
+  const raiz = item.available_quantity;
+  if (typeof raiz === "number" && !Number.isNaN(raiz)) return raiz;
+  const variations = item.variations as Record<string, unknown>[] | undefined;
+  if (Array.isArray(variations) && variations.length > 0) {
+    let suma = 0;
+    let algunaValida = false;
+    for (const v of variations) {
+      const q = v.available_quantity;
+      if (typeof q === "number" && !Number.isNaN(q)) { suma += q; algunaValida = true; }
+    }
+    if (algunaValida) return suma;
+  }
+  return null;
+}
+
+function mediana(valores: number[]): number | null {
+  if (valores.length === 0) return null;
+  const ordenados = [...valores].sort((a, b) => a - b);
+  const mitad = Math.floor(ordenados.length / 2);
+  return ordenados.length % 2 !== 0
+    ? ordenados[mitad]
+    : (ordenados[mitad - 1] + ordenados[mitad]) / 2;
+}
+
+async function calcularTablaProductos(
+  mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
+  desde: Date,
+  hasta: Date,
+  ventas: VentasMetrics,
+  roas: RoasMetrics,
+  advertiser: { advertiser_id: number; site_id: string } | null
+): Promise<TablaProductosMetrics> {
+  try {
+    if (!ventas.ok || !ventas.ventasPorItem) {
+      return { ok: false, error: "Ventas no disponible, no se puede armar la tabla por producto" };
+    }
+
+    const dateFrom = desde.toISOString().slice(0, 10);
+    const dateTo = hasta.toISOString().slice(0, 10);
+
+    // Ads por ítem — paginado completo, filtrando campaign_id client-side:
+    // confirmado empíricamente que el parámetro campaign_id en la query se
+    // ignora silenciosamente (mismo patrón que el filtro de fecha roto de
+    // Claims), así que no tiene sentido pedir por campaña — se trae todo
+    // una vez y se filtra en memoria.
+    const adsPorItem = new Map<string, {
+      campaignId: number; status: string;
+      clicks: number; prints: number; ctr: number; cpc: number; cost: number; acos: number; roas: number;
+    }>();
+    if (advertiser) {
+      let offset = 0;
+      while (offset <= 1000) {
+        const { data } = await mlGet<{
+          paging: { total: number };
+          results: {
+            item_id: string; campaign_id: number; status: string;
+            metrics: { clicks: number; prints: number; ctr: number; cpc: number; cost: number; acos: number; roas: number };
+          }[];
+        }>(
+          `/marketplace/advertising/${advertiser.site_id}/advertisers/${advertiser.advertiser_id}/product_ads/ads/search`,
+          { date_from: dateFrom, date_to: dateTo, metrics: ROAS_METRICS_FIELDS, limit: 50, offset },
+          { "Api-Version": "1" }
+        );
+        for (const ad of data.results ?? []) {
+          adsPorItem.set(ad.item_id, {
+            campaignId: ad.campaign_id,
+            status: ad.status,
+            clicks: ad.metrics?.clicks ?? 0,
+            prints: ad.metrics?.prints ?? 0,
+            ctr: ad.metrics?.ctr ?? 0,
+            cpc: ad.metrics?.cpc ?? 0,
+            cost: ad.metrics?.cost ?? 0,
+            acos: ad.metrics?.acos ?? 0,
+            roas: ad.metrics?.roas ?? 0,
+          });
+        }
+        if (!data.results || data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
+        offset += 50;
+      }
+    }
+
+    const nombrePorCampana = new Map<number, string>();
+    const acosTargetPorCampana = new Map<number, number>();
+    for (const c of roas.campanas ?? []) {
+      nombrePorCampana.set(c.id, c.nombre);
+      acosTargetPorCampana.set(c.id, c.acosTarget);
+    }
+
+    // Unión: top N por ventas del período + todo ítem con costo de ads > 0,
+    // aunque no esté en el top (ver comentario de TABLA_PRODUCTOS_TOP_VENTAS).
+    const topVentas = Object.entries(ventas.ventasPorItem)
+      .sort((a, b) => b[1].monto - a[1].monto)
+      .slice(0, TABLA_PRODUCTOS_TOP_VENTAS)
+      .map(([id]) => id);
+    const idsConCostoAds = [...adsPorItem.entries()].filter(([, ad]) => ad.cost > 0).map(([id]) => id);
+    const idsFilas = [...new Set([...topVentas, ...idsConCostoAds])];
+
+    if (idsFilas.length === 0) return { ok: true, filas: [] };
+
+    // Visitas — 1 llamada por ítem (confirmado empíricamente que /items/visits
+    // no acepta batch de ids), en paralelo con concurrencia acotada, mismo
+    // criterio que SHIPMENT_BATCH_SIZE en ml-sync para no disparar decenas de
+    // requests simultáneas contra ML.
+    const CONCURRENCIA_VISITAS = 8;
+    const visitasPorItem = new Map<string, number>();
+    for (let i = 0; i < idsFilas.length; i += CONCURRENCIA_VISITAS) {
+      const lote = idsFilas.slice(i, i + CONCURRENCIA_VISITAS);
+      const resultados = await Promise.all(
+        lote.map(async (id) => {
+          try {
+            const { data } = await mlGet<{ total_visits: number }>(`/items/${id}/visits`, { date_from: dateFrom, date_to: dateTo });
+            return { id, visitas: data.total_visits ?? 0 };
+          } catch {
+            return { id, visitas: null };
+          }
+        })
+      );
+      for (const r of resultados) if (r.visitas !== null) visitasPorItem.set(r.id, r.visitas);
+    }
+
+    // Stock + Full — batch de 20 ids por llamada (mismo endpoint y tope que
+    // ya usa ml-sync para el detalle de Publicaciones).
+    const stockPorItem = new Map<string, { stock: number | null; full: boolean }>();
+    for (let i = 0; i < idsFilas.length; i += 20) {
+      const chunk = idsFilas.slice(i, i + 20);
+      const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
+        "/items",
+        { ids: chunk.join(","), attributes: "id,available_quantity,variations,shipping" }
+      );
+      for (const r of data) {
+        if (r.code !== 200) continue;
+        const id = String(r.body.id);
+        const shipping = r.body.shipping as Record<string, unknown> | undefined;
+        stockPorItem.set(id, {
+          stock: resolveStockTabla(r.body),
+          full: shipping?.logistic_type === "fulfillment",
+        });
+      }
+    }
+
+    // Costo/Precio manual — desde Sheets (Publicaciones!A:G), no desde ML:
+    // Costo nunca viene de la API, es dato cargado a mano (ver Fase F).
+    const costoPrecioPorItem = new Map<string, { costo: number | null; precio: number | null }>();
+    const filasPublicaciones = await readSheet("Publicaciones!A2:G100000");
+    for (const fila of filasPublicaciones) {
+      if (!fila[0]) continue;
+      const costo = fila[5] !== undefined && fila[5] !== "" ? Number(fila[5]) : null;
+      const precio = fila[6] !== undefined && fila[6] !== "" ? Number(fila[6]) : null;
+      costoPrecioPorItem.set(String(fila[0]), {
+        costo: costo !== null && !Number.isNaN(costo) ? costo : null,
+        precio: precio !== null && !Number.isNaN(precio) ? precio : null,
+      });
+    }
+
+    const filasBase: Omit<FilaTablaProducto, "etiquetas">[] = idsFilas.map((id) => {
+      const venta = ventas.ventasPorItem![id];
+      const ad = adsPorItem.get(id);
+      const visitas = visitasPorItem.get(id) ?? null;
+      const stockInfo = stockPorItem.get(id);
+      const cp = costoPrecioPorItem.get(id);
+      const precio = cp?.precio ?? null;
+      const costo = cp?.costo ?? null;
+      const margenPct = costo !== null && precio !== null && precio > 0
+        ? Math.round(((precio - costo) / precio) * 1000) / 10
+        : null;
+
+      return {
+        id,
+        titulo: venta?.titulo ?? id,
+        ventasMonto: venta?.monto ?? 0,
+        ventasUnidades: venta?.unidades ?? 0,
+        visitas,
+        conversion: visitas !== null && visitas > 0 ? Math.round(((venta?.unidades ?? 0) / visitas) * 10000) / 100 : null,
+        stock: stockInfo?.stock ?? null,
+        full: stockInfo?.full ?? false,
+        precio,
+        costo,
+        margenPct,
+        campana: ad ? nombrePorCampana.get(ad.campaignId) ?? `Campaña ${ad.campaignId}` : null,
+        campanaId: ad?.campaignId ?? null,
+        statusAnuncio: ad?.status ?? null,
+        clics: ad?.clicks ?? 0,
+        impresiones: ad?.prints ?? 0,
+        ctr: ad?.ctr ?? 0,
+        cpc: ad?.cpc ?? 0,
+        costoAds: ad?.cost ?? 0,
+        acos: ad?.acos ?? 0,
+        roas: ad?.roas ?? 0,
+      };
+    });
+
+    // Mediana de conversión sobre filas CON visitas (>0) — una fila sin
+    // visitas no tiene conversión calculable (ver arriba), incluirla como 0
+    // sesgaría la mediana hacia abajo con un dato que no es "conversión
+    // baja" sino "sin datos".
+    const conversionesValidas = filasBase.map((f) => f.conversion).filter((c): c is number => c !== null);
+    const medianaConversion = mediana(conversionesValidas);
+
+    const dias = Math.max(1, Math.round((hasta.getTime() - desde.getTime()) / 86400000));
+
+    const filas: FilaTablaProducto[] = filasBase.map((f) => {
+      const etiquetas: EtiquetaProducto[] = [];
+      const enCampanaActiva = f.statusAnuncio === "active";
+
+      // Candidato: top ventas, no en campaña activa, stock Full suficiente,
+      // conversión igual o por encima de la mediana de la tabla.
+      if (
+        topVentas.includes(f.id) &&
+        !enCampanaActiva &&
+        f.full &&
+        (f.stock ?? 0) > 0 &&
+        medianaConversion !== null &&
+        f.conversion !== null &&
+        f.conversion >= medianaConversion
+      ) {
+        etiquetas.push("Candidato");
+      }
+
+      // Revisar: en campaña con ACOS por encima de su target (con margen),
+      // o con costo de ads > 0 y cero ventas atribuidas (plata gastada sin
+      // retorno visible, más allá del ACOS calculado).
+      const acosTarget = f.campanaId !== null ? acosTargetPorCampana.get(f.campanaId) : undefined;
+      const acosExcedeTarget = acosTarget !== undefined && acosTarget > 0 && f.acos > acosTarget * ACOS_REVISAR_MARGEN_RELATIVO;
+      const gastoSinVentas = f.costoAds > 0 && f.roas === 0;
+      if (acosExcedeTarget || gastoSinVentas) {
+        etiquetas.push("Revisar");
+      }
+
+      // Stock bajo: en campaña activa, con menos de STOCK_BAJO_DIAS_COBERTURA
+      // días de cobertura al ritmo de ventas del período. Sin ventas en el
+      // período no se puede estimar velocidad — no se etiqueta (ver comentario
+      // de la constante).
+      if (enCampanaActiva && f.stock !== null && f.ventasUnidades > 0) {
+        const velocidadDiaria = f.ventasUnidades / dias;
+        const diasCobertura = velocidadDiaria > 0 ? f.stock / velocidadDiaria : Infinity;
+        if (diasCobertura < STOCK_BAJO_DIAS_COBERTURA) {
+          etiquetas.push("Stock bajo");
+        }
+      }
+
+      return { ...f, etiquetas };
+    });
+
+    return { ok: true, filas };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

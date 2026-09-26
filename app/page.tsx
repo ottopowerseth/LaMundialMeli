@@ -144,6 +144,37 @@ type RoasMetrics = {
   campanas?: CampanaRoas[];
   error?: string;
 };
+type EtiquetaProducto = "Candidato" | "Revisar" | "Stock bajo";
+type FilaTablaProducto = {
+  id: string;
+  titulo: string;
+  ventasMonto: number;
+  ventasUnidades: number;
+  visitas: number | null;
+  conversion: number | null;
+  stock: number | null;
+  full: boolean;
+  precio: number | null;
+  costo: number | null;
+  margenPct: number | null;
+  campana: string | null;
+  campanaId: number | null;
+  statusAnuncio: string | null;
+  clics: number;
+  impresiones: number;
+  ctr: number;
+  cpc: number;
+  costoAds: number;
+  acos: number;
+  roas: number;
+  etiquetas: EtiquetaProducto[];
+};
+type TablaProductosMetrics = {
+  ok: boolean;
+  filas?: FilaTablaProducto[];
+  error?: string;
+};
+
 type MetricsApiResult = {
   ok: boolean;
   periodo?: Periodo;
@@ -153,6 +184,7 @@ type MetricsApiResult = {
   preguntas?: PreguntasMetrics;
   reclamos?: ReclamosMetrics;
   roas?: RoasMetrics;
+  tablaProductos?: TablaProductosMetrics;
   error?: string;
 } | null;
 
@@ -1895,6 +1927,83 @@ export default function Home() {
                     </>
                   ) : (
                     <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.roas?.error ? ` (${metricsResult.roas.error})` : ""}.</p>
+                  )}
+                </div>
+
+                {/* Tabla por producto */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <h3 className="font-semibold text-gray-800">Tabla por producto</h3>
+                  {metricsResult.tablaProductos?.ok ? (
+                    (metricsResult.tablaProductos.filas?.length ?? 0) > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-gray-500 border-b border-gray-200">
+                              <th className="py-2 pr-3">Producto</th>
+                              <th className="py-2 pr-3">Etiquetas</th>
+                              <th className="py-2 pr-3">Ventas $</th>
+                              <th className="py-2 pr-3">Uds.</th>
+                              <th className="py-2 pr-3">Visitas</th>
+                              <th className="py-2 pr-3">Conv.</th>
+                              <th className="py-2 pr-3">Stock</th>
+                              <th className="py-2 pr-3">Full</th>
+                              <th className="py-2 pr-3">Precio</th>
+                              <th className="py-2 pr-3">Costo</th>
+                              <th className="py-2 pr-3">Margen%</th>
+                              <th className="py-2 pr-3">Campaña</th>
+                              <th className="py-2 pr-3">Estado anuncio</th>
+                              <th className="py-2 pr-3">Clics</th>
+                              <th className="py-2 pr-3">Impr.</th>
+                              <th className="py-2 pr-3">CTR</th>
+                              <th className="py-2 pr-3">CPC</th>
+                              <th className="py-2 pr-3">Costo ads</th>
+                              <th className="py-2 pr-3">ACOS</th>
+                              <th className="py-2 pr-3">ROAS</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {metricsResult.tablaProductos.filas!.map((f) => (
+                              <tr key={f.id} className="border-b border-gray-100 last:border-0">
+                                <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{f.titulo}</td>
+                                <td className="py-2 pr-3">
+                                  <div className="flex flex-wrap gap-1">
+                                    {f.etiquetas.map((e) => (
+                                      <span key={e} className={`text-xs font-medium rounded-full px-2 py-0.5 ${
+                                        e === "Candidato" ? "bg-green-100 text-green-700"
+                                        : e === "Revisar" ? "bg-red-100 text-red-700"
+                                        : "bg-orange-100 text-orange-700"
+                                      }`}>{e}</span>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="py-2 pr-3 text-gray-700">${f.ventasMonto.toLocaleString("es-CL")}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.ventasUnidades}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.visitas ?? "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.conversion !== null ? `${f.conversion}%` : "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.stock ?? "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.full ? "Sí" : "No"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.precio !== null ? `$${f.precio.toLocaleString("es-CL")}` : "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.costo !== null ? `$${f.costo.toLocaleString("es-CL")}` : "SIN DATO"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.margenPct !== null ? `${f.margenPct}%` : "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700 max-w-[10rem] truncate">{f.campana ?? "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700 capitalize">{f.statusAnuncio ?? "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.clics}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.impresiones}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.ctr}%</td>
+                                <td className="py-2 pr-3 text-gray-700">${f.cpc.toLocaleString("es-CL")}</td>
+                                <td className="py-2 pr-3 text-gray-700">${f.costoAds.toLocaleString("es-CL")}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.costoAds > 0 ? `${f.acos}%` : "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">{f.costoAds > 0 ? f.roas.toFixed(2) : "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-400">Sin filas para el período.</p>
+                    )
+                  ) : (
+                    <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.tablaProductos?.error ? ` (${metricsResult.tablaProductos.error})` : ""}.</p>
                   )}
                 </div>
               </>
