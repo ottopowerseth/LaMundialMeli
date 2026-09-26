@@ -619,10 +619,14 @@ async function calcularRoas(
       { "Api-Version": "1", "Content-Type": "application/json" }
     );
 
-    // Días del período para "uso de presupuesto" — mismo criterio que el resto
-    // del endpoint: se usa el rango real (desde/hasta), no una duración fija,
-    // porque el período puede ser día/semana/mes con distinta cantidad de días.
-    const diasPeriodo = Math.max(1, Math.round((hasta.getTime() - desde.getTime()) / 86400000));
+    // Días TRANSCURRIDOS del período para "uso de presupuesto" — no días del
+    // período completo: para "mes" en curso, hasta es el 1º del mes siguiente
+    // (fin de mes, incluye días futuros que todavía no gastaron presupuesto).
+    // Usar hastaEfectivo acá es el mismo gotcha/fix que Visits pero por una
+    // razón distinta: no es que la API lo rechace, es que dividir el costo
+    // real (acumulado hasta HOY) entre un presupuesto de días que no
+    // pasaron todavía subestima el % de uso real.
+    const diasPeriodo = Math.max(1, Math.round((hastaEfectivo(hasta).getTime() - desde.getTime()) / 86400000));
 
     const campanas: CampanaRoas[] = (data.results ?? []).map((c) => {
       const costo = c.metrics?.cost ?? 0;
