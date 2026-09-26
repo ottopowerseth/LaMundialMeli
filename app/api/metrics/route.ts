@@ -137,6 +137,19 @@ type TablaProductosMetrics = {
   error?: string;
 };
 
+// La API de Visits (/users/{id}/items_visits y /items/{id}/visits) rechaza
+// con 400 cualquier date_to en el futuro ("date_to must not be after the
+// current date", confirmado empíricamente) — a diferencia de /orders/search
+// y de /product_ads/.../search, que sí toleran fechas futuras. Para el
+// período "mes" en curso, `hasta` es el primer día del mes SIGUIENTE en UTC
+// (una fecha futura real), así que toda llamada a Visits necesita este cap.
+// Única fuente de verdad: no capear `hasta` en rangoFechas ni en el `hasta`
+// real usado por Ventas/Auditoría/Ads — solo la fecha que efectivamente
+// viaja en la llamada puntual a Visits.
+function hastaEfectivo(hasta: Date): Date {
+  return hasta.getTime() > Date.now() ? new Date() : hasta;
+}
+
 // Mismo criterio que fetchReferenciaML en audit/analyze/route.ts: límites de
 // período construidos con Date.UTC, no new Date(...) en hora local — para un
 // mes ya cerrado, una construcción en hora local corre el borde del día 1 y
@@ -371,15 +384,8 @@ async function calcularVisitas(
   ventas: VentasMetrics
 ): Promise<VisitasMetrics> {
   try {
-    // Cap SOLO acá, no en rangoFechas ni en calcularVentas: para el período
-    // "mes" en curso, `hasta` es el primer día del mes SIGUIENTE en UTC (una
-    // fecha futura real), y /orders/search lo tolera sin problema — pero la
-    // API de Visits devuelve 400 si date_to cae en el futuro. No cambiar el
-    // `hasta` real (usado por Ventas/Auditoría, ya verificado que cuadra);
-    // solo achicar la fecha que efectivamente viaja en esta llamada puntual.
-    const hastaVisitas = hasta.getTime() > Date.now() ? new Date() : hasta;
     const dateFrom = desde.toISOString().slice(0, 10);
-    const dateTo = hastaVisitas.toISOString().slice(0, 10);
+    const dateTo = hastaEfectivo(hasta).toISOString().slice(0, 10);
 
     const { data: totalData } = await mlGet<{ total_visits: number }>(
       `/users/${userId}/items_visits`,
@@ -726,6 +732,9 @@ async function calcularTablaProductos(
     }
 
     const dateFrom = desde.toISOString().slice(0, 10);
+    // dateTo SIN cap — para /ads/search (igual que /product_ads/.../campaigns
+    // en calcularRoas, confirmado que tolera fechas futuras). Ver dateToVisitas
+    // más abajo para la llamada a /items/{id}/visits, que sí necesita el cap.
     const dateTo = hasta.toISOString().slice(0, 10);
 
     // Ads por ítem — paginado completo, filtrando campaign_id client-side:
@@ -790,7 +799,9 @@ async function calcularTablaProductos(
     // Visitas — 1 llamada por ítem (confirmado empíricamente que /items/visits
     // no acepta batch de ids), en paralelo con concurrencia acotada, mismo
     // criterio que SHIPMENT_BATCH_SIZE en ml-sync para no disparar decenas de
-    // requests simultáneas contra ML.
+    // requests simultáneas contra ML. dateToVisitas usa hastaEfectivo, no el
+    // dateTo de arriba: Visits rechaza date_to futuro (ver hastaEfectivo).
+    const dateToVisitas = hastaEfectivo(hasta).toISOString().slice(0, 10);
     const CONCURRENCIA_VISITAS = 8;
     const visitasPorItem = new Map<string, number>();
     for (let i = 0; i < idsFilas.length; i += CONCURRENCIA_VISITAS) {
@@ -798,7 +809,7 @@ async function calcularTablaProductos(
       const resultados = await Promise.all(
         lote.map(async (id) => {
           try {
-            const { data } = await mlGet<{ total_visits: number }>(`/items/${id}/visits`, { date_from: dateFrom, date_to: dateTo });
+            const { data } = await mlGet<{ total_visits: number }>(`/items/${id}/visits`, { date_from: dateFrom, date_to: dateToVisitas });
             return { id, visitas: data.total_visits ?? 0 };
           } catch {
             return { id, visitas: null };
