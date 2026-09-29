@@ -25,6 +25,16 @@ function getComisionPct(listingType: string, catalogListing: boolean) {
   return 0.14;
 }
 
+// Precio de Venta (G) es el precio publicado en ML (bruto, con IVA) y
+// Envío (I) se carga manual en bruto también (confirmado por Otto) — Costo
+// (F) es NETO (misma base que la lista de precios del proveedor). La
+// fórmula de Ganancia lleva Precio/Comisión$/Envío a neto antes de restar
+// Costo, mismo criterio que calcularFilaOrden en lib/rentabilidad.ts (ver
+// comentario ahí). Comisión $ (H) se sigue calculando sobre el Precio
+// bruto (así es como ML cobra realmente su comisión, confirmado contra la
+// Billing API) — el ajuste de IVA se aplica recién en la fórmula final.
+const IVA = 0.19;
+
 // Stock: usa available_quantity de raíz si es válido; si no, suma las
 // variaciones (algunos items llevan el stock ahí en vez de en la raíz).
 // Devuelve null si ninguna fuente tiene un valor numérico utilizable.
@@ -192,8 +202,10 @@ export async function POST() {
           getComisionPct(item.listing_type_id as string, !!(item.catalog_listing)), // J: Comisión %
           item.status,                                          // K: Estado ML
           item.listing_type_id,                                 // L: Tipo Publicación
-          `=G${row}-F${row}-H${row}-I${row}`,                   // M: Ganancia = Precio - Costo - Com$ - Envío
-          `=IF(G${row}>0;M${row}/G${row};"")`,                   // N: Margen % — usa ; por locale es_CL
+          // M: Ganancia = (Precio/1.19) - Costo - (Com$/1.19) - (Envío/1.19)
+          // — Precio/Com$/Envío son brutos, Costo es neto (ver comentario de IVA arriba)
+          `=(G${row}/${1 + IVA})-F${row}-(H${row}/${1 + IVA})-(I${row}/${1 + IVA})`,
+          `=IF(G${row}>0;M${row}/(G${row}/${1 + IVA});"")`,      // N: Margen % — usa ; por locale es_CL
           getDiasStock(item, stock),                            // O: Días de Stock
           getAlerta(item, stock),                                // P: Alerta
           item.permalink,                                       // Q: URL

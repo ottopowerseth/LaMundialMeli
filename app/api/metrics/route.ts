@@ -683,6 +683,13 @@ async function calcularRoas(
 // ajustar sin tener que releer la lógica completa.
 const TABLA_PRODUCTOS_TOP_VENTAS = 50;
 
+// Precio (Publicaciones!G) es bruto, Costo (Publicaciones!F) es neto — ver
+// comentario junto al uso, más abajo. Mismo valor que IVA en
+// lib/rentabilidad.ts y ml-sync/route.ts, no importado por ser un archivo
+// de constante única sin exportar (mismo patrón que el resto de constantes
+// locales de este endpoint).
+const IVA_TABLA_PRODUCTOS = 0.19;
+
 // "Stock bajo" para un ítem en campaña activa: menos de este número de días
 // de cobertura al ritmo de ventas del período consultado (unidades del
 // período / días del período). Con ventas 0 en el período no se puede
@@ -865,8 +872,13 @@ async function calcularTablaProductos(
       const cp = costoPrecioPorItem.get(id);
       const precio = cp?.precio ?? null;
       const costo = cp?.costo ?? null;
-      const margenPct = costo !== null && precio !== null && precio > 0
-        ? Math.round(((precio - costo) / precio) * 1000) / 10
+      // Precio (Publicaciones!G) es bruto (con IVA, precio publicado en ML);
+      // Costo (Publicaciones!F) es neto (confirmado por Otto, misma base que
+      // la lista de precios del proveedor) — se lleva Precio a neto antes de
+      // comparar, mismo criterio que calcularFilaOrden en lib/rentabilidad.ts.
+      const precioNeto = precio !== null ? precio / (1 + IVA_TABLA_PRODUCTOS) : null;
+      const margenPct = costo !== null && precioNeto !== null && precioNeto > 0
+        ? Math.round(((precioNeto - costo) / precioNeto) * 1000) / 10
         : null;
 
       return {
