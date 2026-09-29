@@ -929,19 +929,20 @@ async function calcularTablaProductos(
       const cp = costoPrecioPorItem.get(id);
       const precio = cp?.precio ?? null;
       const costo = cp?.costo ?? null;
-      // Precio (Publicaciones!G) es bruto (con IVA, precio publicado en ML);
-      // Costo (Publicaciones!F) es neto (confirmado por Otto, misma base que
-      // la lista de precios del proveedor) — se lleva Precio a neto antes de
+      // Precio (Publicaciones!G) y Costo (Publicaciones!F) son AMBOS brutos
+      // (con IVA) — Costo pasó a ser MAYOR de Lista Defontana × Unidades,
+      // decisión de Otto (2026-09-30). Se llevan ambos a neto antes de
       // comparar, mismo criterio que calcularFilaOrden en lib/rentabilidad.ts.
       const precioNeto = precio !== null ? precio / (1 + IVA) : null;
-      const margenPct = costo !== null && precioNeto !== null && precioNeto > 0
-        ? Math.round(((precioNeto - costo) / precioNeto) * 1000) / 10
+      const costoNeto = costo !== null ? costo / (1 + IVA) : null;
+      const margenPct = costoNeto !== null && precioNeto !== null && precioNeto > 0
+        ? Math.round(((precioNeto - costoNeto) / precioNeto) * 1000) / 10
         : null;
 
       // Costo máx. = costo neto máximo que se puede pagar por el producto
       // sin perder plata AL PRECIO ACTUAL de venta — despejando margen=0 de
       // la misma fórmula que usa calcularFilaOrden en lib/rentabilidad.ts:
-      //   margenNeto = precioNeto - costo - comisionNeta - envioNeto = 0
+      //   margenNeto = precioNeto - costoNeto - comisionNeta - envioNeto = 0
       //   => costoMax = precioNeto × (1 − comisión%) − envioNeto
       // Comisión real por tipo de publicación (getComisionPct), no una tasa
       // fija — mismo criterio que ml-sync usa para Publicaciones.
@@ -957,11 +958,11 @@ async function calcularTablaProductos(
         costoMaxFuenteEnvio = fuente;
         // Precio de equilibrio: solo tiene sentido si hay Costo cargado —
         // despejando precioNeto de la misma fórmula (margen=0):
-        //   precioNeto = (costo + envioNeto) / (1 − comisión%)
-        if (costo !== null) {
-          const precioNetoEquilibrio = (costo + envioEstimadoNeto) / (1 - comisionPct);
+        //   precioNeto = (costoNeto + envioNeto) / (1 − comisión%)
+        if (costoNeto !== null) {
+          const precioNetoEquilibrio = (costoNeto + envioEstimadoNeto) / (1 - comisionPct);
           precioEquilibrio = Math.round(precioNetoEquilibrio * (1 + IVA));
-          pierde = costo > costoMax;
+          pierde = costoNeto > costoMax;
         }
       }
 

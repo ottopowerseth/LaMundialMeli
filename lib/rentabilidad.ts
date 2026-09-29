@@ -8,13 +8,18 @@
 // Todo lo que devuelve la Billing API (transaction_amount, comisión CV,
 // envío CXD/CFF) viene BRUTO (con IVA incluido) — confirmado empíricamente:
 // la comisión calculada sobre el precio bruto da tasas redondas conocidas
-// (11%, 13%); calculada sobre precio neto no da números redondos. Costo
-// (Publicaciones!F) es NETO — confirmado por Otto, es como carga la lista
-// de precios del proveedor. Para no comparar peras con manzanas, el margen
-// lleva precio/comisión/envío a neto antes de restar el Costo. Los campos
-// crudos (precioVenta, comision, envio) NO se tocan — siguen guardando el
-// monto bruto real que ML cobró, útil como referencia auditable en la hoja
-// Rentabilidad; el ajuste de IVA vive únicamente en el cálculo de margen.
+// (11%, 13%); calculada sobre precio neto no da números redondos.
+//
+// Costo (Publicaciones!F) — decisión de Otto (2026-09-30): pasa a ser el
+// precio MAYOR de la Lista Defontana × Unidades de la publicación, que
+// viene CON IVA (bruto), por unidad. Antes de esta decisión Costo era neto
+// (cargado manual); ahora es bruto — TODO el cálculo de margen se lleva a
+// neto (opción "todo neto", da el mismo resultado que "todo bruto" porque
+// es una razón, pero consistente con el resto del sistema, que ya lleva
+// precio/comisión/envío a neto). Los campos crudos (precioVenta, comision,
+// envio, cogs) NO se tocan al persistir — siguen guardando el monto bruto
+// real, útil como referencia auditable en la hoja Rentabilidad; el ajuste
+// de IVA vive únicamente en el cálculo de margen (margenNeto/margenPct).
 // Exportada: mismo valor usado en ml-sync/route.ts (fórmula de Ganancia en
 // Publicaciones) y metrics/route.ts (margen de la tabla por producto) — una
 // sola fuente de verdad en vez de declarar 0.19 en cada archivo.
@@ -177,15 +182,16 @@ export function calcularFilaOrden(
   // orden "más rentable" de la muestra en realidad perdía plata.
   const cogsUnitario = costoPorItemId.has(itemId) ? costoPorItemId.get(itemId)! : null;
   const cogs = cogsUnitario !== null ? cogsUnitario * unidades : null;
-  // precioVenta/comision/envio/perdida son brutos (ver comentario de IVA
-  // arriba) — se llevan a neto SOLO acá, para el cálculo de margen; los
-  // campos crudos de la fila (más abajo) siguen siendo el monto bruto real.
+  // precioVenta/comision/envio/perdida/cogs son TODOS brutos (ver comentario
+  // de IVA arriba: Costo ahora es MAYOR×Unidades, con IVA) — se llevan a
+  // neto SOLO acá, para el cálculo de margen; los campos crudos de la fila
+  // (más abajo) siguen siendo el monto bruto real.
   const precioVentaNeto = precioVenta / (1 + IVA);
   // Redondeado a 1 decimal: sin esto, el arrastre de punto flotante (ej.
   // 8490-6350-1274-2449.3 = -1583.3000000000002) escribe un string largo que
   // Sheets, con USER_ENTERED, reinterpreta como un número gigante corrupto.
   const margenNeto = cogs !== null
-    ? Math.round((precioVentaNeto - cogs - comision / (1 + IVA) - envio / (1 + IVA) - perdida / (1 + IVA)) * 10) / 10
+    ? Math.round((precioVentaNeto - cogs / (1 + IVA) - comision / (1 + IVA) - envio / (1 + IVA) - perdida / (1 + IVA)) * 10) / 10
     : null;
   const margenPct = margenNeto !== null && precioVentaNeto > 0
     ? Math.round((margenNeto / precioVentaNeto) * 1000) / 10
