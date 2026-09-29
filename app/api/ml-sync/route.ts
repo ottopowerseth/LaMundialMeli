@@ -146,29 +146,36 @@ export async function POST() {
       // A:ID  B:Categoría  C:Título  D:Stock  E:Vendidos  F:Costo  G:Precio de Venta
       // H:Comisión$  I:Envío  J:Comisión%  K:Estado ML  L:Tipo Publicación
       // M:Ganancia  N:Margen%  O:Días de Stock  P:Alerta  Q:URL  R:Actualizado
+      // S:Unidades — al final, no en medio, para no correr los índices que ya
+      // leen esta hoja por posición (ver comentario de Comisión/Ganancia arriba
+      // y metrics/route.ts). Default 1: la mayoría de publicaciones vende 1
+      // unidad del código con que cruza en Defontana — solo se sube a mano
+      // cuando el título indica pack Y el artículo de Defontana con que
+      // cruzó NO lo indica (ver docs, "Unidades por publicación").
       const headers = [
         "ID", "Categoría", "Título", "Stock", "Vendidos",
         "Costo", "Precio de Venta", "Comisión $", "Envío", "Comisión %",
         "Estado ML", "Tipo Publicación",
         "Ganancia", "Margen %", "Días de Stock", "Alerta", "URL", "Actualizado",
+        "Unidades",
       ];
 
       // Leer hoja anterior ANTES de limpiar para preservar datos manuales y detectar cambios de stock
-      // A=0,B=1,C=2,D=3,E=4,F=5(Costo),G=6(Precio),H=7,I=8(Envío)
+      // A=0,B=1,C=2,D=3,E=4,F=5(Costo),G=6(Precio),H=7,I=8(Envío),S=18(Unidades)
       const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
-      const datosManual: Record<string, { costo: string; envio: string }> = {};
+      const datosManual: Record<string, { costo: string; envio: string; unidades: string }> = {};
       try {
-        const prevRows = await readSheet("Publicaciones!A2:I1000");
+        const prevRows = await readSheet("Publicaciones!A2:S1000");
         for (const r of prevRows) {
           if (!r[0]) continue;
           stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
-          datosManual[r[0]] = { costo: r[5] ?? "", envio: r[8] ?? "" };
+          datosManual[r[0]] = { costo: r[5] ?? "", envio: r[8] ?? "", unidades: r[18] ?? "" };
         }
       } catch { /* primera vez */ }
 
       const rows = items.map((item, i) => {
         const row = i + 2;
-        const manual = datosManual[String(item.id)] ?? { costo: "", envio: "" };
+        const manual = datosManual[String(item.id)] ?? { costo: "", envio: "", unidades: "" };
         const stock = resolveStock(item);
         const precio = resolveNumeric(item.price);
 
@@ -200,6 +207,7 @@ export async function POST() {
           getAlerta(item, stock),                                // P: Alerta
           item.permalink,                                       // Q: URL
           new Date().toLocaleDateString("es-CL"),               // R: Actualizado
+          manual.unidades || "1",                               // S: Unidades (se preserva entre syncs, default 1)
         ];
       });
 

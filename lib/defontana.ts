@@ -81,3 +81,39 @@ export function armarMapasDefontana(filas: FilaDefontana[]): {
   }
   return { porCod, porBarras };
 }
+
+// Tabla de equivalencias manual — para publicaciones cuyo código de
+// Defontana es un "(WEB)" (precio al público, no mayorista real — ver
+// docs) o cualquier otro caso donde el MAYOR directo del cruce no sirve
+// de referencia. Se guarda como componentes + cantidad (cod de un artículo
+// SUELTO de Defontana × cantidad), NO como un monto fijo — así el precio de
+// referencia se recalcula solo cuando la lista cambia, sin tener que
+// re-cargar la equivalencia a mano cada mes. Una publicación puede tener
+// más de una fila (combos de varios componentes distintos, ej. shampoo +
+// acondicionador) — el precio de referencia es la SUMA de todos sus
+// componentes × su cantidad.
+export type FilaEquivalencia = {
+  publicacionId: string;
+  componenteCod: string;
+  cantidad: number;
+};
+
+export const HEADERS_EQUIVALENCIAS = ["Publicacion ID", "Componente Cod", "Cantidad"];
+
+// Precio de referencia de una publicación con equivalencia manual: suma del
+// MAYOR de cada componente × su cantidad. Si algún componente no está en la
+// lista Defontana actual (código descontinuado, etc.), esa publicación
+// queda sin precio de referencia calculable — null, no un número parcial
+// que subestime el costo real.
+export function precioReferenciaEquivalencia(
+  equivalencias: FilaEquivalencia[],
+  porCod: Map<string, FilaDefontana>
+): number | null {
+  let total = 0;
+  for (const eq of equivalencias) {
+    const componente = porCod.get(eq.componenteCod.trim().toUpperCase());
+    if (!componente) return null;
+    total += componente.mayor * eq.cantidad;
+  }
+  return total;
+}
