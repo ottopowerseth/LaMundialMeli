@@ -3,6 +3,7 @@ import axios from "axios";
 import { ensureSheets, clearSheet, readSheet, writeSheet, appendSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
+import { getComisionPct, IVA } from "@/lib/rentabilidad";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
@@ -15,16 +16,6 @@ export const maxDuration = 60;
 const MAX_SHIPMENTS_NUEVOS_POR_SYNC = 150;
 const SHIPMENT_BATCH_SIZE = 8;
 
-function getComisionPct(listingType: string, catalogListing: boolean) {
-  // Fuente: API MercadoLibre /sites/MLC/listing_types (junio 2026)
-  // Catálogo reduce Premium de 17% → 15%
-  if (listingType === "gold_pro") return catalogListing ? 0.15 : 0.17;
-  if (listingType === "gold_special") return 0.14;
-  if (listingType === "free") return 0;
-  if (["gold_premium", "gold", "silver", "bronze"].includes(listingType)) return 0;
-  return 0.14;
-}
-
 // Precio de Venta (G) es el precio publicado en ML (bruto, con IVA) y
 // Envío (I) se carga manual en bruto también (confirmado por Otto) — Costo
 // (F) es NETO (misma base que la lista de precios del proveedor). La
@@ -33,7 +24,6 @@ function getComisionPct(listingType: string, catalogListing: boolean) {
 // comentario ahí). Comisión $ (H) se sigue calculando sobre el Precio
 // bruto (así es como ML cobra realmente su comisión, confirmado contra la
 // Billing API) — el ajuste de IVA se aplica recién en la fórmula final.
-const IVA = 0.19;
 
 // Stock: usa available_quantity de raíz si es válido; si no, suma las
 // variaciones (algunos items llevan el stock ahí en vez de en la raíz).

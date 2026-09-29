@@ -157,6 +157,10 @@ type FilaTablaProducto = {
   precio: number | null;
   costo: number | null;
   margenPct: number | null;
+  costoMax: number | null;
+  costoMaxFuenteEnvio: "item" | "tramo" | null;
+  precioEquilibrio: number | null;
+  pierde: boolean;
   campana: string | null;
   campanaId: number | null;
   statusAnuncio: string | null;
@@ -1950,6 +1954,8 @@ export default function Home() {
                               <th className="py-2 pr-3">Precio</th>
                               <th className="py-2 pr-3">Costo</th>
                               <th className="py-2 pr-3">Margen%</th>
+                              <th className="py-2 pr-3">Costo máx.</th>
+                              <th className="py-2 pr-3">Precio equilibrio</th>
                               <th className="py-2 pr-3">Campaña</th>
                               <th className="py-2 pr-3">Estado anuncio</th>
                               <th className="py-2 pr-3">Clics</th>
@@ -1984,7 +1990,19 @@ export default function Home() {
                                 <td className="py-2 pr-3 text-gray-700">{f.full ? "Sí" : "No"}</td>
                                 <td className="py-2 pr-3 text-gray-700">{f.precio !== null ? `$${f.precio.toLocaleString("es-CL")}` : "-"}</td>
                                 <td className="py-2 pr-3 text-gray-700">{f.costo !== null ? `$${f.costo.toLocaleString("es-CL")}` : "SIN DATO"}</td>
-                                <td className="py-2 pr-3 text-gray-700">{f.margenPct !== null ? `${f.margenPct}%` : "-"}</td>
+                                <td className="py-2 pr-3 text-gray-700">
+                                  {f.margenPct !== null ? `${f.margenPct}%` : "-"}
+                                  {f.pierde && (
+                                    <span className="ml-1 text-xs font-medium bg-red-100 text-red-700 rounded-full px-2 py-0.5">Pierde</span>
+                                  )}
+                                </td>
+                                <td className="py-2 pr-3 text-gray-700">
+                                  {f.costoMax !== null ? `$${f.costoMax.toLocaleString("es-CL")}` : "-"}
+                                  {f.costoMaxFuenteEnvio && (
+                                    <span className="ml-1 text-xs text-gray-400">({f.costoMaxFuenteEnvio === "item" ? "envío real" : "envío tramo"})</span>
+                                  )}
+                                </td>
+                                <td className="py-2 pr-3 text-gray-700">{f.costo !== null && f.precioEquilibrio !== null ? `$${f.precioEquilibrio.toLocaleString("es-CL")}` : "-"}</td>
                                 <td className="py-2 pr-3 text-gray-700 max-w-[10rem] truncate">{f.campana ?? "-"}</td>
                                 <td className="py-2 pr-3 text-gray-700 capitalize">{f.statusAnuncio ?? "-"}</td>
                                 <td className="py-2 pr-3 text-gray-700">{f.clics}</td>

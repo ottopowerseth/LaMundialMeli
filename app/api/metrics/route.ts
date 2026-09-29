@@ -3,6 +3,7 @@ import axios from "axios";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { readSheet } from "@/lib/sheets";
+import { getComisionPct, IVA } from "@/lib/rentabilidad";
 
 // Endpoint separado de ml-sync (no reutiliza su maxDuration ni su budget):
 // mismo criterio que backfill-shipping, para no arriesgar timeouts en rutas
@@ -119,6 +120,10 @@ type FilaTablaProducto = {
   precio: number | null;
   costo: number | null;
   margenPct: number | null;
+  costoMax: number | null;
+  costoMaxFuenteEnvio: "item" | "tramo" | null;
+  precioEquilibrio: number | null;
+  pierde: boolean;
   campana: string | null;
   campanaId: number | null;
   statusAnuncio: string | null;
@@ -683,12 +688,17 @@ async function calcularRoas(
 // ajustar sin tener que releer la lógica completa.
 const TABLA_PRODUCTOS_TOP_VENTAS = 50;
 
-// Precio (Publicaciones!G) es bruto, Costo (Publicaciones!F) es neto — ver
-// comentario junto al uso, más abajo. Mismo valor que IVA en
-// lib/rentabilidad.ts y ml-sync/route.ts, no importado por ser un archivo
-// de constante única sin exportar (mismo patrón que el resto de constantes
-// locales de este endpoint).
-const IVA_TABLA_PRODUCTOS = 0.19;
+// Tramos de precio para estimar envío cuando el ítem no tiene envío real
+// propio en la hoja Rentabilidad (ver calcularEnvioEstimado) — mismos
+// tramos usados en la investigación de costo de envío (2026-09-29): el
+// envío pesa muy distinto según el tramo (42% del precio en <$10k, 14% en
+// >$30k), así que un solo promedio general no sirve de referencia.
+const TRAMOS_PRECIO_ENVIO: { hasta: number; nombre: string }[] = [
+  { hasta: 10000, nombre: "<$10k" },
+  { hasta: 20000, nombre: "$10-20k" },
+  { hasta: 30000, nombre: "$20-30k" },
+  { hasta: Infinity, nombre: ">$30k" },
+];
 
 // "Stock bajo" para un ítem en campaña activa: menos de este número de días
 // de cobertura al ritmo de ventas del período consultado (unidades del
@@ -830,14 +840,17 @@ async function calcularTablaProductos(
       for (const r of resultados) if (r.visitas !== null) visitasPorItem.set(r.id, r.visitas);
     }
 
-    // Stock + Full — batch de 20 ids por llamada (mismo endpoint y tope que
-    // ya usa ml-sync para el detalle de Publicaciones).
-    const stockPorItem = new Map<string, { stock: number | null; full: boolean }>();
+    // Stock + Full + tipo de publicación — batch de 20 ids por llamada
+    // (mismo endpoint y tope que ya usa ml-sync). listing_type_id/
+    // catalog_listing se agregan a los mismos atributos ya pedidos (sin
+    // llamada extra) para poder calcular la comisión real por ítem
+    // (getComisionPct) en vez de asumir una tasa fija para todos.
+    const stockPorItem = new Map<string, { stock: number | null; full: boolean; listingTypeId: string; catalogListing: boolean }>();
     for (let i = 0; i < idsFilas.length; i += 20) {
       const chunk = idsFilas.slice(i, i + 20);
       const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
         "/items",
-        { ids: chunk.join(","), attributes: "id,available_quantity,variations,shipping" }
+        { ids: chunk.join(","), attributes: "id,available_quantity,variations,shipping,listing_type_id,catalog_listing" }
       );
       for (const r of data) {
         if (r.code !== 200) continue;
@@ -846,6 +859,8 @@ async function calcularTablaProductos(
         stockPorItem.set(id, {
           stock: resolveStockTabla(r.body),
           full: shipping?.logistic_type === "fulfillment",
+          listingTypeId: String(r.body.listing_type_id ?? ""),
+          catalogListing: !!r.body.catalog_listing,
         });
       }
     }
@@ -864,6 +879,40 @@ async function calcularTablaProductos(
       });
     }
 
+    // Envío real por ítem — desde la hoja Rentabilidad (columna Envío, ya
+    // calculada por rentabilidad/analyze contra la Billing API real), no
+    // una llamada nueva: la Billing API tiene rate limit de 5 req/min,
+    // inviable dentro de este endpoint. Cobertura hoy es baja (Rentabilidad
+    // se corre manual por mes) — por eso el fallback a promedio por tramo.
+    const enviosPorItem = new Map<string, number[]>();
+    const enviosPorTramo = new Map<string, number[]>();
+    const filasRentabilidad = await readSheet("Rentabilidad!A2:H100000");
+    for (const fila of filasRentabilidad) {
+      const itemId = fila[2];
+      const precioVentaBruto = Number(fila[4]);
+      const envioBruto = Number(fila[7]);
+      if (!itemId || Number.isNaN(precioVentaBruto) || Number.isNaN(envioBruto)) continue;
+      if (!enviosPorItem.has(itemId)) enviosPorItem.set(itemId, []);
+      enviosPorItem.get(itemId)!.push(envioBruto);
+      const tramo = TRAMOS_PRECIO_ENVIO.find(t => precioVentaBruto < t.hasta)!.nombre;
+      if (!enviosPorTramo.has(tramo)) enviosPorTramo.set(tramo, []);
+      enviosPorTramo.get(tramo)!.push(envioBruto);
+    }
+    const promedio = (valores: number[]) => valores.reduce((s, v) => s + v, 0) / valores.length;
+
+    // Envío estimado (bruto) para un ítem al precio dado: promedio real del
+    // ítem si Rentabilidad ya tiene datos de él; si no, promedio del tramo
+    // de precio al que pertenece — ver TRAMOS_PRECIO_ENVIO.
+    function calcularEnvioEstimado(itemId: string, precioVentaBruto: number): { envio: number; fuente: "item" | "tramo" } {
+      const enviosItem = enviosPorItem.get(itemId);
+      if (enviosItem && enviosItem.length > 0) {
+        return { envio: promedio(enviosItem), fuente: "item" };
+      }
+      const tramo = TRAMOS_PRECIO_ENVIO.find(t => precioVentaBruto < t.hasta)!.nombre;
+      const enviosTramo = enviosPorTramo.get(tramo);
+      return { envio: enviosTramo && enviosTramo.length > 0 ? promedio(enviosTramo) : 0, fuente: "tramo" };
+    }
+
     const filasBase: Omit<FilaTablaProducto, "etiquetas">[] = idsFilas.map((id) => {
       const venta = ventas.ventasPorItem![id];
       const ad = adsPorItem.get(id);
@@ -876,10 +925,37 @@ async function calcularTablaProductos(
       // Costo (Publicaciones!F) es neto (confirmado por Otto, misma base que
       // la lista de precios del proveedor) — se lleva Precio a neto antes de
       // comparar, mismo criterio que calcularFilaOrden en lib/rentabilidad.ts.
-      const precioNeto = precio !== null ? precio / (1 + IVA_TABLA_PRODUCTOS) : null;
+      const precioNeto = precio !== null ? precio / (1 + IVA) : null;
       const margenPct = costo !== null && precioNeto !== null && precioNeto > 0
         ? Math.round(((precioNeto - costo) / precioNeto) * 1000) / 10
         : null;
+
+      // Costo máx. = costo neto máximo que se puede pagar por el producto
+      // sin perder plata AL PRECIO ACTUAL de venta — despejando margen=0 de
+      // la misma fórmula que usa calcularFilaOrden en lib/rentabilidad.ts:
+      //   margenNeto = precioNeto - costo - comisionNeta - envioNeto = 0
+      //   => costoMax = precioNeto × (1 − comisión%) − envioNeto
+      // Comisión real por tipo de publicación (getComisionPct), no una tasa
+      // fija — mismo criterio que ml-sync usa para Publicaciones.
+      let costoMax: number | null = null;
+      let costoMaxFuenteEnvio: "item" | "tramo" | null = null;
+      let precioEquilibrio: number | null = null;
+      let pierde = false;
+      if (precio !== null && precioNeto !== null && stockInfo) {
+        const comisionPct = getComisionPct(stockInfo.listingTypeId, stockInfo.catalogListing);
+        const { envio: envioEstimadoBruto, fuente } = calcularEnvioEstimado(id, precio);
+        const envioEstimadoNeto = envioEstimadoBruto / (1 + IVA);
+        costoMax = Math.round((precioNeto * (1 - comisionPct) - envioEstimadoNeto) * 10) / 10;
+        costoMaxFuenteEnvio = fuente;
+        // Precio de equilibrio: solo tiene sentido si hay Costo cargado —
+        // despejando precioNeto de la misma fórmula (margen=0):
+        //   precioNeto = (costo + envioNeto) / (1 − comisión%)
+        if (costo !== null) {
+          const precioNetoEquilibrio = (costo + envioEstimadoNeto) / (1 - comisionPct);
+          precioEquilibrio = Math.round(precioNetoEquilibrio * (1 + IVA));
+          pierde = costo > costoMax;
+        }
+      }
 
       return {
         id,
@@ -893,6 +969,10 @@ async function calcularTablaProductos(
         precio,
         costo,
         margenPct,
+        costoMax,
+        costoMaxFuenteEnvio,
+        precioEquilibrio,
+        pierde,
         campana: ad ? nombrePorCampana.get(ad.campaignId) ?? `Campaña ${ad.campaignId}` : null,
         campanaId: ad?.campaignId ?? null,
         statusAnuncio: ad?.status ?? null,

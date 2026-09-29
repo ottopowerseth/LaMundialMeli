@@ -15,7 +15,23 @@
 // crudos (precioVenta, comision, envio) NO se tocan — siguen guardando el
 // monto bruto real que ML cobró, útil como referencia auditable en la hoja
 // Rentabilidad; el ajuste de IVA vive únicamente en el cálculo de margen.
-const IVA = 0.19;
+// Exportada: mismo valor usado en ml-sync/route.ts (fórmula de Ganancia en
+// Publicaciones) y metrics/route.ts (margen de la tabla por producto) — una
+// sola fuente de verdad en vez de declarar 0.19 en cada archivo.
+export const IVA = 0.19;
+
+// Comisión por tipo de publicación — fuente: API MercadoLibre
+// /sites/MLC/listing_types (junio 2026). Catálogo reduce Premium de 17% →
+// 15%. Vive acá (no en ml-sync) porque es lógica de negocio de rentabilidad
+// compartida entre la fórmula de Publicaciones y la tabla por producto de
+// Métricas — antes estaba duplicada solo en ml-sync/route.ts.
+export function getComisionPct(listingType: string, catalogListing: boolean): number {
+  if (listingType === "gold_pro") return catalogListing ? 0.15 : 0.17;
+  if (listingType === "gold_special") return 0.14;
+  if (listingType === "free") return 0;
+  if (["gold_premium", "gold", "silver", "bronze"].includes(listingType)) return 0;
+  return 0.14;
+}
 
 export type FilaRentabilidad = {
   idOrden: string;
