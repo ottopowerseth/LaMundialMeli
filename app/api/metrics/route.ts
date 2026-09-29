@@ -879,30 +879,38 @@ async function calcularTablaProductos(
       });
     }
 
-    // Envío real por ítem — desde la hoja Rentabilidad (columna Envío, ya
-    // calculada por rentabilidad/analyze contra la Billing API real), no
-    // una llamada nueva: la Billing API tiene rate limit de 5 req/min,
-    // inviable dentro de este endpoint. Cobertura hoy es baja (Rentabilidad
-    // se corre manual por mes) — por eso el fallback a promedio por tramo.
+    // Envío real POR UNIDAD por ítem — desde la hoja Rentabilidad (columna O,
+    // "Envío por Unidad", ya calculada por rentabilidad/analyze dividiendo el
+    // envío total de cada orden por sus unidades — ver envioPorUnidad en
+    // lib/rentabilidad.ts). No se usa la columna H (Envío total de la orden)
+    // directamente: mezclar envíos de órdenes de 1 y de varias unidades del
+    // mismo ítem infla el promedio (confirmado con datos reales: Aer Brisa
+    // Marina vs Aer Rosas, mismo producto/precio, Costo máx. muy distinto
+    // solo por la mezcla de tamaños de orden en la muestra). No es una
+    // llamada nueva a ML: la Billing API tiene rate limit de 5 req/min,
+    // inviable dentro de este endpoint — cobertura hoy es baja (Rentabilidad
+    // se corre manual por mes), por eso el fallback a promedio por tramo.
     const enviosPorItem = new Map<string, number[]>();
     const enviosPorTramo = new Map<string, number[]>();
-    const filasRentabilidad = await readSheet("Rentabilidad!A2:H100000");
+    const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
     for (const fila of filasRentabilidad) {
       const itemId = fila[2];
       const precioVentaBruto = Number(fila[4]);
-      const envioBruto = Number(fila[7]);
-      if (!itemId || Number.isNaN(precioVentaBruto) || Number.isNaN(envioBruto)) continue;
+      const envioPorUnidadBruto = Number(fila[14]);
+      if (!itemId || Number.isNaN(precioVentaBruto) || Number.isNaN(envioPorUnidadBruto)) continue;
       if (!enviosPorItem.has(itemId)) enviosPorItem.set(itemId, []);
-      enviosPorItem.get(itemId)!.push(envioBruto);
+      enviosPorItem.get(itemId)!.push(envioPorUnidadBruto);
       const tramo = TRAMOS_PRECIO_ENVIO.find(t => precioVentaBruto < t.hasta)!.nombre;
       if (!enviosPorTramo.has(tramo)) enviosPorTramo.set(tramo, []);
-      enviosPorTramo.get(tramo)!.push(envioBruto);
+      enviosPorTramo.get(tramo)!.push(envioPorUnidadBruto);
     }
     const promedio = (valores: number[]) => valores.reduce((s, v) => s + v, 0) / valores.length;
 
-    // Envío estimado (bruto) para un ítem al precio dado: promedio real del
-    // ítem si Rentabilidad ya tiene datos de él; si no, promedio del tramo
-    // de precio al que pertenece — ver TRAMOS_PRECIO_ENVIO.
+    // Envío por unidad estimado (bruto) para un ítem al precio dado:
+    // promedio real del ítem si Rentabilidad ya tiene datos de él; si no,
+    // promedio por unidad del tramo de precio al que pertenece — ver
+    // TRAMOS_PRECIO_ENVIO. Ambas fuentes ya están en base "por unidad", no
+    // hace falta dividir de nuevo acá.
     function calcularEnvioEstimado(itemId: string, precioVentaBruto: number): { envio: number; fuente: "item" | "tramo" } {
       const enviosItem = enviosPorItem.get(itemId);
       if (enviosItem && enviosItem.length > 0) {
