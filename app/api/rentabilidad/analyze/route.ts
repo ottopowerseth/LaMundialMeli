@@ -22,7 +22,7 @@ const ESPERA_ENTRE_PAGINAS_MS = 13000;
 // (ver metrics/route.ts, calcularTablaProductos) — mismo criterio que ya
 // usa ml-sync para Publicaciones.
 const HEADERS_RENTABILIDAD = [
-  "ID Orden", "Fecha", "ID Item", "Producto", "Precio de Venta", "COGS",
+  "ID Orden", "Fecha", "ID Item", "Producto", "Precio de Venta", "COGS Total",
   "Comisión", "Envío", "Pérdida/Devolución", "Margen Neto", "Margen %",
   "Multi-item", "Analizado", "Unidades", "Envío por Unidad",
 ];

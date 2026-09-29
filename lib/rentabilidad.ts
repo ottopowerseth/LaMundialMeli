@@ -39,7 +39,7 @@ export type FilaRentabilidad = {
   idItem: string;
   producto: string;
   precioVenta: number;
-  cogs: number | null; // null = sin match en Publicaciones
+  cogs: number | null; // COGS TOTAL de la orden (costo unitario × unidades) — null = sin match en Publicaciones
   comision: number;
   envio: number;
   envioPorUnidad: number; // envio / unidades — ver comentario en calcularFilaOrden
@@ -166,7 +166,17 @@ export function calcularFilaOrden(
     else if (sub === "CDSD") perdida += monto;
   }
 
-  const cogs = costoPorItemId.has(itemId) ? costoPorItemId.get(itemId)! : null;
+  // costoPorItemId trae el Costo de 1 unidad (columna F de Publicaciones,
+  // precio unitario). precioVenta es el total de LA ORDEN (confirmado con
+  // datos reales: item_price × item_amount = transaction_amount) — con
+  // item_amount>1 hay que multiplicar el COGS por unidades, si no el margen
+  // queda inflado por no descontar el costo de las unidades adicionales.
+  // Bug real encontrado 2026-09-29: la orden 2000017436494266 (2 unidades
+  // de Serum Elvive Anti-caída, COGS unitario $6.350) reportaba margen
+  // +26.2% usando solo 1×COGS; con 2×COGS el margen real es -18.3% — la
+  // orden "más rentable" de la muestra en realidad perdía plata.
+  const cogsUnitario = costoPorItemId.has(itemId) ? costoPorItemId.get(itemId)! : null;
+  const cogs = cogsUnitario !== null ? cogsUnitario * unidades : null;
   // precioVenta/comision/envio/perdida son brutos (ver comentario de IVA
   // arriba) — se llevan a neto SOLO acá, para el cálculo de margen; los
   // campos crudos de la fila (más abajo) siguen siendo el monto bruto real.
