@@ -1,6 +1,6 @@
 # Estado — Pestaña Métricas y pendientes (ml-tracker)
 
-**Última actualización:** 2026-09-26 (Fases A, C y F: campos ROAS ampliados, tabla por producto, aviso de cobertura de Costo)
+**Última actualización:** 2026-09-29 (IVA en cálculos de margen, envío por unidad, fix de COGS×unidades, Costo máx./Precio equilibrio en la tabla por producto)
 
 > Nota: este documento se reconstruyó a partir del código fuente real del repo
 > (no existía una versión previa disponible en este entorno de trabajo). Las
@@ -172,6 +172,122 @@ resto del endpoint (paginación de `/ads/search` + visitas con concurrencia
 el límite de 60s de Vercel Hobby. Se descartó separar en endpoint aparte
 por este motivo.
 
+## IVA en los cálculos de margen (2026-09-29)
+
+**Confirmado con datos reales de la Billing API:** todo lo que ML reporta
+viene **bruto** (con IVA incluido) — `transaction_amount` (precio de
+venta), comisión (`CV`) y envío (`CXD`/`CFF`). Verificado indirectamente:
+la comisión calculada sobre el precio bruto da tasas redondas conocidas
+(11%, 13%); calculada sobre precio neto no da números redondos. **Costo**
+(columna F de Publicaciones) es **neto** — confirmado por Otto, es la
+misma base que usa la lista de precios del proveedor. La Billing API **no
+expone ningún campo de impuesto explícito** (búsqueda exhaustiva de
+`tax`/`iva`/`net`/`gross` en el esquema completo: 0 resultados) — el ajuste
+de IVA es indispensable inferirlo, no viene resuelto por la API.
+
+**Constante `IVA = 0.19`**, exportada desde `lib/rentabilidad.ts` (junto a
+`getComisionPct`, movida ahí desde `ml-sync/route.ts` para no duplicarla),
+usada en los 3 lugares que calculan margen: `calcularFilaOrden` (hoja
+Rentabilidad), la fórmula de Ganancia/Margen% de `ml-sync` (hoja
+Publicaciones — Precio y Envío manual también son brutos, Envío manual
+confirmado por Otto que se carga en bruto), y `calcularTablaProductos`
+(columna Margen% de la tabla por producto). Patrón: llevar
+precio/comisión/envío a neto (÷1.19) antes de restar el Costo; los campos
+crudos que persisten en Sheets (`precioVenta`, `comision`, `envio`) NO se
+tocan — siguen guardando el monto bruto real que ML cobró, útil como
+referencia auditable.
+
+**Impacto medido:** sin este ajuste, el sistema comparaba un Costo neto
+contra montos brutos, inflando el margen reportado en hasta 14 puntos
+porcentuales en casos reales.
+
+## Costo de envío — hallazgos de la investigación de rentabilidad (2026-09-29)
+
+**El envío se cobra por unidad, sin economía de escala.** Investigando por
+qué el mismo producto (Aer Brisa Marina, mismo peso/precio que Aer Rosas)
+mostraba envíos promedio muy distintos ($886 vs $3.729), se encontró que
+los valores de envío observados en una muestra amplia son múltiplos casi
+exactos de una tarifa base (ej. $799,4 × 1, 2, 3, 4... según cantidad de
+unidades en la orden) — confirmado comparando el mismo ítem en regiones de
+destino distintas: la región NO explica la variación (mismo valor exacto
+aparece en RM, Biobío, Maule, Coquimbo...), pero la cantidad de unidades sí.
+El peso/dimensiones del producto tampoco correlaciona con el envío
+promedio (un ítem de 100g y uno de 1.320g tienen envíos similares).
+
+**`logistic_type` sí importa:** envío promedio $2.423 en **Full**
+(`fulfillment`) vs **$3.748 en envío estándar** (`xd_drop_off`) — **55% más
+caro fuera de Full**, medido sobre 36 ítems del top 50 con datos reales.
+
+**0 órdenes multi-producto en todo el histórico** (julio-septiembre 2026,
+~1.020 filas de Rentabilidad tras el backfill completo) — confirma de
+nuevo el hallazgo ya documentado (antes 0 de 267, ahora 0 de un universo
+mucho mayor): La Mundial no tiene volumen de carritos con productos
+distintos en la misma orden. La rama `multiItem` de `calcularFilaOrden`
+sigue existiendo como salvaguarda, no como caso activo.
+
+**Envío por unidad, no envío total de la orden (commit `77fc54e`):** el
+CXD/CFF que trae la Billing API es el total de LA ORDEN completa — con
+`item_amount>1` (mismo producto, varias unidades en una orden, confirmado
+~17% de las órdenes en una muestra real), ese total no es directamente
+"envío del ítem". `calcularFilaOrden` ahora captura `item_amount` y calcula
+`envioPorUnidad = envio / unidades`, persistido en 2 columnas nuevas al
+FINAL de la hoja Rentabilidad (N: Unidades, O: Envío por Unidad) — no en
+medio, para no correr los índices que ya leen la hoja por posición.
+
+**Bug real encontrado y corregido — COGS no se multiplicaba por unidades
+(commit `91ab870`):** `costoPorItemId` trae el Costo **unitario**
+(Publicaciones!F), pero `precioVenta` es el total de la orden (confirmado:
+`item_price × item_amount = transaction_amount`). Con `item_amount>1`, el
+margen restaba solo 1×COGS contra el precio de N unidades, inflando el
+margen. Verificado con la orden real `2000017436494266` (2 unidades de
+Serum Elvive Anti-caída, COGS unitario $6.350): reportaba margen **+26.2%**
+con el bug — el margen real es **-18.3%**. La orden que parecía la más
+rentable de toda la muestra en realidad perdía plata. Fix: `cogs =
+costoUnitario × unidades`. El header de esa columna en Sheets se cambió a
+"COGS Total" — **no se reescribe automáticamente el header ya existente en
+la hoja** (el código solo escribe headers si la hoja está vacía), así que
+la hoja real sigue mostrando "COGS" hasta que alguien la actualice a mano.
+
+**Margen por tramo de precio, recalculado con el fix completo (COGS×unidades,
+envío total de la orden — sobre los ~1.020 filas del backfill):**
+
+| Tramo | Órdenes | Publicaciones distintas | Margen % promedio |
+|---|---|---|---|
+| <$10k | 88 | 5 | -44.4% |
+| $10-20k | 10 | 1 | -23.7% |
+| $20-30k | 25 | 2 | -14.9% a -15.0% |
+| >$30k | 1 | 1 | -14.9% |
+
+Todos los tramos dan negativo con los datos actuales — antes del fix de
+COGS×unidades, los tramos $10-20k y $20-30k parecían rentables (+17% y
++13.9%). Cobertura todavía baja: solo 9 publicaciones distintas del
+catálogo activo (500+) tienen Costo cargado y aparecen en estas órdenes.
+
+## Costo máx. y Precio equilibrio en la tabla por producto (commits `38798ed`, `77fc54e`, `879d543`, `91ab870`)
+
+Dos columnas nuevas en la sección 8 (Tabla por producto):
+- **Costo máx.**: costo neto máximo que se puede pagar por el producto sin
+  perder plata al precio actual de venta. Fórmula (despejada de margen=0,
+  mismo criterio que `calcularFilaOrden`): `costoMax = (precio/1.19) ×
+  (1 − comisión%) − (envío estimado/1.19)`. Comisión real por tipo de
+  publicación (`getComisionPct`, con `listing_type_id`/`catalog_listing`
+  agregados al batch de `/items?ids=` ya existente — sin llamada nueva).
+- **Precio equilibrio** + etiqueta **"Pierde"**: solo para ítems con Costo
+  ya cargado — precio bruto mínimo al que el margen sería 0, y bandera
+  cuando `Costo > Costo máx.` al precio actual.
+
+**Envío estimado — dos fuentes, indicadas en la propia columna:**
+promedio real por unidad del ítem si existe en la hoja Rentabilidad
+("envío real"), o promedio por unidad del tramo de precio si no ("envío
+tramo") — mismos 4 tramos que la investigación de costo de envío
+(`TRAMOS_PRECIO_ENVIO`, constante comentada). Tras el backfill completo de
+Rentabilidad, la cobertura de "envío real" en el top 50 pasó de 16/50
+(32%) a 33/50 (66%).
+
+**Constantes comentadas en el código** (todas en `metrics/route.ts`):
+`TABLA_PRODUCTOS_TOP_VENTAS`, `TRAMOS_PRECIO_ENVIO`,
+`STOCK_BAJO_DIAS_COBERTURA`, `ACOS_REVISAR_MARGEN_RELATIVO`.
+
 ## Historial de commits relevantes
 
 | Commit | Descripción |
@@ -185,6 +301,11 @@ por este motivo.
 | `bd8d412` | *feat: tabla por producto en Métricas para decidir candidatos a campaña* — Fase C, ver sección 8 arriba (con bug inicial de visitas, ver `351562c`) |
 | `351562c` | *fix: capear date_to futuro en visitas de la tabla por producto* — extrae `hastaEfectivo`, corrige el bug de "Candidato" nunca se disparaba |
 | `8b3b280` | *fix: uso de presupuesto con días transcurridos, no días del período completo* — corrige el 84.8% → 97.9% de "Top Ventas" |
+| `1a0c521` | *fix: llevar precio/comisión/envío a neto antes de calcular margen* — constante `IVA=0.19` en los 3 lugares que calculan margen, ver sección de IVA arriba |
+| `38798ed` | *feat: Costo máx. y Precio equilibrio en la tabla por producto* — ver sección dedicada arriba. `getComisionPct` movida a `lib/rentabilidad.ts` (antes duplicada en `ml-sync`) |
+| `77fc54e` | *feat: envío por unidad en Rentabilidad, no envío total de la orden* — `envioPorUnidad`/`unidades` nuevas en `calcularFilaOrden`, columnas N/O al final de la hoja Rentabilidad |
+| `879d543` | *fix: Costo máx. usa envío por unidad, no envío total de la orden* — `metrics/route.ts` lee la columna O en vez de recalcular desde la columna H |
+| `91ab870` | *fix: multiplicar COGS por unidades en calcularFilaOrden* — bug real que inflaba el margen de órdenes con `item_amount>1`, ver sección de costo de envío arriba |
 
 ## Pendiente / sin decidir
 
