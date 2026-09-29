@@ -17,10 +17,14 @@ export const maxDuration = 60;
 // completo:false hasta terminar, para que el frontend la llame en loop.
 const TIEMPO_MAXIMO_MS = 45000;
 const ESPERA_ENTRE_PAGINAS_MS = 13000;
+// Unidades y Envío por Unidad se agregan AL FINAL (N, O), no en medio, para
+// no correr los índices de columnas que ya leen esta hoja por posición
+// (ver metrics/route.ts, calcularTablaProductos) — mismo criterio que ya
+// usa ml-sync para Publicaciones.
 const HEADERS_RENTABILIDAD = [
   "ID Orden", "Fecha", "ID Item", "Producto", "Precio de Venta", "COGS",
   "Comisión", "Envío", "Pérdida/Devolución", "Margen Neto", "Margen %",
-  "Multi-item", "Analizado",
+  "Multi-item", "Analizado", "Unidades", "Envío por Unidad",
 ];
 
 // Hoja de control de progreso — necesaria porque Almacenamiento (CFWA) es
@@ -129,6 +133,8 @@ export async function POST(request: Request) {
             fila.margenPct === null ? "" : String(fila.margenPct),
             fila.multiItem ? "Sí" : "",
             new Date().toLocaleString("es-CL"),
+            String(fila.unidades),
+            String(fila.envioPorUnidad),
           ]);
         }
 
@@ -148,7 +154,7 @@ export async function POST(request: Request) {
       if (!existingHeaders.length || !existingHeaders[0]?.length) {
         await appendSheet("Rentabilidad!A1", [HEADERS_RENTABILIDAD]);
       }
-      await appendSheet("Rentabilidad!A:M", filasParaEscribir);
+      await appendSheet("Rentabilidad!A:O", filasParaEscribir);
     }
 
     await guardarProgreso(mes, offset, almacenamientoAcumulado, completo, progreso.fila);

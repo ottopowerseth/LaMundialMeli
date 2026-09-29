@@ -42,6 +42,8 @@ export type FilaRentabilidad = {
   cogs: number | null; // null = sin match en Publicaciones
   comision: number;
   envio: number;
+  envioPorUnidad: number; // envio / unidades — ver comentario en calcularFilaOrden
+  unidades: number;
   perdida: number;
   margenNeto: number | null; // null si cogs es null (no se puede calcular)
   margenPct: number | null;
@@ -53,7 +55,7 @@ type ChargeInfo = {
   detail_amount?: number;
 };
 type SalesInfo = { order_id?: number; sale_date_time?: string; transaction_amount?: number };
-type ItemInfo = { item_id?: string; item_title?: string; order_id?: number };
+type ItemInfo = { item_id?: string; item_title?: string; order_id?: number; item_amount?: number };
 export type BillingDetailRow = {
   charge_info?: ChargeInfo;
   sales_info?: SalesInfo[];
@@ -124,11 +126,18 @@ export function calcularFilaOrden(
   let producto = "";
   let precioVenta = 0;
   let fecha = "";
+  let unidades = 1;
   for (const fila of filas) {
     const itemDeEstaOrden = (fila.items_info ?? []).find(it => String(it.order_id) === ordenId);
     if (itemDeEstaOrden && !itemId) {
       itemId = itemDeEstaOrden.item_id ?? "";
       producto = itemDeEstaOrden.item_title ?? "";
+      // item_amount: cuántas unidades del MISMO producto lleva esta orden
+      // (no confundir con multiItem, que es productos DISTINTOS en la misma
+      // orden — confirmado 0 casos reales, ver comentario de itemIdsDeLaOrden).
+      // Con item_amount>1, el envío/comisión que trae la Billing API ya es
+      // el total de la orden completa, no por unidad — ver envioPorUnidad.
+      unidades = itemDeEstaOrden.item_amount && itemDeEstaOrden.item_amount > 0 ? itemDeEstaOrden.item_amount : 1;
     }
     const saleDeEstaOrden = (fila.sales_info ?? []).find(s => String(s.order_id) === ordenId);
     if (saleDeEstaOrden && !precioVenta) {
@@ -143,8 +152,8 @@ export function calcularFilaOrden(
     // número calculado sobre una asunción no verificada (items_info[0]).
     return {
       idOrden: ordenId, fecha, idItem: itemId, producto, precioVenta,
-      cogs: null, comision: 0, envio: 0, perdida: 0,
-      margenNeto: null, margenPct: null, multiItem: true,
+      cogs: null, comision: 0, envio: 0, envioPorUnidad: 0, unidades,
+      perdida: 0, margenNeto: null, margenPct: null, multiItem: true,
     };
   }
 
@@ -172,9 +181,19 @@ export function calcularFilaOrden(
     ? Math.round((margenNeto / precioVentaNeto) * 1000) / 10
     : null;
 
+  // Envío por unidad — el CXD/CFF que trae la Billing API es el total de
+  // ESTA orden completa, no por unidad. Con item_amount=2 (2 unidades del
+  // mismo producto en la orden), un envío total de $5.167,8 registrado tal
+  // cual como "envío del ítem" infla el promedio por ítem cuando se mezcla
+  // con órdenes de 1 unidad — confirmado que esto explicaba la diferencia
+  // de Costo máx. entre ítems con precio/peso similar (Aer Brisa $886 vs
+  // Aer Rosas $3.729, mismo producto, solo distinta mezcla de tamaños de
+  // orden en la muestra). unidades ya viene con fallback a 1 arriba.
+  const envioPorUnidad = Math.round((envio / unidades) * 10) / 10;
+
   return {
     idOrden: ordenId, fecha, idItem: itemId, producto, precioVenta,
-    cogs, comision, envio, perdida, margenNeto, margenPct, multiItem: false,
+    cogs, comision, envio, envioPorUnidad, unidades, perdida, margenNeto, margenPct, multiItem: false,
   };
 }
 
