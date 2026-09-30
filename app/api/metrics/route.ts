@@ -4,6 +4,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { readSheet } from "@/lib/sheets";
 import { getComisionPct, IVA } from "@/lib/rentabilidad";
+import { obtenerAdsPorItem, ROAS_METRICS_FIELDS } from "@/lib/ml-ads";
 
 // Endpoint separado de ml-sync (no reutiliza su maxDuration ni su budget):
 // mismo criterio que backfill-shipping, para no arriesgar timeouts en rutas
@@ -569,8 +570,8 @@ async function calcularReclamos(
 // compara el costo real del período contra daily_budget × cantidad de días
 // del período — una aproximación, no lo que ML usaría internamente para
 // pausar la campaña por presupuesto agotado (esa lógica es diaria, no de
-// período completo).
-const ROAS_METRICS_FIELDS = "clicks,prints,ctr,cost,cpc,acos,roas,organic_units_quantity,organic_units_amount,direct_amount,indirect_amount,total_amount";
+// período completo). ROAS_METRICS_FIELDS vive en lib/ml-ads.ts (importado
+// arriba) — mismo parámetro metrics= usado acá y en obtenerAdsPorItem.
 
 // Se exporta junto al resultado de negocio (RoasMetrics) para que
 // calcularTablaProductos no tenga que resolver el advertiser de nuevo — es
@@ -758,46 +759,11 @@ async function calcularTablaProductos(
     // más abajo para la llamada a /items/{id}/visits, que sí necesita el cap.
     const dateTo = hasta.toISOString().slice(0, 10);
 
-    // Ads por ítem — paginado completo, filtrando campaign_id client-side:
-    // confirmado empíricamente que el parámetro campaign_id en la query se
-    // ignora silenciosamente (mismo patrón que el filtro de fecha roto de
-    // Claims), así que no tiene sentido pedir por campaña — se trae todo
-    // una vez y se filtra en memoria.
-    const adsPorItem = new Map<string, {
-      campaignId: number; status: string;
-      clicks: number; prints: number; ctr: number; cpc: number; cost: number; acos: number; roas: number;
-    }>();
-    if (advertiser) {
-      let offset = 0;
-      while (offset <= 1000) {
-        const { data } = await mlGet<{
-          paging: { total: number };
-          results: {
-            item_id: string; campaign_id: number; status: string;
-            metrics: { clicks: number; prints: number; ctr: number; cpc: number; cost: number; acos: number; roas: number };
-          }[];
-        }>(
-          `/marketplace/advertising/${advertiser.site_id}/advertisers/${advertiser.advertiser_id}/product_ads/ads/search`,
-          { date_from: dateFrom, date_to: dateTo, metrics: ROAS_METRICS_FIELDS, limit: 50, offset },
-          { "Api-Version": "1" }
-        );
-        for (const ad of data.results ?? []) {
-          adsPorItem.set(ad.item_id, {
-            campaignId: ad.campaign_id,
-            status: ad.status,
-            clicks: ad.metrics?.clicks ?? 0,
-            prints: ad.metrics?.prints ?? 0,
-            ctr: ad.metrics?.ctr ?? 0,
-            cpc: ad.metrics?.cpc ?? 0,
-            cost: ad.metrics?.cost ?? 0,
-            acos: ad.metrics?.acos ?? 0,
-            roas: ad.metrics?.roas ?? 0,
-          });
-        }
-        if (!data.results || data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
-        offset += 50;
-      }
-    }
+    // Ads por ítem — ver lib/ml-ads.ts para el gotcha de campaign_id
+    // ignorado en la query (filtrado client-side ahí adentro).
+    const adsPorItem = advertiser
+      ? await obtenerAdsPorItem(mlGet, advertiser, dateFrom, dateTo)
+      : new Map();
 
     const nombrePorCampana = new Map<number, string>();
     const acosTargetPorCampana = new Map<number, number>();

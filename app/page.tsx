@@ -269,6 +269,28 @@ type RentabilidadRow = {
   multiItem: boolean;
 };
 
+type FilaComparador = {
+  id: string;
+  titulo: string;
+  marca: string | null;
+  proveedor: string | null;
+  precio: number;
+  comisionPct: number;
+  envioPorUnidad: number;
+  envioFuente: "rentabilidad" | "sin_dato";
+  netoMlPorUnidad: number;
+  precioMayor: number | null;
+  fuenteMayor: "cruce_directo" | "equivalencia" | "sin_referencia";
+  vsMayorPct: number | null;
+  precioSugerido: number | null;
+  semaforo: "rojo" | "amarillo" | "verde" | null;
+  campanaId: number | null;
+  statusAnuncio: string | null;
+  costoAdsPorUnidadPeriodo: number | null;
+  vsMayorConAdsPct: number | null;
+};
+type ComparadorApiResult = { ok: boolean; objetivo?: number; filas?: FilaComparador[]; error?: string } | null;
+
 function Spinner() {
   return (
     <svg className="animate-spin h-4 w-4 inline mr-2" viewBox="0 0 24 24" fill="none">
@@ -311,7 +333,7 @@ const FILE_ZONES: FileZone[] = [
 ];
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast" | "metricas" | "rentabilidad">("sync");
+  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast" | "metricas" | "rentabilidad" | "comparador">("sync");
 
   // --- Sync state ---
   const [mlStatus, setMlStatus] = useState<MLStatus>(null);
@@ -368,6 +390,15 @@ export default function Home() {
   const [errorRentabilidad, setErrorRentabilidad] = useState<string | null>(null);
   const [rentabilidadRows, setRentabilidadRows] = useState<RentabilidadRow[]>([]);
   const rentabilidadCancelado = useRef(false);
+
+  // --- Comparador vs Mayor state ---
+  const [loadingComparador, setLoadingComparador] = useState(false);
+  const [comparadorResult, setComparadorResult] = useState<ComparadorApiResult>(null);
+  const [objetivoComparador, setObjetivoComparador] = useState(10);
+  const [filtroSemaforo, setFiltroSemaforo] = useState<"todos" | "rojo" | "amarillo" | "verde">("todos");
+  const [filtroMarca, setFiltroMarca] = useState("");
+  const [filtroProveedor, setFiltroProveedor] = useState("");
+  const [ordenComparador, setOrdenComparador] = useState<{ campo: keyof FilaComparador; asc: boolean }>({ campo: "vsMayorPct", asc: true });
 
   useEffect(() => {
     fetch("/api/status").then(r => r.json()).then(setMlStatus).catch(() => setMlStatus({ ok: false }));
@@ -553,8 +584,22 @@ export default function Home() {
     if (activeTab === "forecast") loadForecast();
     if (activeTab === "metricas") loadMetrics();
     if (activeTab === "rentabilidad") loadRentabilidad();
+    if (activeTab === "comparador" && !comparadorResult) loadComparador(objetivoComparador);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  async function loadComparador(objetivoPct: number) {
+    setLoadingComparador(true);
+    try {
+      const res = await fetch(`/api/comparador-mayor?objetivo=${objetivoPct / 100}`);
+      const data = await res.json();
+      setComparadorResult(data);
+    } catch {
+      setComparadorResult({ ok: false, error: "Error de red" });
+    } finally {
+      setLoadingComparador(false);
+    }
+  }
 
   // Detecta los meses reales contenidos en los archivos de Facturación ML/MP
   // apenas se suben — el nombre del archivo puede no coincidir con su
@@ -787,6 +832,11 @@ export default function Home() {
             className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "rentabilidad" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "rentabilidad" ? { backgroundColor: "#C41230" } : {}}>
             Rentabilidad
+          </button>
+          <button onClick={() => setActiveTab("comparador")}
+            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "comparador" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            style={activeTab === "comparador" ? { backgroundColor: "#C41230" } : {}}>
+            Comparador vs Mayor
           </button>
         </div>
       </div>
@@ -2142,6 +2192,158 @@ export default function Home() {
                                 {r.multiItem ? "Multi-item, no calculado" : r.margenNeto === null ? "—" : formatCLP(r.margenNeto)}
                               </td>
                               <td className="py-2 pr-3 text-right text-gray-700">{r.margenPct === null ? "—" : `${r.margenPct}%`}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </>
+        )}
+
+        {/* === TAB: COMPARADOR VS MAYOR === */}
+        {activeTab === "comparador" && (
+          <>
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+              <div className="flex flex-wrap items-end gap-4">
+                <div>
+                  <h2 className="font-bold text-gray-900 text-lg">Comparador vs Mayor</h2>
+                  <p className="text-sm text-gray-500 mt-1">Neto ML por unidad vs. precio Mayor de Defontana, para todas las publicaciones activas con cruce.</p>
+                </div>
+                <div className="flex items-end gap-2 ml-auto">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Objetivo sobre Mayor (%)</label>
+                    <input type="number" value={objetivoComparador} min={0} step={1}
+                      onChange={e => setObjetivoComparador(Number(e.target.value) || 0)}
+                      className="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                  </div>
+                  <button onClick={() => loadComparador(objetivoComparador)} disabled={loadingComparador}
+                    className="font-bold py-2 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed text-sm"
+                    style={{ backgroundColor: "#C41230" }}>
+                    {loadingComparador ? <><Spinner />Cargando...</> : "Recalcular"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <select value={filtroSemaforo} onChange={e => setFiltroSemaforo(e.target.value as typeof filtroSemaforo)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                  <option value="todos">Todos los semáforos</option>
+                  <option value="rojo">🔴 Rojo</option>
+                  <option value="amarillo">🟡 Amarillo</option>
+                  <option value="verde">🟢 Verde</option>
+                </select>
+                <input type="text" placeholder="Filtrar por marca" value={filtroMarca} onChange={e => setFiltroMarca(e.target.value)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                <input type="text" placeholder="Filtrar por proveedor" value={filtroProveedor} onChange={e => setFiltroProveedor(e.target.value)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+              </div>
+            </div>
+
+            {comparadorResult?.ok === false && (
+              <p className="text-red-600 text-sm">✗ Error: {comparadorResult.error}</p>
+            )}
+
+            {comparadorResult?.ok && comparadorResult.filas && (() => {
+              const filasFiltradas = comparadorResult.filas
+                .filter(f => filtroSemaforo === "todos" || f.semaforo === filtroSemaforo)
+                .filter(f => !filtroMarca || (f.marca ?? "").toLowerCase().includes(filtroMarca.toLowerCase()))
+                .filter(f => !filtroProveedor || (f.proveedor ?? "").toLowerCase().includes(filtroProveedor.toLowerCase()));
+
+              const ordenadas = [...filasFiltradas].sort((a, b) => {
+                const campo = ordenComparador.campo;
+                const va = a[campo], vb = b[campo];
+                if (va === null || va === undefined) return 1;
+                if (vb === null || vb === undefined) return -1;
+                const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb));
+                return ordenComparador.asc ? cmp : -cmp;
+              });
+
+              function toggleOrden(campo: keyof FilaComparador) {
+                setOrdenComparador(prev => prev.campo === campo ? { campo, asc: !prev.asc } : { campo, asc: true });
+              }
+
+              const conteoSemaforo = { rojo: 0, amarillo: 0, verde: 0, sin: 0 };
+              for (const f of comparadorResult.filas!) {
+                if (f.semaforo === "rojo") conteoSemaforo.rojo++;
+                else if (f.semaforo === "amarillo") conteoSemaforo.amarillo++;
+                else if (f.semaforo === "verde") conteoSemaforo.verde++;
+                else conteoSemaforo.sin++;
+              }
+
+              return (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
+                      <p className="text-2xl font-bold text-red-600">{conteoSemaforo.rojo}</p>
+                      <p className="text-xs text-gray-500 mt-1">🔴 Rojo (&lt;0%)</p>
+                    </div>
+                    <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
+                      <p className="text-2xl font-bold text-yellow-600">{conteoSemaforo.amarillo}</p>
+                      <p className="text-xs text-gray-500 mt-1">🟡 Amarillo (0-10%)</p>
+                    </div>
+                    <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
+                      <p className="text-2xl font-bold text-green-600">{conteoSemaforo.verde}</p>
+                      <p className="text-xs text-gray-500 mt-1">🟢 Verde (&gt;10%)</p>
+                    </div>
+                    <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
+                      <p className="text-2xl font-bold text-gray-400">{conteoSemaforo.sin}</p>
+                      <p className="text-xs text-gray-500 mt-1">Sin referencia Mayor</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                    <p className="text-sm text-gray-500 mb-3">{ordenadas.length} de {comparadorResult.filas.length} publicaciones (filtradas)</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-gray-500 border-b border-gray-200">
+                            <th className="py-2 pr-3 cursor-pointer" onClick={() => toggleOrden("titulo")}>Producto</th>
+                            <th className="py-2 pr-3">Marca</th>
+                            <th className="py-2 pr-3">Proveedor</th>
+                            <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("precio")}>Precio</th>
+                            <th className="py-2 pr-3 text-right">Envío/u</th>
+                            <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("netoMlPorUnidad")}>Neto ML/u</th>
+                            <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("precioMayor")}>Mayor</th>
+                            <th className="py-2 pr-3">Fuente</th>
+                            <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("vsMayorPct")}>vs Mayor</th>
+                            <th className="py-2 pr-3 text-right">Precio sugerido</th>
+                            <th className="py-2 pr-3">Semáforo</th>
+                            <th className="py-2 pr-3">Estado anuncio</th>
+                            <th className="py-2 pr-3 text-right">vs Mayor c/ads</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ordenadas.map((f) => (
+                            <tr key={f.id} className="border-b border-gray-100 last:border-0">
+                              <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{f.titulo}</td>
+                              <td className="py-2 pr-3 text-gray-700">{f.marca ?? "-"}</td>
+                              <td className="py-2 pr-3 text-gray-700">{f.proveedor ?? "-"}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.precio)}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">
+                                {formatCLP(f.envioPorUnidad)}
+                                {f.envioFuente === "sin_dato" && <span className="ml-1 text-xs text-gray-400">(sin dato)</span>}
+                              </td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.netoMlPorUnidad)}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{f.precioMayor !== null ? formatCLP(f.precioMayor) : "-"}</td>
+                              <td className="py-2 pr-3 text-gray-500 text-xs">
+                                {f.fuenteMayor === "cruce_directo" ? "Cruce directo" : f.fuenteMayor === "equivalencia" ? "Equivalencia" : "Sin referencia"}
+                              </td>
+                              <td className={`py-2 pr-3 text-right font-semibold ${f.vsMayorPct === null ? "text-gray-400" : f.vsMayorPct < 0 ? "text-red-600" : f.vsMayorPct <= 10 ? "text-yellow-600" : "text-green-600"}`}>
+                                {f.vsMayorPct !== null ? `${f.vsMayorPct}%` : "-"}
+                              </td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{f.precioSugerido !== null ? formatCLP(f.precioSugerido) : "-"}</td>
+                              <td className="py-2 pr-3">
+                                {f.semaforo === "rojo" && "🔴"}
+                                {f.semaforo === "amarillo" && "🟡"}
+                                {f.semaforo === "verde" && "🟢"}
+                                {f.semaforo === null && "-"}
+                              </td>
+                              <td className="py-2 pr-3 text-gray-700 capitalize">{f.statusAnuncio ?? "-"}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{f.vsMayorConAdsPct !== null ? `${f.vsMayorConAdsPct}%` : "-"}</td>
                             </tr>
                           ))}
                         </tbody>
