@@ -203,36 +203,47 @@ porcentuales en casos reales.
 
 ## Costo de envío — hallazgos de la investigación de rentabilidad (2026-09-29)
 
-**El envío se cobra por unidad, sin economía de escala — NO CONFIRMADO,
-ver corrección 2026-09-30.** Investigando por qué el mismo producto (Aer
-Brisa Marina, mismo peso/precio que Aer Rosas) mostraba envíos promedio muy
-distintos ($886 vs $3.729), se encontró que los valores de envío observados
-en una muestra amplia son múltiplos casi exactos de una tarifa base (ej.
-$799,4 × 1, 2, 3, 4... según cantidad de unidades en la orden) — confirmado
-comparando el mismo ítem en regiones de destino distintas: la región NO
-explica la variación (mismo valor exacto aparece en RM, Biobío, Maule,
-Coquimbo...), pero la cantidad de unidades sí. El peso/dimensiones del
-producto tampoco correlaciona con el envío promedio (un ítem de 100g y uno
-de 1.320g tienen envíos similares). **Corrección (2026-09-30):** Aer Brisa
-con `item_amount=2` cobró 1× la tarifa base en dos órdenes reales, no 2× —
-el multiplicador no correlaciona limpio con `item_amount` de un solo ítem.
-Ver sección "Envío Full/xd_drop_off" más abajo para el detalle.
+**El envío se cobra por unidad DE DESPACHO, con tarifa constante por
+ítem — confirmado 2026-09-30, ver sección "Envío Full/xd_drop_off" más
+abajo para el detalle completo.** Investigando por qué el mismo producto
+(Aer Brisa Marina, mismo peso/precio que Aer Rosas) mostraba envíos
+promedio muy distintos ($886 vs $3.729), se encontró que los valores de
+envío observados en una muestra amplia son múltiplos casi exactos de una
+tarifa base (ej. $799,4 × 1, 2, 3, 4...). **Confirmado con
+`/shipments/{id}/costs`:** el multiplicador es la cantidad de unidades
+TOTALES del despacho (`shipping_items[].quantity` sumado, que puede incluir
+más de una orden cuando varias comparten `pack_id`), no `item_amount` de
+un solo ítem — dividiendo el costo real del despacho por esas unidades
+totales, la tarifa por unidad resultó **perfectamente constante por ítem**
+(`mín = mediana = máx` en 15 de 15 ítems probados del top 20: Aer $799,4,
+Elvive $410, Dove/Petrizzio $260, Fijador $1.000, Plaisance $1.020). El
+peso/dimensiones del producto tampoco correlaciona con el envío (un ítem
+de 100g y uno de 1.320g tienen envíos similares) — la tarifa depende del
+ítem, no del despacho ni de la región.
 
-**`logistic_type` sí importa — cifra PROVISIONAL.** Envío promedio $2.423
-en **Full** (`fulfillment`) vs **$3.748 en envío estándar** (`xd_drop_off`)
-— **55% más caro fuera de Full**, medido sobre 36 ítems del top 50 con
-datos reales. Provisional porque sale de un historial que mezcla épocas
-previas y posteriores al cambio a Full de cada publicación (ver sección
-"Envío Full/xd_drop_off" más abajo, punto f) — la comparación Full vs
-xd_drop_off no está aislada por fecha, así que puede estar sesgada por
-cuándo ocurrió cada venta más que por el `logistic_type` en sí.
+**`logistic_type` sí importa, pero la cifra "Full 55% más barato" NO ES
+CONFIABLE — ver sección "Envío Full/xd_drop_off", punto de no
+confiables.** Envío promedio $2.423 en **Full** vs $3.748 en envío
+estándar, medido sobre 36 ítems del top 50, mezclaba: (a) épocas previas y
+posteriores al cambio a Full de cada publicación, y (b) el sesgo de
+despachos compartidos que infla el envío "Full" 2-3× en varios ítems (ver
+más abajo). No usar esta cifra hasta que ambos se corrijan.
 
-**0 órdenes multi-producto en todo el histórico** (julio-septiembre 2026,
-~1.020 filas de Rentabilidad tras el backfill completo) — confirma de
-nuevo el hallazgo ya documentado (antes 0 de 267, ahora 0 de un universo
-mucho mayor): La Mundial no tiene volumen de carritos con productos
-distintos en la misma orden. La rama `multiItem` de `calcularFilaOrden`
-sigue existiendo como salvaguarda, no como caso activo.
+**"0 órdenes multi-producto" es correcto por ORDEN, no por DESPACHO —
+matiz añadido 2026-09-30.** Confirmado en todo el histórico (julio-
+septiembre 2026, ~1.020 filas de Rentabilidad): ninguna orden individual
+tiene más de un `order_item` (`/orders/{id}.order_items.length` siempre
+1, verificado sobre 286 órdenes). Pero varias órdenes SEPARADAS (cada una
+de 1 producto) pueden compartir `pack_id` y ser despachadas juntas en un
+solo `shipment` — en ese caso, Rentabilidad hoy asigna el costo TOTAL del
+despacho compartido a CADA orden hermana por separado, en vez de repartirlo
+proporcionalmente. Ver sección "Envío Full/xd_drop_off" para el detalle y
+el diseño del fix (no implementado). La conclusión de que La Mundial "no
+tiene volumen de carritos con productos distintos en la misma orden" sigue
+siendo correcta en el sentido estricto (por `order_id`) — la rama
+`multiItem` de `calcularFilaOrden` sigue existiendo como salvaguarda, no
+como caso activo. Lo que no estaba cubierto es el caso de varias órdenes
+de 1 producto compartiendo despacho, que si afecta el envío calculado.
 
 **Envío por unidad, no envío total de la orden (commit `77fc54e`):** el
 CXD/CFF que trae la Billing API es el total de LA ORDEN completa — con
@@ -242,6 +253,14 @@ CXD/CFF que trae la Billing API es el total de LA ORDEN completa — con
 `envioPorUnidad = envio / unidades`, persistido en 2 columnas nuevas al
 FINAL de la hoja Rentabilidad (N: Unidades, O: Envío por Unidad) — no en
 medio, para no correr los índices que ya leen la hoja por posición.
+**Limitación de `77fc54e` identificada 2026-09-30:** ese fix divide el
+envío de Billing por `item_amount` de ESTA orden, asumiendo que el `envio`
+de Billing corresponde solo a esta orden — correcto cuando la orden va
+sola en su despacho, pero incorrecto cuando varias órdenes comparten
+`pack_id`/despacho (ver sección "Envío Full/xd_drop_off" más abajo, punto
+h): en ese caso el `envio` de Billing ya es el costo del despacho
+COMPLETO, no de una sola orden, y dividirlo por el `item_amount` de una
+sola orden infla el resultado tantas veces como órdenes hermanas haya.
 
 **Bug real encontrado y corregido — COGS no se multiplicaba por unidades
 (commit `91ab870`):** `costoPorItemId` trae el Costo **unitario**
@@ -720,11 +739,16 @@ cuenta, cualquier script de investigación que recorra el histórico
 completo debe paginar por ventanas de fecha, no confiar en un único loop
 con tope de offset fijo.
 
-**(d) y (i) La tarifa Full de Aer no es fija.** Mínimo observado $799,4,
-mediana en Aer posterior a la fecha de cambio a Full (agosto en adelante)
-~$1.600-2.000, máximo $5.689 en la muestra confirmada. La mayoría de los
-valores observados dentro de Full son múltiplos casi exactos de $799,4
-(1×, 2×, 3×, 4×) — ver punto (h).
+**(d) y (i) CORREGIDO 2026-09-30 — la tarifa Full de Aer SÍ es fija
+($799,4 por unidad); la variación observada era el sesgo de despachos
+compartidos.** El rango $799,4-$5.689 reportado antes venía de dividir el
+costo TOTAL de despachos que a veces combinan varias órdenes (ver punto h)
+por las unidades de una sola orden. Corrigiendo esa división (costo real
+del despacho vía `/shipments/{id}/costs` ÷ unidades REALES del despacho),
+la tarifa resultó perfectamente constante: Aer $799,4 en 8/8 muestras
+probadas (`mín = mediana = máx`), sin excepción. Mismo patrón confirmado
+en otros 14 ítems del top 20 (Elvive $410, Dove/Petrizzio $260, Fijador
+$1.000, Plaisance $1.020 — todos con `mín = mediana = máx`).
 
 **(e) → confirmado con matices, ver (f).** Hipótesis original: el
 historial de envío mezcla la época previa y posterior al cambio a Full de
@@ -749,39 +773,52 @@ Dentro de julio, para varios Aer `primeraFull` y `ultimaXd` cayeron el
 mismo día — sugiere una transición gradual (días de coexistencia Full/xd),
 no un corte limpio de un día para otro.
 
-**(g) "El envío se cobra por unidad, sin economía de escala" — NO
-CONFIRMADO.** La afirmación de la sección "Costo de envío" de arriba
-(2026-09-29) asumía que el multiplicador de la tarifa base correlaciona
-con `item_amount`. Con datos post-cambio a Full: Aer Brisa con
-`item_amount=2` cobró 1× la tarifa base ($799,4) en dos órdenes reales,
-no 2×. El multiplicador real no está confirmado — ver (h).
+**(g) RESTAURADO 2026-09-30 — "el envío se cobra por unidad DE
+DESPACHO, tarifa constante por ítem".** La corrección del 2026-09-30
+("NO CONFIRMADO", ver historial de esta sección) se basó en una mala
+lectura propia: la orden de Brisa con `item_amount=2` que parecía "cobrar
+1× en vez de 2×" en realidad cobró 2× en total ($1.598,8, verificado con
+`/shipments/{id}/costs`) — dividido por las 2 unidades da $799,4 por
+unidad, que es exactamente la tarifa esperada, no una anomalía. Retirada
+la duda: la tarifa por unidad SÍ es constante por ítem — ver (d)/(i) y (h).
 
-**(h) El múltiplo de $799,4 — hipótesis de despacho compartido
-DESCARTADA, causa real del $0 identificada.** Se investigó si varias
-órdenes comparten un mismo despacho (mismo `shipping_id`/`pack_id`) y el
-cargo completo de envío se anota en una sola orden, dejando $0 en las
-demás. Verificado con `/packs/{pack_id}` y el campo `sibling.sibling_id`
-de `/shipments/{id}` sobre 9 órdenes de Aer con envío no-múltiplo-limpio
-(incluidos los casos de $0): **cada pack tiene una sola orden, y
-`sibling_id` es `null` en todos los casos — no hay despacho compartido.**
-Lo que sí se confirmó: el shipment de las órdenes con $0 en Rentabilidad
-tiene costo real (`shipping_option.cost` > 0 en la API de ML), pero la
-Billing API nunca generó una fila CXD/CFF con `items_info` vinculado a
-esa orden — de las filas CXD/CFF de un mes típico, **~66% no traen
-`items_info`** y por lo tanto no son asociables a ningún `order_id` por
-`agruparPorOrdenReal()`. El $0 es una limitación de cobertura de la
-Billing API, no un bug de reparto de despacho. **Implicancia directa: el
-envío en Rentabilidad está incompleto para esas órdenes — un $0 puede ser
-dato faltante, no envío gratis real.** Cualquier cálculo que trate esos
-$0 como "envío gratis" (en vez de "sin dato") subestima el costo real y
-sobre-infla el margen/Neto mostrado. **Qué explica entonces la variación
-real del multiplicador (1×, 2×, 3×...) queda sin resolver** — no
-correlaciona limpio con `item_amount` de un solo ítem ni con despacho
-compartido; sigue pendiente de investigar (posible hipótesis no probada:
-el multiplicador reflejaría el total de unidades del despacho contando
-TODOS los ítems de la orden, no solo el ítem que se está mirando — pero
-el histórico ya confirmó 0 órdenes multi-producto, así que esa vía
-tampoco calza sin más investigación).
+**(h) CORREGIDO 2026-09-30 — el múltiplo de $799,4 no es un despacho
+compartido "de una sola orden que se lleva todo": son ÓRDENES SEPARADAS
+QUE COMPARTEN PACK Y DESPACHO, y cada una se lleva el costo TOTAL por
+separado.** La investigación anterior (`/packs/{pack_id}` + `sibling_id`
+sobre 9 órdenes con envío no-múltiplo-limpio) concluyó que no había
+despacho compartido porque miró packs con una sola orden — pero no probó
+el caso real. Verificado ahora con el caso completo: 3 órdenes separadas
+(`2000017565265218`, `2000017565272130`, `2000017565265220`), cada una de
+1 solo producto (Aer de colores distintos), comparten un mismo `pack_id` y
+fueron despachadas juntas en un solo `shipment` (3 `shipping_items`,
+`/shipments/{id}/costs` → `senders[0].cost=$2.398,2`, exactamente 3×
+$799,4). **Las 3 órdenes SÍ aparecen en Rentabilidad — ninguna falta — pero
+las 3 muestran el mismo `envioPorUnidad=$2.398,2` (el costo total del
+despacho), en vez de $799,4 cada una.** Sumando las 3 filas de
+Rentabilidad se contabilizan $7.194,6 de envío cuando el costo real pagado
+a ML fue $2.398,2 — una sobre-contabilización de 3×. Este es el mecanismo
+real detrás de toda la variación "$0 a $5.689" documentada en los puntos
+(d)/(i) de versiones anteriores de esta sección: despachos con 1, 2, 3+
+órdenes hermanas compartiendo `pack_id`, cada orden cargando el total en
+vez de su parte.
+
+Nota: "0 órdenes multi-producto" (una orden con varios `order_items`)
+sigue siendo correcto — verificado sobre 286 órdenes (100 de muestra + las
+208 de Aer), ninguna tiene `order_items.length > 1`. El problema no es una
+orden con productos mezclados; es varias órdenes de 1 producto cada una
+compartiendo despacho. Ver sección "Costo de envío" más arriba, donde se
+corrigió la frase original.
+
+**El caso de $0 en Rentabilidad sigue siendo válido como hallazgo
+separado** (documentado en versiones anteriores de este punto h): el
+shipment de una orden con $0 puede tener costo real según ML, pero la
+Billing API no generó fila CXD/CFF vinculable a esa orden (~66% de las
+filas CXD/CFF de un mes típico no traen `items_info`). Un $0 puede ser
+dato faltante, no envío gratis — eso no cambia con esta corrección.
+
+**Diseño del fix (no implementado) — ver "Diseño del fix de envío
+compartido" al final de esta sección.**
 
 **Nota sobre `/orders/search?pack_id=`:** ese filtro es ignorado
 silenciosamente por la API (devuelve resultados que ni siquiera incluyen
@@ -801,3 +838,121 @@ la cobertura incompleta de ShippingCache (ver punto c), y los que sí
 tuvieron dato se apoyaron en n=1 a n=3 muestras, poco confiables. Pendiente
 de decisión de Otto si implementar la ventana de fecha — no implementado
 en este commit.
+
+### Cifras NO CONFIABLES hasta que se corrija el envío de despachos compartidos (2026-09-30)
+
+Con el mecanismo del punto (h) confirmado (varias órdenes de un mismo
+pack cargan el costo total del despacho por separado), **las siguientes
+cifras están infladas y no deben usarse para decisiones hasta corregirse**:
+
+- **"Full 55% más barato que xd_drop_off"** ($2.423 vs $3.748) — ya
+  marcada provisional más arriba, doblemente no confiable: mezcla épocas
+  y sufre el sesgo de despacho compartido.
+- **Sobrecosto estimado de xd_drop_off vs Full (~$60.000, investigación
+  previa)** — calculado sobre envíos Full ya inflados por el sesgo de
+  despacho compartido; el sobrecosto real probablemente es mayor (la
+  mediana Full de referencia estaba sobreestimada).
+- **Margen por tramo de precio** (sección "Costo de envío", tabla con
+  tramos <$10k -44,4%, $10-20k -23,7%, $20-30k -14,9% a -15,0%, >$30k
+  -14,9%) — calculada con `calcularFilaOrden` sobre el envío tal como
+  está guardado hoy en Rentabilidad (inflado en despachos compartidos).
+  El margen real es probablemente mejor que lo mostrado, en un grado que
+  no se puede estimar sin recalcular fila por fila.
+- **Costo máx. y Precio equilibrio (Tabla por producto, Fase C)** — usan
+  la misma `calcularEnvioEstimadoPorUnidad()` que el Comparador. Ejemplo
+  verificado: para Aer con envío inflado a $3.197,6, Costo máx. muestra
+  $1.714; con el envío real $799,4, Costo máx. debería ser $3.729 —
+  subestimado en ~$2.015. El campo "pierde" (Costo > Costo máx.) puede
+  estar marcando falsos positivos para ítems en despacho compartido.
+- **vs Mayor del Comparador, para cualquier ítem cuyas ventas recientes
+  hayan salido en despacho compartido** — verificado en 12 de 15 ítems
+  Aer/Dove/Serum/Elvive del top 20 con datos Full: diferencia de +6 a
+  +61 puntos porcentuales entre el vs Mayor actual y el corregido (ej.
+  Petrizzio Óleo Capilar: -54,4% actual vs +6,6% corregido; Serum
+  Antifall: -44,1% actual vs +0,4% corregido). **Aclaración sobre qué
+  significa el número:** "vs Mayor +7,2%" (caso Aer recalculado) NO es
+  margen de ganancia — es cuánto más deja el Neto ML por unidad
+  comparado con el precio Mayor (costo de referencia de Defontana). Un
+  +7,2% significa que ML deja un 7,2% MÁS que el Mayor, no que el margen
+  sobre el precio de venta sea 7,2%. Ver `vsMayorPct` en
+  `comparador-mayor/route.ts` para la fórmula exacta.
+
+### Diseño del fix de envío compartido (propuesto 2026-09-30, NO IMPLEMENTADO)
+
+Por orden nueva (en `ml-sync`/`backfill-shipping`, donde ya se resuelve
+`/shipments/{id}` para `logistic_type`):
+
+1. `shippingId` de `order.shipping.id` (ya se obtiene hoy).
+2. `/shipments/{shippingId}` → ya se llama hoy; ampliar el uso para leer
+   `shipping_items[]`.
+3. Unidades de ESTA orden: buscar en `shipping_items[]` el ítem con
+   `order_id` igual al de esta orden (campo no siempre presente en la
+   práctica, verificado — cuando falta, usar `item_amount` de Billing
+   como fallback, el mismo valor que ya se usa hoy).
+4. Unidades TOTALES del despacho: `shipping_items[].reduce((s,it) =>
+   s+it.quantity, 0)`.
+5. `/shipments/{shippingId}/costs` → `senders[0].cost` = costo total real
+   del despacho (endpoint verificado, status 200, coincide exactamente
+   con Rentabilidad cuando no hay despacho compartido).
+6. `envioDeEstaOrden = costoTotal × (unidadesEstaOrden / unidadesTotales)`.
+   `envioPorUnidad = costoTotal / unidadesTotales` (constante entre
+   órdenes hermanas de un mismo pack, confirmado — ver (d)/(i)).
+7. Guardar en ShippingCache ampliado (2 columnas nuevas al final, mismo
+   patrón ya usado para no correr índices existentes): costo total del
+   despacho y unidades totales del despacho.
+8. Si `/shipments/{id}/costs` falla: usar el envío ya calculado hoy desde
+   Billing como respaldo, marcado explícitamente (ej. columna "Fuente
+   Costo") para poder identificar después qué filas quedaron con el
+   método menos preciso.
+
+**Despachos que mezclan ítems de distinta tarifa** (ej. Aer $799,4 +
+Elvive $410 en el mismo pack): el reparto proporcional a unidades NO
+alcanza en ese caso — infla el ítem barato y subestima el caro. Mejor
+ponderar por la tarifa individual conocida de cada ítem cuando esté
+disponible (de la propia mediana histórica en `envio-estimado.ts`):
+`envioDeEstaOrden = costoTotal × (tarifaEsteItem × unidadesEsteItem) /
+Σ(tarifaCadaItem × unidadesCadaItem)`. Si algún ítem del despacho no
+tiene tarifa conocida (publicación nueva), cae al reparto proporcional
+simple. **No verificado con datos reales cuán frecuente es este caso
+mixto** — los 3 casos de pack compartido encontrados eran todos Aer con
+Aer (misma tarifa); antes de implementar el reparto ponderado, medir
+cuántos despachos reales mezclan ítems de tarifa distinta.
+
+**Prueba manual del cálculo, sobre casos reales (sin implementar código,
+solo verificación aritmética):** las 3 órdenes hermanas del ejemplo del
+punto (h) dan exactamente $799,4 cada una con esta fórmula (hoy muestran
+$2.398,2 cada una). La orden con `item_amount=2` sin pack compartido
+(`2000017999196484`) se mantiene en $799,4 por unidad ($1.598,8 total),
+sin cambios — confirma que el fix no rompe el caso ya correcto de
+múltiples unidades del mismo ítem en una sola orden.
+
+### Plan de corrección de filas existentes (propuesto, NO EJECUTADO)
+
+No hace falta volver a pasar por la Billing API (rate limit 5/min) — el
+recálculo por orden solo necesita `/orders/{id}` → `/shipments/{id}` →
+`/shipments/{id}/costs`, sin el límite estricto de Billing. Estimado:
+1.020 filas × 3 llamadas = ~3.060 llamadas, ~10 minutos a un ritmo
+conservador de 5 req/s (a confirmar con un lote pequeño primero, no hay
+límite documentado para estos 3 endpoints). Requeriría su propio cursor
+de progreso — `RentabilidadProgreso` no aplica acá porque solo rastrea el
+recorrido de Billing, no el de este recálculo por Sheets.
+
+**`RentabilidadProgreso` quedó con datos engañosos para agosto y
+septiembre:** ambos meses están marcados "Completo" con offsets (650 y
+375 respectivamente) muy por debajo del total actual de Billing para esos
+períodos (2.489 y 3.525) — porque el período de Billing sigue acumulando
+filas con el paso de los días del mes en curso, y el offset se comparó
+contra el total de cuando `analyze` corrió por última vez, no contra el
+total de hoy. No bloquea el recálculo de envío (que no usa
+`RentabilidadProgreso`), pero sí afecta si se decide re-correr `analyze`
+para cargar comisión/envío de órdenes nuevas — no hecho todavía.
+
+**El ciclo de facturación iniciado el 15-sep tiene su propio período,
+`key=2026-10-01` (2.003 filas, confirmado con `creation_date_time` del
+15-sep en adelante) — Billing usa ciclos de facturación, NO meses
+calendario.** El código de `analyze` arma la key como `${mes}-01` con
+`mes` en formato `YYYY-MM` — eso asume alineación con el mes calendario,
+que no coincide con los ciclos reales de Billing (el ciclo que arranca el
+15 de un mes usa una key del mes SIGUIENTE). Esto necesita revisión
+aparte antes de confiar en una re-ejecución de `analyze` para cualquier
+mes — no solo para septiembre.
