@@ -37,11 +37,12 @@ type FilaComparador = {
   envioPorUnidad: number;
   // "item": mediana real de este ítem en Rentabilidad. "tramo": sin
   // muestras propias, mediana del tramo de precio (preferido el mismo
-  // logistic_type del ítem — ver lib/envio-estimado.ts). "sin_dato": ni el
-  // ítem ni el tramo/logístico tienen ninguna muestra — envioPorUnidad
-  // queda en 0 y esto SÍ debe mostrarse como advertencia, no como envío
-  // gratis real.
-  envioFuente: "item" | "tramo" | "sin_dato";
+  // "sku": sin muestras propias, mediana de OTRA publicación con el mismo
+  // SELLER_SKU (mismo producto físico, otro listing). "sin_dato": ningún
+  // nivel tiene muestra — envioPorUnidad queda en 0 y esto SÍ debe
+  // mostrarse como advertencia, no como envío gratis real. Ver
+  // lib/envio-estimado.ts para el orden de prioridad completo.
+  envioFuente: "item" | "sku" | "tramo" | "sin_dato";
   envioMuestras: number;
   netoMlPorUnidad: number;
   precioMayor: number | null;
@@ -140,21 +141,25 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Envío real por unidad — ver lib/envio-estimado.ts. Mediana del ítem
-    // si hay muestras propias en Rentabilidad; si no, mediana del tramo de
-    // precio × logistic_type (preferido Full si el ítem es Full — Full es
-    // sistemáticamente ~55% más barato, ver investigación de costo de
-    // envío 2026-09-29). Antes este fallback usaba 0 cuando el ítem no
+    // Envío real por unidad — ver lib/envio-estimado.ts. Orden de
+    // prioridad: 1) mediana del propio ítem en Rentabilidad, 2) mediana de
+    // otra publicación con el mismo SELLER_SKU (mismo producto físico, otro
+    // listing), 3) mediana del tramo de precio × logistic_type (Full si el
+    // ítem es Full). Antes el fallback final usaba 0 cuando el ítem no
     // tenía datos propios — eso INFLABA el Neto ML al no descontar ningún
     // envío (bug encontrado 2026-09-30: Serum Dream Liso sin datos en
     // Rentabilidad mostraba Neto $6.121 vs $4.553 de su publicación gemela
-    // con datos, cuando debería ser similar).
+    // con datos). El nivel "sku" (agregado 2026-09-30) captura justo ese
+    // caso sin caer directo al tramo genérico, que mezcla decenas de
+    // productos sin relación entre sí.
     const logisticoPorItem = new Map<string, string>();
+    const skuPorItem = new Map<string, string>();
     for (const [id, attrs] of atributosPorItem) {
       if (attrs.full) logisticoPorItem.set(id, "fulfillment");
+      if (attrs.sku) skuPorItem.set(id, attrs.sku);
     }
     const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
-    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad, logisticoPorItem);
+    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad, skuPorItem, logisticoPorItem);
 
     // Ads del mes en curso — para "vs Mayor con ads". Mismo período que
     // usa metrics/route.ts para "mes": día 1 del mes actual a día 1 del
@@ -179,8 +184,8 @@ export async function GET(req: NextRequest) {
       const comisionPct = atributos ? getComisionPct(atributos.listingTypeId, atributos.catalogListing) : 0.14;
 
       const { envio: envioPorUnidad, fuente: envioFuenteBase, muestras: envioMuestras } =
-        calcularEnvioEstimadoPorUnidad(id, precio, atributos?.full ?? false, muestrasEnvio);
-      const envioFuente: "item" | "tramo" | "sin_dato" = envioMuestras === 0 ? "sin_dato" : envioFuenteBase;
+        calcularEnvioEstimadoPorUnidad(id, precio, atributos?.full ?? false, muestrasEnvio, atributos?.sku);
+      const envioFuente: "item" | "sku" | "tramo" | "sin_dato" = envioMuestras === 0 ? "sin_dato" : envioFuenteBase;
 
       // Neto ML por unidad = precio − comisión − envío por unidad (todo bruto).
       const comisionBruta = precio * comisionPct;

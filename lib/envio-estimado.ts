@@ -32,27 +32,43 @@ export function mediana(valores: number[]): number {
 
 export type MuestrasEnvio = {
   porItem: Map<string, number[]>;
+  // Otras publicaciones con el mismo SELLER_SKU — cuando La Mundial tiene
+  // más de una publicación activa para el mismo producto físico (mismo
+  // proveedor/código), el envío real de la publicación "hermana" es una
+  // mejor referencia que el tramo genérico: mismo producto, mismo peso,
+  // mismo costo de despacho — solo cambia el listing de ML. Confirmado con
+  // el caso real de Serum Dream Liso (MLC1684430515 y MLC3086531836, mismo
+  // producto, dos publicaciones): el envío por unidad de la que sí tiene
+  // datos (mediana ~$810-1.866, 3 muestras) es una referencia mucho más
+  // cercana a la realidad que la mediana genérica del tramo <$10k
+  // ($2.430, 358 muestras, mezcla de decenas de productos sin relación).
+  porSku: Map<string, number[]>;
   // Por tramo de precio + logistic_type ("fulfillment" | otro) — separado
   // para que el fallback pueda preferir el envío típico de Full cuando el
-  // ítem sin dato propio es Full (Full es sistemáticamente más barato,
-  // confirmado: ~55% menos que envío estándar en la investigación de
-  // costo de envío del 2026-09-29).
+  // ítem sin dato propio es Full. Gotcha confirmado con datos reales
+  // (2026-09-30, investigación de la "tarifa $799,4" de los Aer): esa
+  // tarifa NO es "envío por unidad del pack" — es la tarifa fija de Full
+  // (logistic_type=fulfillment, confirmado vía /shipments/{id} en 3 de 3
+  // casos), sistemáticamente mucho más barata y estable que xd_drop_off
+  // (envío estándar, que varía $1.598-$6.789 por distancia/región real del
+  // despacho, sin relación con la cantidad de unidades de la orden).
   porTramoYLogistico: Map<string, number[]>;
 };
 
-// Lee Rentabilidad!A2:O100000 una sola vez y arma ambos índices. El caller
-// pasa las filas ya leídas (no hace la llamada a Sheets acá) para que quien
-// ya tenga otro uso de esas filas no repita la lectura.
+// Lee Rentabilidad!A2:O100000 una sola vez y arma los tres índices. El
+// caller pasa las filas ya leídas (no hace la llamada a Sheets acá) para
+// que quien ya tenga otro uso de esas filas no repita la lectura.
 //
-// logisticoPorItem es opcional: cuando no se pasa (o un ítem no aparece en
-// el mapa), las muestras de ese ítem se agrupan bajo "otro" — el caller que
-// no necesita discriminar por Full/estándar simplemente no obtendrá el
-// beneficio de esa preferencia, pero el tramo simple sigue funcionando.
+// skuPorItem y logisticoPorItem son opcionales: cuando no se pasan (o un
+// ítem no aparece en el mapa), ese nivel del fallback simplemente no tiene
+// muestras propias y se salta al siguiente nivel.
 export function armarMuestrasEnvio(
   filasRentabilidad: string[][],
+  skuPorItem?: Map<string, string>,
   logisticoPorItem?: Map<string, string>
 ): MuestrasEnvio {
   const porItem = new Map<string, number[]>();
+  const porSku = new Map<string, number[]>();
   const porTramoYLogistico = new Map<string, number[]>();
   for (const fila of filasRentabilidad) {
     const itemId = fila[2];
@@ -62,6 +78,12 @@ export function armarMuestrasEnvio(
 
     if (!porItem.has(itemId)) porItem.set(itemId, []);
     porItem.get(itemId)!.push(envioPorUnidadBruto);
+
+    const sku = skuPorItem?.get(itemId);
+    if (sku) {
+      if (!porSku.has(sku)) porSku.set(sku, []);
+      porSku.get(sku)!.push(envioPorUnidadBruto);
+    }
 
     const tramo = TRAMOS_PRECIO_ENVIO.find((t) => precioVentaBruto < t.hasta)!.nombre;
     // El logistic_type de ESTE ítem al momento de leer Publicaciones — no
@@ -74,28 +96,44 @@ export function armarMuestrasEnvio(
     if (!porTramoYLogistico.has(clave)) porTramoYLogistico.set(clave, []);
     porTramoYLogistico.get(clave)!.push(envioPorUnidadBruto);
   }
-  return { porItem, porTramoYLogistico };
+  return { porItem, porSku, porTramoYLogistico };
 }
 
-export type EnvioEstimadoResultado = { envio: number; fuente: "item" | "tramo"; muestras: number };
+export type EnvioEstimadoResultado = { envio: number; fuente: "item" | "sku" | "tramo"; muestras: number };
 
-// Envío por unidad estimado (bruto) para un ítem: mediana real del ítem si
-// Rentabilidad ya tiene datos de él; si no, mediana del tramo de precio ×
-// logistic_type del ítem (Full si el ítem es Full, si no el tramo general).
+// Envío por unidad estimado (bruto) para un ítem — orden de prioridad
+// (decisión de Otto, 2026-09-30):
+//   1. Mediana real de ESTE ítem en Rentabilidad.
+//   2. Mediana de OTRA publicación con el mismo SELLER_SKU (mismo producto
+//      físico, otro listing de ML) — si `sku` no se pasa o no hay otra
+//      publicación con datos, se salta este nivel.
+//   3. Mediana del tramo de precio × logistic_type del ítem (Full si el
+//      ítem es Full, si no estándar) — mismo tramo/logístico primero,
+//      el otro logístico dentro del mismo tramo como último recurso antes
+//      de rendirse.
 // Nunca 0 quirúrgico como "sin dato" — 0 subestima el costo real y sobre-
-// infla el margen mostrado (bug corregido 2026-09-30); si ni el ítem ni el
-// tramo tienen muestras, se devuelve fuente "tramo" con 0 muestras y el
-// caller decide cómo mostrarlo (ver envioFuente "sin_dato" en el Comparador).
+// infla el margen mostrado (bug corregido 2026-09-30); si ningún nivel
+// tiene muestras, se devuelve fuente "tramo" con 0 muestras y el caller
+// decide cómo mostrarlo (ver envioFuente "sin_dato" en el Comparador).
 export function calcularEnvioEstimadoPorUnidad(
   itemId: string,
   precioVentaBruto: number,
   esFull: boolean,
-  muestras: MuestrasEnvio
+  muestras: MuestrasEnvio,
+  sku?: string | null
 ): EnvioEstimadoResultado {
   const enviosItem = muestras.porItem.get(itemId);
   if (enviosItem && enviosItem.length > 0) {
     return { envio: mediana(enviosItem), fuente: "item", muestras: enviosItem.length };
   }
+
+  if (sku) {
+    const enviosSku = muestras.porSku.get(sku);
+    if (enviosSku && enviosSku.length > 0) {
+      return { envio: mediana(enviosSku), fuente: "sku", muestras: enviosSku.length };
+    }
+  }
+
   const tramo = TRAMOS_PRECIO_ENVIO.find((t) => precioVentaBruto < t.hasta)!.nombre;
   const claveFull = `${tramo}|fulfillment`;
   const claveOtro = `${tramo}|otro`;

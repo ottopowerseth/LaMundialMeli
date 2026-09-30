@@ -123,7 +123,7 @@ type FilaTablaProducto = {
   costo: number | null;
   margenPct: number | null;
   costoMax: number | null;
-  costoMaxFuenteEnvio: "item" | "tramo" | null;
+  costoMaxFuenteEnvio: "item" | "sku" | "tramo" | null;
   precioEquilibrio: number | null;
   pierde: boolean;
   campana: string | null;
@@ -795,27 +795,31 @@ async function calcularTablaProductos(
       for (const r of resultados) if (r.visitas !== null) visitasPorItem.set(r.id, r.visitas);
     }
 
-    // Stock + Full + tipo de publicación — batch de 20 ids por llamada
-    // (mismo endpoint y tope que ya usa ml-sync). listing_type_id/
-    // catalog_listing se agregan a los mismos atributos ya pedidos (sin
-    // llamada extra) para poder calcular la comisión real por ítem
-    // (getComisionPct) en vez de asumir una tasa fija para todos.
-    const stockPorItem = new Map<string, { stock: number | null; full: boolean; listingTypeId: string; catalogListing: boolean }>();
+    // Stock + Full + tipo de publicación + SKU — batch de 20 ids por
+    // llamada (mismo endpoint y tope que ya usa ml-sync). listing_type_id/
+    // catalog_listing/attributes/seller_custom_field se agregan a los
+    // mismos atributos ya pedidos (sin llamada extra): comisión real por
+    // ítem (getComisionPct) y SELLER_SKU para el respaldo de envío por
+    // SKU (ver lib/envio-estimado.ts).
+    const stockPorItem = new Map<string, { stock: number | null; full: boolean; listingTypeId: string; catalogListing: boolean; sku: string | null }>();
     for (let i = 0; i < idsFilas.length; i += 20) {
       const chunk = idsFilas.slice(i, i + 20);
       const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
         "/items",
-        { ids: chunk.join(","), attributes: "id,available_quantity,variations,shipping,listing_type_id,catalog_listing" }
+        { ids: chunk.join(","), attributes: "id,available_quantity,variations,shipping,listing_type_id,catalog_listing,attributes,seller_custom_field" }
       );
       for (const r of data) {
         if (r.code !== 200) continue;
         const id = String(r.body.id);
         const shipping = r.body.shipping as Record<string, unknown> | undefined;
+        const attrs = (r.body.attributes as { id: string; value_name: string | null }[] | undefined) ?? [];
+        const sku = attrs.find((a) => a.id === "SELLER_SKU")?.value_name ?? (r.body.seller_custom_field as string | null) ?? null;
         stockPorItem.set(id, {
           stock: resolveStockTabla(r.body),
           full: shipping?.logistic_type === "fulfillment",
           listingTypeId: String(r.body.listing_type_id ?? ""),
           catalogListing: !!r.body.catalog_listing,
+          sku,
         });
       }
     }
@@ -837,14 +841,21 @@ async function calcularTablaProductos(
     // Envío real POR UNIDAD por ítem — ver lib/envio-estimado.ts para el
     // detalle completo (mediana, no promedio: el envío por unidad de un
     // mismo ítem varía mucho entre órdenes reales, un promedio simple se
-    // deja arrastrar por outliers). No se usa la columna H (Envío total de
-    // la orden): mezclar órdenes de 1 y de varias unidades del mismo ítem
-    // infla el número (gotcha ya corregido). No es una llamada nueva a ML:
-    // la Billing API tiene rate limit de 5 req/min, inviable dentro de este
-    // endpoint — cobertura hoy es baja (Rentabilidad se corre manual por
-    // mes), por eso el fallback a mediana por tramo.
+    // deja arrastrar por outliers; orden de prioridad ítem → mismo SKU en
+    // otra publicación → tramo × logistic_type). No se usa la columna H
+    // (Envío total de la orden): mezclar órdenes de 1 y de varias unidades
+    // del mismo ítem infla el número (gotcha ya corregido). No es una
+    // llamada nueva a ML: la Billing API tiene rate limit de 5 req/min,
+    // inviable dentro de este endpoint — cobertura hoy es baja (Rentabilidad
+    // se corre manual por mes), por eso el fallback a mediana por SKU/tramo.
+    const skuPorItemEnvio = new Map<string, string>();
+    const logisticoPorItemEnvio = new Map<string, string>();
+    for (const [id, info] of stockPorItem) {
+      if (info.sku) skuPorItemEnvio.set(id, info.sku);
+      if (info.full) logisticoPorItemEnvio.set(id, "fulfillment");
+    }
     const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
-    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad);
+    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad, skuPorItemEnvio, logisticoPorItemEnvio);
 
     const filasBase: Omit<FilaTablaProducto, "etiquetas">[] = idsFilas.map((id) => {
       const venta = ventas.ventasPorItem![id];
@@ -872,12 +883,12 @@ async function calcularTablaProductos(
       // Comisión real por tipo de publicación (getComisionPct), no una tasa
       // fija — mismo criterio que ml-sync usa para Publicaciones.
       let costoMax: number | null = null;
-      let costoMaxFuenteEnvio: "item" | "tramo" | null = null;
+      let costoMaxFuenteEnvio: "item" | "sku" | "tramo" | null = null;
       let precioEquilibrio: number | null = null;
       let pierde = false;
       if (precio !== null && precioNeto !== null && stockInfo) {
         const comisionPct = getComisionPct(stockInfo.listingTypeId, stockInfo.catalogListing);
-        const { envio: envioEstimadoBruto, fuente } = calcularEnvioEstimadoPorUnidad(id, precio, stockInfo.full, muestrasEnvio);
+        const { envio: envioEstimadoBruto, fuente } = calcularEnvioEstimadoPorUnidad(id, precio, stockInfo.full, muestrasEnvio, stockInfo.sku);
         const envioEstimadoNeto = envioEstimadoBruto / (1 + IVA);
         costoMax = Math.round((precioNeto * (1 - comisionPct) - envioEstimadoNeto) * 10) / 10;
         costoMaxFuenteEnvio = fuente;

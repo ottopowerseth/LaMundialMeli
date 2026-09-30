@@ -278,7 +278,7 @@ type FilaComparador = {
   comisionPct: number;
   comisionMonto: number;
   envioPorUnidad: number;
-  envioFuente: "item" | "tramo" | "sin_dato";
+  envioFuente: "item" | "sku" | "tramo" | "sin_dato";
   envioMuestras: number;
   netoMlPorUnidad: number;
   precioMayor: number | null;
@@ -2333,6 +2333,7 @@ export default function Home() {
                                 {formatCLP(f.envioPorUnidad)}
                                 {f.envioFuente === "sin_dato" && <span className="ml-1 text-xs text-red-500">(sin dato, envío=0)</span>}
                                 {f.envioFuente === "tramo" && <span className="ml-1 text-xs text-gray-400">(tramo, n={f.envioMuestras})</span>}
+                                {f.envioFuente === "sku" && <span className="ml-1 text-xs text-gray-400">(mismo SKU, n={f.envioMuestras})</span>}
                                 {f.envioFuente === "item" && <span className="ml-1 text-xs text-gray-400">(n={f.envioMuestras})</span>}
                               </td>
                               <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.netoMlPorUnidad)}</td>
