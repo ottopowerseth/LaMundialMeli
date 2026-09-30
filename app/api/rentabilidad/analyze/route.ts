@@ -3,7 +3,8 @@ import axios from "axios";
 import { ensureSheets, readSheet, appendSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
-import { agruparPorOrdenReal, calcularFilaOrden, sumarAlmacenamiento, BillingDetailRow } from "@/lib/rentabilidad";
+import { agruparPorOrdenReal, calcularFilaOrden, sumarAlmacenamiento, IVA, BillingDetailRow } from "@/lib/rentabilidad";
+import { resolverEnvioReal, detectarMixto } from "@/lib/envio-real";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
@@ -21,10 +22,15 @@ const ESPERA_ENTRE_PAGINAS_MS = 13000;
 // no correr los índices de columnas que ya leen esta hoja por posición
 // (ver metrics/route.ts, calcularTablaProductos) — mismo criterio que ya
 // usa ml-sync para Publicaciones.
+// Fuente Envío / Mixto (P, Q) se agregan AL FINAL — mismo criterio que
+// Unidades/Envío por Unidad (N, O): no correr los índices de columnas que
+// ya leen esta hoja por posición. Ver lib/envio-real.ts y
+// docs/estado-metricas-y-pendientes.md, sección "Envío Full/xd_drop_off".
 const HEADERS_RENTABILIDAD = [
   "ID Orden", "Fecha", "ID Item", "Producto", "Precio de Venta", "COGS Total",
   "Comisión", "Envío", "Pérdida/Devolución", "Margen Neto", "Margen %",
   "Multi-item", "Analizado", "Unidades", "Envío por Unidad",
+  "Fuente Envío", "Mixto",
 ];
 
 // Hoja de control de progreso — necesaria porque Almacenamiento (CFWA) es
@@ -61,7 +67,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "Falta el parámetro mes (YYYY-MM)" }, { status: 400 });
     }
 
-    await ensureSheets(["Rentabilidad", "RentabilidadProgreso"]);
+    await ensureSheets(["Rentabilidad", "RentabilidadProgreso", "ShippingCache"]);
 
     const token = await getValidAccessToken();
     const client = axios.create({
@@ -72,10 +78,64 @@ export async function POST(request: Request) {
     const budget = createSyncBudget();
     const mlGet = <T = unknown>(url: string, params?: Record<string, unknown>) =>
       withMlRetry(() => client.get<T>(url, { params, headers: { "Api-Version": "1", "Content-Type": "application/json" } }), { budget });
+    // resolverEnvioReal espera un mlGet sin params (siempre rutas completas)
+    // — mismo cliente, firma más simple porque acá no hay query params.
+    const mlGetSimple = <T = unknown>(url: string) => mlGet<T>(url);
 
     // Órdenes ya guardadas — para no re-consultar Billing por lo ya calculado.
     const existentes = await readSheet("Rentabilidad!A2:A100000");
     const idsYaGuardados = new Set(existentes.map(r => String(r[0]).replace(/^'/, "")).filter(Boolean));
+
+    // ShippingCache ampliado (ver lib/envio-real.ts): columnas E-H nuevas
+    // (Costo Total Despacho, Unidades Despacho, Unidades Esta Orden, Fuente
+    // Envío) — A-D (Orden/Shipping ID/Logistic Type/Fecha) ya existían.
+    // Sirve para (1) no volver a resolver el envío de una orden ya
+    // cacheada por ml-sync/backfill-shipping, y (2) construir
+    // tarifasConocidas para la alarma de despacho mixto.
+    const cacheRows = await readSheet("ShippingCache!A2:H100000");
+    const envioCachePorOrden = new Map<string, {
+      shippingId: string; logisticType: string;
+      costoTotalDespacho: number | null; unidadesDespacho: number | null;
+      unidadesEstaOrden: number | null; fuente: "costs" | "billing" | null;
+    }>();
+    for (const r of cacheRows) {
+      if (!r[0]) continue;
+      envioCachePorOrden.set(String(r[0]).replace(/^'/, ""), {
+        shippingId: r[1] ?? "",
+        logisticType: r[2] ?? "",
+        costoTotalDespacho: r[4] !== undefined && r[4] !== "" ? Number(r[4]) : null,
+        unidadesDespacho: r[5] !== undefined && r[5] !== "" ? Number(r[5]) : null,
+        unidadesEstaOrden: r[6] !== undefined && r[6] !== "" ? Number(r[6]) : null,
+        fuente: r[7] === "costs" || r[7] === "billing" ? r[7] : null,
+      });
+    }
+    // Tarifa por unidad conocida de un ítem = envío por unidad de un
+    // despacho donde ESE ítem fue el único (unidadesDespacho ===
+    // unidadesEstaOrden, sin mezcla con otra orden) — la fuente más
+    // confiable para comparar contra despachos compartidos. Y shippingId ->
+    // Map<itemId, unidades> de todas las órdenes ya vistas, para poder
+    // detectar mixto sin una llamada extra cuando el shipment resuelto en
+    // esta corrida ya fue visto por otra orden — una sola lectura de
+    // Rentabilidad alimenta ambos mapas.
+    const tarifasConocidas = new Map<string, number>();
+    const itemsPorShipping = new Map<string, Map<string, number>>();
+    {
+      const filasRentExistentes = await readSheet("Rentabilidad!A2:O100000");
+      for (const r of filasRentExistentes) {
+        const ordenId = String(r[0]).replace(/^'/, "");
+        const itemId = r[2];
+        const unidades = Number(r[13]) || 1;
+        const cache = envioCachePorOrden.get(ordenId);
+        if (cache?.shippingId) {
+          if (!itemsPorShipping.has(cache.shippingId)) itemsPorShipping.set(cache.shippingId, new Map());
+          itemsPorShipping.get(cache.shippingId)!.set(itemId, unidades);
+        }
+        if (cache?.fuente === "costs" && cache.unidadesDespacho === cache.unidadesEstaOrden && cache.costoTotalDespacho !== null && cache.unidadesDespacho) {
+          tarifasConocidas.set(itemId, cache.costoTotalDespacho / cache.unidadesDespacho);
+        }
+      }
+    }
+    const nuevasEntradasCache: string[][] = [];
 
     // COGS: Publicaciones!A (ID) → Publicaciones!F (Costo). Solo se agrega
     // al mapa si la celda de Costo tiene un valor real — una publicación que
@@ -119,6 +179,72 @@ export async function POST(request: Request) {
           if (fila.multiItem) multiItemDetectadas++;
           idsYaGuardados.add(ordenId); // evita reprocesar la misma orden si aparece en más de una página
           ordenesNuevas++;
+
+          // Envío real (ver lib/envio-real.ts): reemplaza el envío de
+          // Billing (envio/envioPorUnidad de calcularFilaOrden) cuando
+          // /shipments/{id}/costs responde. Si la orden ya está en
+          // ShippingCache con fuente "costs", se reusa sin llamada nueva.
+          let fuenteEnvio: "costs" | "billing" = "billing";
+          let mixto: "mixto" | "mixto_sin_tarifa" | null = null;
+          let shippingIdDeEstaOrden: string | null = null;
+          if (!fila.multiItem) {
+            const cacheado = envioCachePorOrden.get(ordenId);
+            let costoTotalDespacho: number | null = null;
+            let unidadesDespacho: number | null = null;
+            let unidadesEstaOrden = fila.unidades;
+
+            if (cacheado?.fuente === "costs" && cacheado.costoTotalDespacho !== null && cacheado.unidadesDespacho !== null) {
+              costoTotalDespacho = cacheado.costoTotalDespacho;
+              unidadesDespacho = cacheado.unidadesDespacho;
+              unidadesEstaOrden = cacheado.unidadesEstaOrden ?? fila.unidades;
+              shippingIdDeEstaOrden = cacheado.shippingId;
+              fuenteEnvio = "costs";
+            } else if (!cacheado) {
+              const resultado = await resolverEnvioReal(ordenId, mlGetSimple);
+              shippingIdDeEstaOrden = resultado.shippingId;
+              nuevasEntradasCache.push([
+                `'${ordenId}`, `'${resultado.shippingId ?? ""}`, resultado.logisticType,
+                new Date().toISOString(),
+                resultado.costoTotalDespacho === null ? "" : String(resultado.costoTotalDespacho),
+                resultado.unidadesDespacho === null ? "" : String(resultado.unidadesDespacho),
+                String(resultado.unidadesEstaOrden),
+                resultado.fuente,
+              ]);
+              if (resultado.fuente === "costs") {
+                costoTotalDespacho = resultado.costoTotalDespacho;
+                unidadesDespacho = resultado.unidadesDespacho;
+                unidadesEstaOrden = resultado.unidadesEstaOrden;
+                fuenteEnvio = "costs";
+              }
+            }
+            // cacheado?.fuente === "billing": ya se intentó antes y falló
+            // /shipments/{id}/costs — no reintentar, queda en "billing".
+
+            if (fuenteEnvio === "costs" && costoTotalDespacho !== null && unidadesDespacho !== null) {
+              fila.envio = Math.round(costoTotalDespacho * (unidadesEstaOrden / unidadesDespacho) * 10) / 10;
+              fila.envioPorUnidad = Math.round((costoTotalDespacho / unidadesDespacho) * 10) / 10;
+              if (fila.cogs !== null) {
+                const precioVentaNeto = fila.precioVenta / (1 + IVA);
+                fila.margenNeto = Math.round((precioVentaNeto - fila.cogs / (1 + IVA) - fila.comision / (1 + IVA) - fila.envio / (1 + IVA) - fila.perdida / (1 + IVA)) * 10) / 10;
+                fila.margenPct = precioVentaNeto > 0 ? Math.round((fila.margenNeto / precioVentaNeto) * 1000) / 10 : null;
+              }
+
+              if (shippingIdDeEstaOrden) {
+                if (!itemsPorShipping.has(shippingIdDeEstaOrden)) itemsPorShipping.set(shippingIdDeEstaOrden, new Map());
+                itemsPorShipping.get(shippingIdDeEstaOrden)!.set(fila.idItem, unidadesEstaOrden);
+                const itemsDelDespacho = itemsPorShipping.get(shippingIdDeEstaOrden)!;
+                mixto = detectarMixto(costoTotalDespacho, itemsDelDespacho, tarifasConocidas);
+                // Si el despacho tiene un solo ítem (sin pack compartido),
+                // esta es una muestra confiable de su tarifa — alimenta
+                // tarifasConocidas para detectar mixto en órdenes futuras
+                // de ESTA MISMA corrida (no solo de corridas anteriores).
+                if (unidadesDespacho === unidadesEstaOrden && itemsDelDespacho.size === 1) {
+                  tarifasConocidas.set(fila.idItem, costoTotalDespacho / unidadesDespacho);
+                }
+              }
+            }
+          }
+
           filasParaEscribir.push([
             `'${fila.idOrden}`,
             fila.fecha,
@@ -135,6 +261,8 @@ export async function POST(request: Request) {
             new Date().toLocaleString("es-CL"),
             String(fila.unidades),
             String(fila.envioPorUnidad),
+            fuenteEnvio,
+            mixto ?? "",
           ]);
         }
 
@@ -154,7 +282,18 @@ export async function POST(request: Request) {
       if (!existingHeaders.length || !existingHeaders[0]?.length) {
         await appendSheet("Rentabilidad!A1", [HEADERS_RENTABILIDAD]);
       }
-      await appendSheet("Rentabilidad!A:O", filasParaEscribir);
+      await appendSheet("Rentabilidad!A:Q", filasParaEscribir);
+    }
+
+    if (nuevasEntradasCache.length > 0) {
+      const existingCacheHeaders = await readSheet("ShippingCache!A1:A1");
+      if (!existingCacheHeaders.length || !existingCacheHeaders[0]?.length) {
+        await appendSheet("ShippingCache!A1", [[
+          "ID Orden", "Shipping ID", "Logistic Type", "Fecha Consulta",
+          "Costo Total Despacho", "Unidades Despacho", "Unidades Esta Orden", "Fuente",
+        ]]);
+      }
+      await appendSheet("ShippingCache!A:H", nuevasEntradasCache);
     }
 
     await guardarProgreso(mes, offset, almacenamientoAcumulado, completo, progreso.fila);
