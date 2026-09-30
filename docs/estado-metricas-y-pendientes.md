@@ -203,20 +203,29 @@ porcentuales en casos reales.
 
 ## Costo de envío — hallazgos de la investigación de rentabilidad (2026-09-29)
 
-**El envío se cobra por unidad, sin economía de escala.** Investigando por
-qué el mismo producto (Aer Brisa Marina, mismo peso/precio que Aer Rosas)
-mostraba envíos promedio muy distintos ($886 vs $3.729), se encontró que
-los valores de envío observados en una muestra amplia son múltiplos casi
-exactos de una tarifa base (ej. $799,4 × 1, 2, 3, 4... según cantidad de
-unidades en la orden) — confirmado comparando el mismo ítem en regiones de
-destino distintas: la región NO explica la variación (mismo valor exacto
-aparece en RM, Biobío, Maule, Coquimbo...), pero la cantidad de unidades sí.
-El peso/dimensiones del producto tampoco correlaciona con el envío
-promedio (un ítem de 100g y uno de 1.320g tienen envíos similares).
+**El envío se cobra por unidad, sin economía de escala — NO CONFIRMADO,
+ver corrección 2026-09-30.** Investigando por qué el mismo producto (Aer
+Brisa Marina, mismo peso/precio que Aer Rosas) mostraba envíos promedio muy
+distintos ($886 vs $3.729), se encontró que los valores de envío observados
+en una muestra amplia son múltiplos casi exactos de una tarifa base (ej.
+$799,4 × 1, 2, 3, 4... según cantidad de unidades en la orden) — confirmado
+comparando el mismo ítem en regiones de destino distintas: la región NO
+explica la variación (mismo valor exacto aparece en RM, Biobío, Maule,
+Coquimbo...), pero la cantidad de unidades sí. El peso/dimensiones del
+producto tampoco correlaciona con el envío promedio (un ítem de 100g y uno
+de 1.320g tienen envíos similares). **Corrección (2026-09-30):** Aer Brisa
+con `item_amount=2` cobró 1× la tarifa base en dos órdenes reales, no 2× —
+el multiplicador no correlaciona limpio con `item_amount` de un solo ítem.
+Ver sección "Envío Full/xd_drop_off" más abajo para el detalle.
 
-**`logistic_type` sí importa:** envío promedio $2.423 en **Full**
-(`fulfillment`) vs **$3.748 en envío estándar** (`xd_drop_off`) — **55% más
-caro fuera de Full**, medido sobre 36 ítems del top 50 con datos reales.
+**`logistic_type` sí importa — cifra PROVISIONAL.** Envío promedio $2.423
+en **Full** (`fulfillment`) vs **$3.748 en envío estándar** (`xd_drop_off`)
+— **55% más caro fuera de Full**, medido sobre 36 ítems del top 50 con
+datos reales. Provisional porque sale de un historial que mezcla épocas
+previas y posteriores al cambio a Full de cada publicación (ver sección
+"Envío Full/xd_drop_off" más abajo, punto f) — la comparación Full vs
+xd_drop_off no está aislada por fecha, así que puede estar sesgada por
+cuándo ocurrió cada venta más que por el `logistic_type` en sí.
 
 **0 órdenes multi-producto en todo el histórico** (julio-septiembre 2026,
 ~1.020 filas de Rentabilidad tras el backfill completo) — confirma de
@@ -675,3 +684,120 @@ demuestra que deja afuera candidatos que sí importan** — si el top 50
 alcanza para las decisiones de campaña de Otto, no vale el esfuerzo de un
 endpoint separado (`/api/tabla-productos`, maxDuration 60 propio) solo para
 cubrir el resto del catálogo.
+
+## Envío Full/xd_drop_off — gotchas y hallazgos de la investigación 2026-09-30
+
+Investigación read-only sobre por qué el Comparador vs Mayor mostraba
+envíos por unidad muy dispares dentro del mismo ítem (Aer Brisa Marina:
+$0 a $7.888). Varias conclusiones corrigen o matizan lo asumido hasta
+ahora — documentadas acá antes de tocar código, sin implementar ningún fix.
+
+**(a) `logistic_type` vacío/null NUNCA se trata como `xd_drop_off` en el
+código.** `ml-sync/route.ts` y `backfill-shipping/route.ts` escriben
+`data.logistic_type ?? ""` en ShippingCache — cadena vacía significa "la
+API no devolvió el dato", nunca se confunde con xd_drop_off al escribir.
+
+**(b) El Comparador y Métricas usan el `logistic_type` ACTUAL de la
+publicación, no el histórico real por venta — y ShippingCache no se lee
+en ningún endpoint de producción.** `armarMuestrasEnvio()`
+(`lib/envio-estimado.ts`) arma el balde `porTramoYLogistico` clasificando
+cada fila de Rentabilidad según el `shipping.logistic_type` que tiene la
+publicación **hoy** (vía `/items` batch), no el logistic_type real que tuvo
+esa venta en particular. ShippingCache sí tiene el dato real por orden
+(vía `/shipments/{id}`, escrito por `ml-sync` y `backfill-shipping`), pero
+ningún endpoint de producción (`comparador-mayor/route.ts`,
+`metrics/route.ts`) lo lee — es una fuente de datos huérfana, solo
+consumida por scripts de investigación puntuales.
+
+**(c) El backfill de ShippingCache está incompleto y sesgado hacia
+ventas recientes.** Verificado sobre las 208 filas de Aer en Rentabilidad:
+100 (48%) no tienen entrada en ShippingCache. Donde SÍ hay entrada,
+coincide 100% con `/shipments/{id}` en vivo (no hay error de dato, solo de
+cobertura) — pero la falta de cobertura sesga cualquier agregado calculado
+solo sobre lo cacheado. Aparte, `/orders/search` se corta en `offset<=3000`
+en scripts que no paginan hasta el final — con ~4.000+ órdenes en la
+cuenta, cualquier script de investigación que recorra el histórico
+completo debe paginar por ventanas de fecha, no confiar en un único loop
+con tope de offset fijo.
+
+**(d) y (i) La tarifa Full de Aer no es fija.** Mínimo observado $799,4,
+mediana en Aer posterior a la fecha de cambio a Full (agosto en adelante)
+~$1.600-2.000, máximo $5.689 en la muestra confirmada. La mayoría de los
+valores observados dentro de Full son múltiplos casi exactos de $799,4
+(1×, 2×, 3×, 4×) — ver punto (h).
+
+**(e) → confirmado con matices, ver (f).** Hipótesis original: el
+historial de envío mezcla la época previa y posterior al cambio a Full de
+cada publicación (ej. Serum Antifall: xd_drop_off hasta el 26 de julio,
+Full desde el 16 de agosto, sin ventas registradas en el medio). Confirmado
+con `/shipments/{id}` en vivo para ese caso puntual.
+
+**(f) El cambio a Full ocurrió en DOS oleadas distintas, no una sola
+fecha de corte.** Verificado sobre el top 50 por ventas (`primeraFull` por
+ítem, resuelto vía ShippingCache + `/shipments/{id}` en vivo donde faltaba
+cache):
+
+- **Oleada temprana (12-22 de julio 2026):** las 5 variantes de Aer, Bond
+  Intense Repair, Óleo Extraordinario, Dove Uv Repair, Sérum en Barra (3
+  variantes), Serum Dream Liso, Óleo Nutrición.
+- **Oleada tardía (15-18 de agosto 2026):** Serum Capilar Antifall,
+  Fijador Infaillible, Petrizzio, Poett Suavidad, Herbal Essences (2
+  variantes), Aceite Dream Long, Perfume Vendetta, Perfumante Poett, Poett
+  Primavera.
+
+Dentro de julio, para varios Aer `primeraFull` y `ultimaXd` cayeron el
+mismo día — sugiere una transición gradual (días de coexistencia Full/xd),
+no un corte limpio de un día para otro.
+
+**(g) "El envío se cobra por unidad, sin economía de escala" — NO
+CONFIRMADO.** La afirmación de la sección "Costo de envío" de arriba
+(2026-09-29) asumía que el multiplicador de la tarifa base correlaciona
+con `item_amount`. Con datos post-cambio a Full: Aer Brisa con
+`item_amount=2` cobró 1× la tarifa base ($799,4) en dos órdenes reales,
+no 2×. El multiplicador real no está confirmado — ver (h).
+
+**(h) El múltiplo de $799,4 — hipótesis de despacho compartido
+DESCARTADA, causa real del $0 identificada.** Se investigó si varias
+órdenes comparten un mismo despacho (mismo `shipping_id`/`pack_id`) y el
+cargo completo de envío se anota en una sola orden, dejando $0 en las
+demás. Verificado con `/packs/{pack_id}` y el campo `sibling.sibling_id`
+de `/shipments/{id}` sobre 9 órdenes de Aer con envío no-múltiplo-limpio
+(incluidos los casos de $0): **cada pack tiene una sola orden, y
+`sibling_id` es `null` en todos los casos — no hay despacho compartido.**
+Lo que sí se confirmó: el shipment de las órdenes con $0 en Rentabilidad
+tiene costo real (`shipping_option.cost` > 0 en la API de ML), pero la
+Billing API nunca generó una fila CXD/CFF con `items_info` vinculado a
+esa orden — de las filas CXD/CFF de un mes típico, **~66% no traen
+`items_info`** y por lo tanto no son asociables a ningún `order_id` por
+`agruparPorOrdenReal()`. El $0 es una limitación de cobertura de la
+Billing API, no un bug de reparto de despacho. **Implicancia directa: el
+envío en Rentabilidad está incompleto para esas órdenes — un $0 puede ser
+dato faltante, no envío gratis real.** Cualquier cálculo que trate esos
+$0 como "envío gratis" (en vez de "sin dato") subestima el costo real y
+sobre-infla el margen/Neto mostrado. **Qué explica entonces la variación
+real del multiplicador (1×, 2×, 3×...) queda sin resolver** — no
+correlaciona limpio con `item_amount` de un solo ítem ni con despacho
+compartido; sigue pendiente de investigar (posible hipótesis no probada:
+el multiplicador reflejaría el total de unidades del despacho contando
+TODOS los ítems de la orden, no solo el ítem que se está mirando — pero
+el histórico ya confirmó 0 órdenes multi-producto, así que esa vía
+tampoco calza sin más investigación).
+
+**Nota sobre `/orders/search?pack_id=`:** ese filtro es ignorado
+silenciosamente por la API (devuelve resultados que ni siquiera incluyen
+la orden de origen) — mismo tipo de gotcha ya documentado con
+`campaign_id` en Product Ads. Para verificar órdenes de un mismo pack, usar
+`/packs/{pack_id}` directo, no `/orders/search`.
+
+**Medición de impacto de una ventana de fecha reciente (sin implementar):**
+sobre 9 de los 10 ítems Aer/Dove/Serum del top 20 (uno sin match en el
+Comparador), comparando la mediana histórica completa vs. una ventana de
+45 días (ampliando de a 30 hasta 5 muestras), el vs Mayor mejora de forma
+consistente en todos los casos — ej. Serum Antifall pasa de -44,1% a
++0,4%; Bond Intense Repair pasa de -10,6% a +23,2%. Un tercer criterio
+("solo ventas con el logistic_type actual del ítem, según ShippingCache")
+resultó el menos usable hoy: 5 de 9 ítems quedaron sin ninguna muestra por
+la cobertura incompleta de ShippingCache (ver punto c), y los que sí
+tuvieron dato se apoyaron en n=1 a n=3 muestras, poco confiables. Pendiente
+de decisión de Otto si implementar la ventana de fecha — no implementado
+en este commit.
