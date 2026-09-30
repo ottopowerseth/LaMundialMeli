@@ -83,6 +83,15 @@ export async function resolverEnvioReal(ordenId: string, mlGet: MlGet): Promise<
 // reales (últimos 60 días): 0 mezclaban tarifas distintas — pero la
 // alarma queda para detectar el caso si aparece.
 //
+// Solo se evalúa para despachos Full (logisticType === "fulfillment") —
+// decisión de Otto 2026-09-30: en xd_drop_off el envío no tiene una
+// tarifa fija por ítem (confirmado en investigaciones previas: varía por
+// región/distancia real del despacho), así que comparar contra
+// tarifasConocidas ahí no tendría sentido — daría falsos "mixto" todo el
+// tiempo. Para xd_drop_off el caller no debe llamar esta función; se deja
+// explícito acá para que un caller que sí la llame para xd_drop_off por
+// error reciba null en vez de un falso positivo.
+//
 // tarifasConocidas: Map<itemId, tarifaPorUnidad> — mediana de despachos
 // de ESE ítem solo (sin pack compartido), ya vista en ShippingCache.
 // itemsDelDespacho: Map<itemId, unidadesDeEseItem> — todos los ítems
@@ -90,14 +99,27 @@ export async function resolverEnvioReal(ordenId: string, mlGet: MlGet): Promise<
 export function detectarMixto(
   costoTotalDespacho: number,
   itemsDelDespacho: Map<string, number>,
-  tarifasConocidas: Map<string, number>
-): "mixto" | "mixto_sin_tarifa" | null {
+  tarifasConocidas: Map<string, number>,
+  logisticType: string
+): "mixto" | "mixto_tarifas" | "mixto_sin_tarifa" | null {
+  if (logisticType !== "fulfillment") return null;
+
+  const tarifasDelDespacho: number[] = [];
   let sumaEsperada = 0;
   for (const [itemId, unidades] of itemsDelDespacho) {
     const tarifa = tarifasConocidas.get(itemId);
     if (tarifa === undefined) return "mixto_sin_tarifa";
+    tarifasDelDespacho.push(tarifa);
     sumaEsperada += tarifa * unidades;
   }
+
+  // Tarifas distintas conocidas entre los ítems del despacho — se marca
+  // AUNQUE el costo total cuadre con la suma (el reparto proporcional a
+  // unidades seguiría siendo incorrecto para ítems de tarifa distinta,
+  // aunque la suma total dé bien por coincidencia aritmética).
+  const tarifasUnicas = new Set(tarifasDelDespacho.map(t => Math.round(t * 10) / 10));
+  if (tarifasUnicas.size > 1) return "mixto_tarifas";
+
   // Tolerancia de $5 por redondeos de IVA/descuentos ya vistos en la API.
   if (Math.abs(costoTotalDespacho - sumaEsperada) > 5) return "mixto";
   return null;

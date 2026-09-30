@@ -185,23 +185,26 @@ export async function POST(request: Request) {
           // /shipments/{id}/costs responde. Si la orden ya está en
           // ShippingCache con fuente "costs", se reusa sin llamada nueva.
           let fuenteEnvio: "costs" | "billing" = "billing";
-          let mixto: "mixto" | "mixto_sin_tarifa" | null = null;
+          let mixto: "mixto" | "mixto_tarifas" | "mixto_sin_tarifa" | null = null;
           let shippingIdDeEstaOrden: string | null = null;
           if (!fila.multiItem) {
             const cacheado = envioCachePorOrden.get(ordenId);
             let costoTotalDespacho: number | null = null;
             let unidadesDespacho: number | null = null;
             let unidadesEstaOrden = fila.unidades;
+            let logisticTypeDeEstaOrden = "";
 
             if (cacheado?.fuente === "costs" && cacheado.costoTotalDespacho !== null && cacheado.unidadesDespacho !== null) {
               costoTotalDespacho = cacheado.costoTotalDespacho;
               unidadesDespacho = cacheado.unidadesDespacho;
               unidadesEstaOrden = cacheado.unidadesEstaOrden ?? fila.unidades;
               shippingIdDeEstaOrden = cacheado.shippingId;
+              logisticTypeDeEstaOrden = cacheado.logisticType;
               fuenteEnvio = "costs";
             } else if (!cacheado) {
               const resultado = await resolverEnvioReal(ordenId, mlGetSimple);
               shippingIdDeEstaOrden = resultado.shippingId;
+              logisticTypeDeEstaOrden = resultado.logisticType;
               nuevasEntradasCache.push([
                 `'${ordenId}`, `'${resultado.shippingId ?? ""}`, resultado.logisticType,
                 new Date().toISOString(),
@@ -233,7 +236,7 @@ export async function POST(request: Request) {
                 if (!itemsPorShipping.has(shippingIdDeEstaOrden)) itemsPorShipping.set(shippingIdDeEstaOrden, new Map());
                 itemsPorShipping.get(shippingIdDeEstaOrden)!.set(fila.idItem, unidadesEstaOrden);
                 const itemsDelDespacho = itemsPorShipping.get(shippingIdDeEstaOrden)!;
-                mixto = detectarMixto(costoTotalDespacho, itemsDelDespacho, tarifasConocidas);
+                mixto = detectarMixto(costoTotalDespacho, itemsDelDespacho, tarifasConocidas, logisticTypeDeEstaOrden);
                 // Si el despacho tiene un solo ítem (sin pack compartido),
                 // esta es una muestra confiable de su tarifa — alimenta
                 // tarifasConocidas para detectar mixto en órdenes futuras
