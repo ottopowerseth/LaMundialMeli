@@ -276,10 +276,13 @@ type FilaComparador = {
   proveedor: string | null;
   precio: number;
   comisionPct: number;
+  comisionMonto: number;
   envioPorUnidad: number;
-  envioFuente: "rentabilidad" | "sin_dato";
+  envioFuente: "item" | "tramo" | "sin_dato";
+  envioMuestras: number;
   netoMlPorUnidad: number;
   precioMayor: number | null;
+  precioMayorNeto: number | null;
   fuenteMayor: "cruce_directo" | "equivalencia" | "sin_referencia";
   vsMayorPct: number | null;
   precioSugerido: number | null;
@@ -2305,9 +2308,11 @@ export default function Home() {
                             <th className="py-2 pr-3">Marca</th>
                             <th className="py-2 pr-3">Proveedor</th>
                             <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("precio")}>Precio</th>
+                            <th className="py-2 pr-3 text-right">Comisión $</th>
                             <th className="py-2 pr-3 text-right">Envío/u</th>
                             <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("netoMlPorUnidad")}>Neto ML/u</th>
-                            <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("precioMayor")}>Mayor</th>
+                            <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("precioMayor")}>Mayor (bruto)</th>
+                            <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("precioMayorNeto")}>Mayor (neto)</th>
                             <th className="py-2 pr-3">Fuente</th>
                             <th className="py-2 pr-3 text-right cursor-pointer" onClick={() => toggleOrden("vsMayorPct")}>vs Mayor</th>
                             <th className="py-2 pr-3 text-right">Precio sugerido</th>
@@ -2323,12 +2328,16 @@ export default function Home() {
                               <td className="py-2 pr-3 text-gray-700">{f.marca ?? "-"}</td>
                               <td className="py-2 pr-3 text-gray-700">{f.proveedor ?? "-"}</td>
                               <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.precio)}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.comisionMonto)} <span className="text-xs text-gray-400">({(f.comisionPct*100).toFixed(0)}%)</span></td>
                               <td className="py-2 pr-3 text-right text-gray-700">
                                 {formatCLP(f.envioPorUnidad)}
-                                {f.envioFuente === "sin_dato" && <span className="ml-1 text-xs text-gray-400">(sin dato)</span>}
+                                {f.envioFuente === "sin_dato" && <span className="ml-1 text-xs text-red-500">(sin dato, envío=0)</span>}
+                                {f.envioFuente === "tramo" && <span className="ml-1 text-xs text-gray-400">(tramo, n={f.envioMuestras})</span>}
+                                {f.envioFuente === "item" && <span className="ml-1 text-xs text-gray-400">(n={f.envioMuestras})</span>}
                               </td>
                               <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.netoMlPorUnidad)}</td>
                               <td className="py-2 pr-3 text-right text-gray-700">{f.precioMayor !== null ? formatCLP(f.precioMayor) : "-"}</td>
+                              <td className="py-2 pr-3 text-right text-gray-500">{f.precioMayorNeto !== null ? formatCLP(f.precioMayorNeto) : "-"}</td>
                               <td className="py-2 pr-3 text-gray-500 text-xs">
                                 {f.fuenteMayor === "cruce_directo" ? "Cruce directo" : f.fuenteMayor === "equivalencia" ? "Equivalencia" : "Sin referencia"}
                               </td>

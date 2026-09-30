@@ -9,6 +9,7 @@ import {
   FilaDefontana, FilaEquivalencia,
   armarMapasDefontana, cruzarConDefontana, precioReferenciaEquivalencia,
 } from "@/lib/defontana";
+import { armarMuestrasEnvio, calcularEnvioEstimadoPorUnidad } from "@/lib/envio-estimado";
 
 // Comparador vs Mayor — pestaña propia con endpoint propio (no dentro de
 // metrics/route.ts): cubre TODAS las publicaciones activas con cruce
@@ -32,10 +33,26 @@ type FilaComparador = {
   proveedor: string | null;
   precio: number;
   comisionPct: number;
+  comisionMonto: number;
   envioPorUnidad: number;
-  envioFuente: "rentabilidad" | "sin_dato";
+  // "item": mediana real de este ítem en Rentabilidad. "tramo": sin
+  // muestras propias, mediana del tramo de precio (preferido el mismo
+  // logistic_type del ítem — ver lib/envio-estimado.ts). "sin_dato": ni el
+  // ítem ni el tramo/logístico tienen ninguna muestra — envioPorUnidad
+  // queda en 0 y esto SÍ debe mostrarse como advertencia, no como envío
+  // gratis real.
+  envioFuente: "item" | "tramo" | "sin_dato";
+  envioMuestras: number;
   netoMlPorUnidad: number;
   precioMayor: number | null;
+  // Mismo precio que precioMayor pero llevado a neto (÷1.19) — expuesto
+  // explícitamente porque vsMayorPct se calcula contra ESTE valor, no
+  // contra precioMayor bruto. Mostrar solo precioMayor (bruto) en pantalla
+  // mientras el % se calcula contra precioMayorNeto generaba un
+  // desajuste real entre lo que se ve y lo que se calculó (bug encontrado
+  // 2026-09-30: Plaisance mostraba +3.8% comparando visualmente contra el
+  // Mayor bruto, cuando el número correcto en esa base es -12.8%).
+  precioMayorNeto: number | null;
   fuenteMayor: "cruce_directo" | "equivalencia" | "sin_referencia";
   vsMayorPct: number | null;
   precioSugerido: number | null;
@@ -99,44 +116,45 @@ export async function GET(req: NextRequest) {
       equivalenciasPorPublicacion.get(eq.publicacionId)!.push(eq);
     }
 
-    // Envío real por unidad — desde Rentabilidad (columna O, ya calculada
-    // por rentabilidad/analyze). Sin fallback a tramo acá (a diferencia de
-    // Costo máx. en la Tabla por producto): el Comparador es una vista de
-    // auditoría de precio, no de estimación — si no hay dato real, se
-    // marca "sin_dato" en vez de estimarlo, para no ocultar la falta de
-    // cobertura de Rentabilidad detrás de un número aproximado.
-    const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
-    const enviosPorItem = new Map<string, number[]>();
-    for (const fila of filasRentabilidad) {
-      const itemId = fila[2];
-      const envioPorUnidadBruto = Number(fila[14]);
-      if (!itemId || Number.isNaN(envioPorUnidadBruto)) continue;
-      if (!enviosPorItem.has(itemId)) enviosPorItem.set(itemId, []);
-      enviosPorItem.get(itemId)!.push(envioPorUnidadBruto);
-    }
-    const promedio = (valores: number[]) => valores.reduce((s, v) => s + v, 0) / valores.length;
-
-    // Atributos de ML (SELLER_SKU, GTIN/EAN, listing_type_id, catalog_listing)
-    // — batch de 20 ids, mismo endpoint/tope que ya usa ml-sync.
+    // Atributos de ML (SELLER_SKU, GTIN/EAN, listing_type_id, catalog_listing,
+    // logistic_type) — batch de 20 ids, mismo endpoint/tope que ya usa ml-sync.
     const ids = activas.map((r) => String(r[0]));
-    const atributosPorItem = new Map<string, { sku: string | null; gtin: string | null; listingTypeId: string; catalogListing: boolean }>();
+    const atributosPorItem = new Map<string, { sku: string | null; gtin: string | null; listingTypeId: string; catalogListing: boolean; full: boolean }>();
     for (let i = 0; i < ids.length; i += 20) {
       const chunk = ids.slice(i, i + 20);
       const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
         "/items",
-        { ids: chunk.join(","), attributes: "id,attributes,seller_custom_field,listing_type_id,catalog_listing" }
+        { ids: chunk.join(","), attributes: "id,attributes,seller_custom_field,listing_type_id,catalog_listing,shipping" }
       );
       for (const r of data) {
         if (r.code !== 200) continue;
         const id = String(r.body.id);
+        const shipping = r.body.shipping as Record<string, unknown> | undefined;
         atributosPorItem.set(id, {
           sku: getAttr(r.body, "SELLER_SKU") ?? (r.body.seller_custom_field as string | null) ?? null,
           gtin: getAttr(r.body, "GTIN") ?? getAttr(r.body, "EAN"),
           listingTypeId: String(r.body.listing_type_id ?? ""),
           catalogListing: !!r.body.catalog_listing,
+          full: shipping?.logistic_type === "fulfillment",
         });
       }
     }
+
+    // Envío real por unidad — ver lib/envio-estimado.ts. Mediana del ítem
+    // si hay muestras propias en Rentabilidad; si no, mediana del tramo de
+    // precio × logistic_type (preferido Full si el ítem es Full — Full es
+    // sistemáticamente ~55% más barato, ver investigación de costo de
+    // envío 2026-09-29). Antes este fallback usaba 0 cuando el ítem no
+    // tenía datos propios — eso INFLABA el Neto ML al no descontar ningún
+    // envío (bug encontrado 2026-09-30: Serum Dream Liso sin datos en
+    // Rentabilidad mostraba Neto $6.121 vs $4.553 de su publicación gemela
+    // con datos, cuando debería ser similar).
+    const logisticoPorItem = new Map<string, string>();
+    for (const [id, attrs] of atributosPorItem) {
+      if (attrs.full) logisticoPorItem.set(id, "fulfillment");
+    }
+    const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
+    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad, logisticoPorItem);
 
     // Ads del mes en curso — para "vs Mayor con ads". Mismo período que
     // usa metrics/route.ts para "mes": día 1 del mes actual a día 1 del
@@ -160,9 +178,9 @@ export async function GET(req: NextRequest) {
       const atributos = atributosPorItem.get(id);
       const comisionPct = atributos ? getComisionPct(atributos.listingTypeId, atributos.catalogListing) : 0.14;
 
-      const enviosItem = enviosPorItem.get(id);
-      const envioPorUnidad = enviosItem && enviosItem.length > 0 ? promedio(enviosItem) : 0;
-      const envioFuente: "rentabilidad" | "sin_dato" = enviosItem && enviosItem.length > 0 ? "rentabilidad" : "sin_dato";
+      const { envio: envioPorUnidad, fuente: envioFuenteBase, muestras: envioMuestras } =
+        calcularEnvioEstimadoPorUnidad(id, precio, atributos?.full ?? false, muestrasEnvio);
+      const envioFuente: "item" | "tramo" | "sin_dato" = envioMuestras === 0 ? "sin_dato" : envioFuenteBase;
 
       // Neto ML por unidad = precio − comisión − envío por unidad (todo bruto).
       const comisionBruta = precio * comisionPct;
@@ -217,9 +235,12 @@ export async function GET(req: NextRequest) {
         id, titulo,
         marca: matchDirecto?.marca ?? null,
         proveedor: matchDirecto?.proveedor ?? null,
-        precio, comisionPct, envioPorUnidad, envioFuente,
+        precio, comisionPct, comisionMonto: Math.round(comisionBruta * 10) / 10,
+        envioPorUnidad, envioFuente, envioMuestras,
         netoMlPorUnidad: Math.round(netoMlPorUnidad * 10) / 10,
-        precioMayor, fuenteMayor,
+        precioMayor,
+        precioMayorNeto: precioMayorNeto !== null ? Math.round(precioMayorNeto * 10) / 10 : null,
+        fuenteMayor,
         vsMayorPct, precioSugerido,
         semaforo: vsMayorPct !== null ? semaforoDe(vsMayorPct) : null,
         campanaId: ad?.campaignId ?? null,

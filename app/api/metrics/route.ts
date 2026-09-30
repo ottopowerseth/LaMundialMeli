@@ -5,6 +5,7 @@ import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { readSheet } from "@/lib/sheets";
 import { getComisionPct, IVA } from "@/lib/rentabilidad";
 import { obtenerAdsPorItem, ROAS_METRICS_FIELDS } from "@/lib/ml-ads";
+import { armarMuestrasEnvio, calcularEnvioEstimadoPorUnidad } from "@/lib/envio-estimado";
 
 // Endpoint separado de ml-sync (no reutiliza su maxDuration ni su budget):
 // mismo criterio que backfill-shipping, para no arriesgar timeouts en rutas
@@ -689,18 +690,6 @@ async function calcularRoas(
 // ajustar sin tener que releer la lógica completa.
 const TABLA_PRODUCTOS_TOP_VENTAS = 50;
 
-// Tramos de precio para estimar envío cuando el ítem no tiene envío real
-// propio en la hoja Rentabilidad (ver calcularEnvioEstimado) — mismos
-// tramos usados en la investigación de costo de envío (2026-09-29): el
-// envío pesa muy distinto según el tramo (42% del precio en <$10k, 14% en
-// >$30k), así que un solo promedio general no sirve de referencia.
-const TRAMOS_PRECIO_ENVIO: { hasta: number; nombre: string }[] = [
-  { hasta: 10000, nombre: "<$10k" },
-  { hasta: 20000, nombre: "$10-20k" },
-  { hasta: 30000, nombre: "$20-30k" },
-  { hasta: Infinity, nombre: ">$30k" },
-];
-
 // "Stock bajo" para un ítem en campaña activa: menos de este número de días
 // de cobertura al ritmo de ventas del período consultado (unidades del
 // período / días del período). Con ventas 0 en el período no se puede
@@ -845,47 +834,17 @@ async function calcularTablaProductos(
       });
     }
 
-    // Envío real POR UNIDAD por ítem — desde la hoja Rentabilidad (columna O,
-    // "Envío por Unidad", ya calculada por rentabilidad/analyze dividiendo el
-    // envío total de cada orden por sus unidades — ver envioPorUnidad en
-    // lib/rentabilidad.ts). No se usa la columna H (Envío total de la orden)
-    // directamente: mezclar envíos de órdenes de 1 y de varias unidades del
-    // mismo ítem infla el promedio (confirmado con datos reales: Aer Brisa
-    // Marina vs Aer Rosas, mismo producto/precio, Costo máx. muy distinto
-    // solo por la mezcla de tamaños de orden en la muestra). No es una
-    // llamada nueva a ML: la Billing API tiene rate limit de 5 req/min,
-    // inviable dentro de este endpoint — cobertura hoy es baja (Rentabilidad
-    // se corre manual por mes), por eso el fallback a promedio por tramo.
-    const enviosPorItem = new Map<string, number[]>();
-    const enviosPorTramo = new Map<string, number[]>();
+    // Envío real POR UNIDAD por ítem — ver lib/envio-estimado.ts para el
+    // detalle completo (mediana, no promedio: el envío por unidad de un
+    // mismo ítem varía mucho entre órdenes reales, un promedio simple se
+    // deja arrastrar por outliers). No se usa la columna H (Envío total de
+    // la orden): mezclar órdenes de 1 y de varias unidades del mismo ítem
+    // infla el número (gotcha ya corregido). No es una llamada nueva a ML:
+    // la Billing API tiene rate limit de 5 req/min, inviable dentro de este
+    // endpoint — cobertura hoy es baja (Rentabilidad se corre manual por
+    // mes), por eso el fallback a mediana por tramo.
     const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
-    for (const fila of filasRentabilidad) {
-      const itemId = fila[2];
-      const precioVentaBruto = Number(fila[4]);
-      const envioPorUnidadBruto = Number(fila[14]);
-      if (!itemId || Number.isNaN(precioVentaBruto) || Number.isNaN(envioPorUnidadBruto)) continue;
-      if (!enviosPorItem.has(itemId)) enviosPorItem.set(itemId, []);
-      enviosPorItem.get(itemId)!.push(envioPorUnidadBruto);
-      const tramo = TRAMOS_PRECIO_ENVIO.find(t => precioVentaBruto < t.hasta)!.nombre;
-      if (!enviosPorTramo.has(tramo)) enviosPorTramo.set(tramo, []);
-      enviosPorTramo.get(tramo)!.push(envioPorUnidadBruto);
-    }
-    const promedio = (valores: number[]) => valores.reduce((s, v) => s + v, 0) / valores.length;
-
-    // Envío por unidad estimado (bruto) para un ítem al precio dado:
-    // promedio real del ítem si Rentabilidad ya tiene datos de él; si no,
-    // promedio por unidad del tramo de precio al que pertenece — ver
-    // TRAMOS_PRECIO_ENVIO. Ambas fuentes ya están en base "por unidad", no
-    // hace falta dividir de nuevo acá.
-    function calcularEnvioEstimado(itemId: string, precioVentaBruto: number): { envio: number; fuente: "item" | "tramo" } {
-      const enviosItem = enviosPorItem.get(itemId);
-      if (enviosItem && enviosItem.length > 0) {
-        return { envio: promedio(enviosItem), fuente: "item" };
-      }
-      const tramo = TRAMOS_PRECIO_ENVIO.find(t => precioVentaBruto < t.hasta)!.nombre;
-      const enviosTramo = enviosPorTramo.get(tramo);
-      return { envio: enviosTramo && enviosTramo.length > 0 ? promedio(enviosTramo) : 0, fuente: "tramo" };
-    }
+    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad);
 
     const filasBase: Omit<FilaTablaProducto, "etiquetas">[] = idsFilas.map((id) => {
       const venta = ventas.ventasPorItem![id];
@@ -918,7 +877,7 @@ async function calcularTablaProductos(
       let pierde = false;
       if (precio !== null && precioNeto !== null && stockInfo) {
         const comisionPct = getComisionPct(stockInfo.listingTypeId, stockInfo.catalogListing);
-        const { envio: envioEstimadoBruto, fuente } = calcularEnvioEstimado(id, precio);
+        const { envio: envioEstimadoBruto, fuente } = calcularEnvioEstimadoPorUnidad(id, precio, stockInfo.full, muestrasEnvio);
         const envioEstimadoNeto = envioEstimadoBruto / (1 + IVA);
         costoMax = Math.round((precioNeto * (1 - comisionPct) - envioEstimadoNeto) * 10) / 10;
         costoMaxFuenteEnvio = fuente;
