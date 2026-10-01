@@ -13,7 +13,12 @@ type Order = {
   shipping?: { id?: number };
   order_items?: { quantity?: number }[];
 };
-type ShipmentItem = { order_id?: number; quantity?: number };
+// shipping_items[].id es el item_id (ej. "MLC2019973333"), NO
+// shipping_items[].item_id — confirmado contra la API real 2026-09-30.
+// order_id existe en el tipo pero no se usa: no está presente en la
+// práctica (verificado, siempre undefined en los shipments de despacho
+// compartido probados).
+type ShipmentItem = { id?: string; order_id?: number; quantity?: number };
 type Shipment = { logistic_type?: string; shipping_items?: ShipmentItem[] };
 type ShipmentCosts = { senders?: { cost?: number }[] };
 
@@ -26,6 +31,12 @@ export type EnvioRealResultado = {
   envioOrden: number | null; // costoTotalDespacho × unidadesEstaOrden / unidadesDespacho
   envioPorUnidad: number | null; // costoTotalDespacho / unidadesDespacho
   fuente: "costs" | "billing"; // "billing": /shipments/{id}/costs falló, el caller debe usar el envío de Billing como respaldo
+  // Ítems y unidades REALES del despacho completo, tal como los devuelve
+  // /shipments/{id} — fuente para detectarMixto (ver comentario ahí:
+  // shipping_items[] no trae order_id en la práctica, así que esto es
+  // independiente del orden en que se procesen las órdenes hermanas; no
+  // depende de un acumulador que se arma orden por orden).
+  itemsDelDespacho: Map<string, number> | null;
 };
 
 // Resuelve el envío real de UNA orden. No usa cache propio — el caller
@@ -40,24 +51,28 @@ export async function resolverEnvioReal(ordenId: string, mlGet: MlGet): Promise<
     if (!shippingId) {
       return {
         logisticType: "", shippingId: null, costoTotalDespacho: null, unidadesDespacho: null,
-        unidadesEstaOrden, envioOrden: null, envioPorUnidad: null, fuente: "billing",
+        unidadesEstaOrden, envioOrden: null, envioPorUnidad: null, fuente: "billing", itemsDelDespacho: null,
       };
     }
 
     const { data: shipment } = await mlGet<Shipment>(`/shipments/${shippingId}`);
     const logisticType = shipment.logistic_type ?? "";
-    // Unidades TOTALES del despacho — shipping_items[] no siempre trae
-    // order_id (confirmado 2026-09-30, cayó siempre al fallback en la
-    // prueba manual), así que unidadesEstaOrden viene de order_items, no
-    // de buscar por order_id acá.
-    const unidadesDespacho = (shipment.shipping_items ?? []).reduce((s, it) => s + (it.quantity ?? 0), 0) || unidadesEstaOrden;
+    // Ítems y unidades reales del despacho completo — shipping_items[].id
+    // es el item_id (NO .item_id), confirmado contra la API real. No
+    // depende de order_id (que no está presente en la práctica) ni del
+    // orden en que se procesen las órdenes hermanas de un mismo pack.
+    const itemsDelDespacho = new Map<string, number>();
+    for (const it of shipment.shipping_items ?? []) {
+      if (it.id) itemsDelDespacho.set(it.id, (itemsDelDespacho.get(it.id) ?? 0) + (it.quantity ?? 0));
+    }
+    const unidadesDespacho = [...itemsDelDespacho.values()].reduce((s, q) => s + q, 0) || unidadesEstaOrden;
 
     const { data: costs } = await mlGet<ShipmentCosts>(`/shipments/${shippingId}/costs`);
     const costoTotalDespacho = costs.senders?.[0]?.cost;
     if (costoTotalDespacho === undefined) {
       return {
         logisticType, shippingId: String(shippingId), costoTotalDespacho: null, unidadesDespacho,
-        unidadesEstaOrden, envioOrden: null, envioPorUnidad: null, fuente: "billing",
+        unidadesEstaOrden, envioOrden: null, envioPorUnidad: null, fuente: "billing", itemsDelDespacho,
       };
     }
 
@@ -66,12 +81,12 @@ export async function resolverEnvioReal(ordenId: string, mlGet: MlGet): Promise<
 
     return {
       logisticType, shippingId: String(shippingId), costoTotalDespacho, unidadesDespacho,
-      unidadesEstaOrden, envioOrden, envioPorUnidad, fuente: "costs",
+      unidadesEstaOrden, envioOrden, envioPorUnidad, fuente: "costs", itemsDelDespacho,
     };
   } catch {
     return {
       logisticType: "", shippingId: null, costoTotalDespacho: null, unidadesDespacho: null,
-      unidadesEstaOrden: 1, envioOrden: null, envioPorUnidad: null, fuente: "billing",
+      unidadesEstaOrden: 1, envioOrden: null, envioPorUnidad: null, fuente: "billing", itemsDelDespacho: null,
     };
   }
 }
@@ -116,9 +131,13 @@ export function detectarMixto(
   // Tarifas distintas conocidas entre los ítems del despacho — se marca
   // AUNQUE el costo total cuadre con la suma (el reparto proporcional a
   // unidades seguiría siendo incorrecto para ítems de tarifa distinta,
-  // aunque la suma total dé bien por coincidencia aritmética).
-  const tarifasUnicas = new Set(tarifasDelDespacho.map(t => Math.round(t * 10) / 10));
-  if (tarifasUnicas.size > 1) return "mixto_tarifas";
+  // aunque la suma total dé bien por coincidencia aritmética). Misma
+  // tolerancia de $5 que el chequeo de suma — no precisión de $0,1, que
+  // marcaría "mixto_tarifas" por simple ruido de redondeo entre dos
+  // muestras del mismo ítem.
+  const tarifaMin = Math.min(...tarifasDelDespacho);
+  const tarifaMax = Math.max(...tarifasDelDespacho);
+  if (tarifaMax - tarifaMin > 5) return "mixto_tarifas";
 
   // Tolerancia de $5 por redondeos de IVA/descuentos ya vistos en la API.
   if (Math.abs(costoTotalDespacho - sumaEsperada) > 5) return "mixto";

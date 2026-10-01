@@ -112,24 +112,18 @@ export async function POST(request: Request) {
     // Tarifa por unidad conocida de un ítem = envío por unidad de un
     // despacho donde ESE ítem fue el único (unidadesDespacho ===
     // unidadesEstaOrden, sin mezcla con otra orden) — la fuente más
-    // confiable para comparar contra despachos compartidos. Y shippingId ->
-    // Map<itemId, unidades> de todas las órdenes ya vistas, para poder
-    // detectar mixto sin una llamada extra cuando el shipment resuelto en
-    // esta corrida ya fue visto por otra orden — una sola lectura de
-    // Rentabilidad alimenta ambos mapas.
+    // confiable para comparar contra despachos compartidos. Ver Commit 2
+    // (rentabilidad/recalcular-envio o similar) para la pasada previa
+    // dedicada que arma esto sobre TODO el histórico antes de marcar nada
+    // — acá solo se arma con lo que ya hay en Rentabilidad al momento de
+    // esta invocación, suficiente para órdenes nuevas de analyze.
     const tarifasConocidas = new Map<string, number>();
-    const itemsPorShipping = new Map<string, Map<string, number>>();
     {
       const filasRentExistentes = await readSheet("Rentabilidad!A2:O100000");
       for (const r of filasRentExistentes) {
         const ordenId = String(r[0]).replace(/^'/, "");
         const itemId = r[2];
-        const unidades = Number(r[13]) || 1;
         const cache = envioCachePorOrden.get(ordenId);
-        if (cache?.shippingId) {
-          if (!itemsPorShipping.has(cache.shippingId)) itemsPorShipping.set(cache.shippingId, new Map());
-          itemsPorShipping.get(cache.shippingId)!.set(itemId, unidades);
-        }
         if (cache?.fuente === "costs" && cache.unidadesDespacho === cache.unidadesEstaOrden && cache.costoTotalDespacho !== null && cache.unidadesDespacho) {
           tarifasConocidas.set(itemId, cache.costoTotalDespacho / cache.unidadesDespacho);
         }
@@ -186,24 +180,40 @@ export async function POST(request: Request) {
           // ShippingCache con fuente "costs", se reusa sin llamada nueva.
           let fuenteEnvio: "costs" | "billing" = "billing";
           let mixto: "mixto" | "mixto_tarifas" | "mixto_sin_tarifa" | null = null;
-          let shippingIdDeEstaOrden: string | null = null;
           if (!fila.multiItem) {
             const cacheado = envioCachePorOrden.get(ordenId);
             let costoTotalDespacho: number | null = null;
             let unidadesDespacho: number | null = null;
             let unidadesEstaOrden = fila.unidades;
             let logisticTypeDeEstaOrden = "";
+            // itemsDelDespacho viene SIEMPRE de shipping_items[] de
+            // /shipments/{id} (ver lib/envio-real.ts) — nunca de un
+            // acumulador armado orden por orden, así que el resultado no
+            // depende de qué orden hermana se procese primero.
+            let itemsDelDespacho: Map<string, number> | null = null;
 
             if (cacheado?.fuente === "costs" && cacheado.costoTotalDespacho !== null && cacheado.unidadesDespacho !== null) {
               costoTotalDespacho = cacheado.costoTotalDespacho;
               unidadesDespacho = cacheado.unidadesDespacho;
               unidadesEstaOrden = cacheado.unidadesEstaOrden ?? fila.unidades;
-              shippingIdDeEstaOrden = cacheado.shippingId;
               logisticTypeDeEstaOrden = cacheado.logisticType;
               fuenteEnvio = "costs";
+              // El cache no persiste shipping_items completo — solo se
+              // pide de nuevo (llamada liviana, sin /costs) si hay indicio
+              // de pack compartido (unidadesDespacho > unidadesEstaOrden),
+              // para no gastar una llamada extra en el caso común de 1
+              // sola orden por despacho.
+              if (cacheado.shippingId && unidadesDespacho > unidadesEstaOrden) {
+                try {
+                  const { data: shipment } = await mlGetSimple<{ shipping_items?: { id?: string; quantity?: number }[] }>(`/shipments/${cacheado.shippingId}`);
+                  itemsDelDespacho = new Map();
+                  for (const it of shipment.shipping_items ?? []) {
+                    if (it.id) itemsDelDespacho.set(it.id, (itemsDelDespacho.get(it.id) ?? 0) + (it.quantity ?? 0));
+                  }
+                } catch { /* sin datos de items, mixto queda sin evaluar para esta fila */ }
+              }
             } else if (!cacheado) {
               const resultado = await resolverEnvioReal(ordenId, mlGetSimple);
-              shippingIdDeEstaOrden = resultado.shippingId;
               logisticTypeDeEstaOrden = resultado.logisticType;
               nuevasEntradasCache.push([
                 `'${ordenId}`, `'${resultado.shippingId ?? ""}`, resultado.logisticType,
@@ -217,6 +227,7 @@ export async function POST(request: Request) {
                 costoTotalDespacho = resultado.costoTotalDespacho;
                 unidadesDespacho = resultado.unidadesDespacho;
                 unidadesEstaOrden = resultado.unidadesEstaOrden;
+                itemsDelDespacho = resultado.itemsDelDespacho;
                 fuenteEnvio = "costs";
               }
             }
@@ -232,18 +243,14 @@ export async function POST(request: Request) {
                 fila.margenPct = precioVentaNeto > 0 ? Math.round((fila.margenNeto / precioVentaNeto) * 1000) / 10 : null;
               }
 
-              if (shippingIdDeEstaOrden) {
-                if (!itemsPorShipping.has(shippingIdDeEstaOrden)) itemsPorShipping.set(shippingIdDeEstaOrden, new Map());
-                itemsPorShipping.get(shippingIdDeEstaOrden)!.set(fila.idItem, unidadesEstaOrden);
-                const itemsDelDespacho = itemsPorShipping.get(shippingIdDeEstaOrden)!;
+              if (itemsDelDespacho) {
                 mixto = detectarMixto(costoTotalDespacho, itemsDelDespacho, tarifasConocidas, logisticTypeDeEstaOrden);
-                // Si el despacho tiene un solo ítem (sin pack compartido),
-                // esta es una muestra confiable de su tarifa — alimenta
-                // tarifasConocidas para detectar mixto en órdenes futuras
-                // de ESTA MISMA corrida (no solo de corridas anteriores).
-                if (unidadesDespacho === unidadesEstaOrden && itemsDelDespacho.size === 1) {
-                  tarifasConocidas.set(fila.idItem, costoTotalDespacho / unidadesDespacho);
-                }
+              }
+              // Despacho de un solo ítem (sin pack compartido) = muestra
+              // confiable de su tarifa — alimenta tarifasConocidas para
+              // detectar mixto en órdenes futuras de ESTA MISMA corrida.
+              if (unidadesDespacho === unidadesEstaOrden) {
+                tarifasConocidas.set(fila.idItem, costoTotalDespacho / unidadesDespacho);
               }
             }
           }
