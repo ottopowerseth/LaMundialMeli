@@ -3,7 +3,7 @@ import axios from "axios";
 import { readSheet, batchWriteSheet, appendSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
-import { IVA } from "@/lib/rentabilidad";
+import { calcularMargen } from "@/lib/rentabilidad";
 import { detectarMixto } from "@/lib/envio-real";
 
 // Recálculo del envío de las filas YA EXISTENTES de Rentabilidad con el fix
@@ -22,7 +22,7 @@ import { detectarMixto } from "@/lib/envio-real";
 //   "billing_sin_costs": /shipments/{id}/costs falló en un intento
 //     anterior — no se reintenta en bucle; solo con forzarReintentos:true.
 export const maxDuration = 60;
-const TIEMPO_MAXIMO_MS = 50000;
+const TIEMPO_MAXIMO_MS = 40000;
 
 type FilaCache = {
   shippingId: string; logisticType: string;
@@ -82,13 +82,22 @@ export async function POST(request: Request) {
     const cachePorOrden = new Map<string, FilaCache>();
     for (const r of cacheRows) {
       if (!r[0]) continue;
-      cachePorOrden.set(String(r[0]).replace(/^'/, ""), {
+      const ordenId = String(r[0]).replace(/^'/, "");
+      const fuente: "costs" | "billing" | null = r[7] === "costs" || r[7] === "billing" ? r[7] : null;
+      const existente = cachePorOrden.get(ordenId);
+      // Preferir la fila con fuente no vacía — NO la última en orden de
+      // inserción. ml-sync/backfill-shipping escriben filas de solo 4
+      // columnas (sin fuente) que pueden llegar DESPUÉS de una fila de 8
+      // columnas ya resuelta por este endpoint o por analyze; sin esta
+      // preferencia, la fila vieja/vacía pisaría a la buena.
+      if (existente?.fuente && !fuente) continue;
+      cachePorOrden.set(ordenId, {
         shippingId: r[1] ?? "",
         logisticType: r[2] ?? "",
         costoTotalDespacho: r[4] !== undefined && r[4] !== "" ? Number(r[4]) : null,
         unidadesDespacho: r[5] !== undefined && r[5] !== "" ? Number(r[5]) : null,
         unidadesEstaOrden: r[6] !== undefined && r[6] !== "" ? Number(r[6]) : null,
-        fuente: r[7] === "costs" || r[7] === "billing" ? r[7] : null,
+        fuente,
       });
     }
 
@@ -182,7 +191,13 @@ export async function POST(request: Request) {
               costoTotalDespacho = costsCache.get(shippingId)!;
             } else {
               const { data: costs } = await mlGet<{ senders?: { cost?: number }[] }>(`/shipments/${shippingId}/costs`);
-              costoTotalDespacho = costs.senders?.[0]?.cost ?? null;
+              const cost = costs.senders?.[0]?.cost;
+              // $0 se trata como "no resuelto", no como envío gratis real
+              // — decisión de Otto 2026-10-01, consistente con el hallazgo
+              // ya documentado de que un $0 suele ser dato incompleto de
+              // la API, no un envío realmente gratuito (ver docs, sección
+              // "Envío Full/xd_drop_off", punto h).
+              costoTotalDespacho = cost !== undefined && cost > 0 ? cost : null;
               costsCache.set(shippingId, costoTotalDespacho);
             }
           }
@@ -200,7 +215,10 @@ export async function POST(request: Request) {
         ]);
       }
 
-      if (costoTotalDespacho === null || unidadesDespacho === null) {
+      // costoTotalDespacho === 0 no debería llegar acá (ya se descarta
+      // arriba al leer /costs), pero se re-chequea por si vino de
+      // ShippingCache con un $0 persistido de ANTES de esta decisión.
+      if (costoTotalDespacho === null || costoTotalDespacho === 0 || unidadesDespacho === null) {
         billingSinCosts++;
         resultados.push({ fila: idx + 2, envio: "", margenNeto: "", margenPct: "", envioPorUnidad: "", fuente: "billing_sin_costs", mixto: "" });
         continue;
@@ -213,13 +231,7 @@ export async function POST(request: Request) {
       const comision = Number(r[6]) || 0;
       const perdida = Number(r[8]) || 0;
       const precioVenta = Number(r[4]) || 0;
-      let margenNeto: number | null = null;
-      let margenPct: number | null = null;
-      if (cogs !== null) {
-        const precioVentaNeto = precioVenta / (1 + IVA);
-        margenNeto = Math.round((precioVentaNeto - cogs / (1 + IVA) - comision / (1 + IVA) - envioOrden / (1 + IVA) - perdida / (1 + IVA)) * 10) / 10;
-        margenPct = precioVentaNeto > 0 ? Math.round((margenNeto / precioVentaNeto) * 1000) / 10 : null;
-      }
+      const { margenNeto, margenPct } = calcularMargen(precioVenta, cogs, comision, envioOrden, perdida);
 
       let mixto: "mixto" | "mixto_tarifas" | "mixto_sin_tarifa" | null = null;
       if (itemsDelDespacho) {

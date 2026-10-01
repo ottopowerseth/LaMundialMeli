@@ -113,6 +113,34 @@ function parseCLP(val: unknown): number {
   return 0;
 }
 
+// Margen neto y % — única fuente de verdad, usada por calcularFilaOrden
+// (Billing API, órdenes nuevas) y por rentabilidad/recalcular-envio
+// (recálculo de filas existentes con el envío corregido). Antes de
+// extraerla acá estaba copiada inline en el endpoint de recálculo —
+// cualquier cambio a la fórmula (ej. ajuste de IVA) hubiera quedado
+// desincronizado entre los dos lugares. precioVenta/cogs/comision/envio/
+// perdida son TODOS brutos — se llevan a neto solo acá, para el margen;
+// los campos crudos de la fila persistida siguen siendo el monto bruto.
+export function calcularMargen(
+  precioVenta: number,
+  cogs: number | null,
+  comision: number,
+  envio: number,
+  perdida: number
+): { margenNeto: number | null; margenPct: number | null } {
+  const precioVentaNeto = precioVenta / (1 + IVA);
+  // Redondeado a 1 decimal: sin esto, el arrastre de punto flotante (ej.
+  // 8490-6350-1274-2449.3 = -1583.3000000000002) escribe un string largo
+  // que Sheets, con USER_ENTERED, reinterpreta como un número corrupto.
+  const margenNeto = cogs !== null
+    ? Math.round((precioVentaNeto - cogs / (1 + IVA) - comision / (1 + IVA) - envio / (1 + IVA) - perdida / (1 + IVA)) * 10) / 10
+    : null;
+  const margenPct = margenNeto !== null && precioVentaNeto > 0
+    ? Math.round((margenNeto / precioVentaNeto) * 1000) / 10
+    : null;
+  return { margenNeto, margenPct };
+}
+
 // Calcula la fila de Rentabilidad para una orden a partir de sus filas de
 // cargo ya agrupadas (ver agruparPorOrdenReal) y el mapa de COGS ya leído de
 // Publicaciones. No hace ninguna llamada — es cálculo puro, testeable.
@@ -182,20 +210,7 @@ export function calcularFilaOrden(
   // orden "más rentable" de la muestra en realidad perdía plata.
   const cogsUnitario = costoPorItemId.has(itemId) ? costoPorItemId.get(itemId)! : null;
   const cogs = cogsUnitario !== null ? cogsUnitario * unidades : null;
-  // precioVenta/comision/envio/perdida/cogs son TODOS brutos (ver comentario
-  // de IVA arriba: Costo ahora es MAYOR×Unidades, con IVA) — se llevan a
-  // neto SOLO acá, para el cálculo de margen; los campos crudos de la fila
-  // (más abajo) siguen siendo el monto bruto real.
-  const precioVentaNeto = precioVenta / (1 + IVA);
-  // Redondeado a 1 decimal: sin esto, el arrastre de punto flotante (ej.
-  // 8490-6350-1274-2449.3 = -1583.3000000000002) escribe un string largo que
-  // Sheets, con USER_ENTERED, reinterpreta como un número gigante corrupto.
-  const margenNeto = cogs !== null
-    ? Math.round((precioVentaNeto - cogs / (1 + IVA) - comision / (1 + IVA) - envio / (1 + IVA) - perdida / (1 + IVA)) * 10) / 10
-    : null;
-  const margenPct = margenNeto !== null && precioVentaNeto > 0
-    ? Math.round((margenNeto / precioVentaNeto) * 1000) / 10
-    : null;
+  const { margenNeto, margenPct } = calcularMargen(precioVenta, cogs, comision, envio, perdida);
 
   // Envío por unidad — el CXD/CFF que trae la Billing API es el total de
   // ESTA orden completa, no por unidad. Con item_amount=2 (2 unidades del

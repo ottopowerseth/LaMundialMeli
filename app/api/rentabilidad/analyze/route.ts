@@ -3,7 +3,7 @@ import axios from "axios";
 import { ensureSheets, readSheet, appendSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
-import { agruparPorOrdenReal, calcularFilaOrden, sumarAlmacenamiento, IVA, BillingDetailRow } from "@/lib/rentabilidad";
+import { agruparPorOrdenReal, calcularFilaOrden, calcularMargen, sumarAlmacenamiento, BillingDetailRow } from "@/lib/rentabilidad";
 import { resolverEnvioReal, detectarMixto } from "@/lib/envio-real";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
@@ -100,13 +100,21 @@ export async function POST(request: Request) {
     }>();
     for (const r of cacheRows) {
       if (!r[0]) continue;
-      envioCachePorOrden.set(String(r[0]).replace(/^'/, ""), {
+      const ordenId = String(r[0]).replace(/^'/, "");
+      const fuente: "costs" | "billing" | null = r[7] === "costs" || r[7] === "billing" ? r[7] : null;
+      const existente = envioCachePorOrden.get(ordenId);
+      // Preferir la fila con fuente no vacía — ver mismo comentario en
+      // rentabilidad/recalcular-envio/route.ts: ml-sync/backfill-shipping
+      // pueden escribir una fila de 4 columnas DESPUÉS de una de 8 ya
+      // resuelta; sin esto, la vieja/vacía pisaría a la buena.
+      if (existente?.fuente && !fuente) continue;
+      envioCachePorOrden.set(ordenId, {
         shippingId: r[1] ?? "",
         logisticType: r[2] ?? "",
         costoTotalDespacho: r[4] !== undefined && r[4] !== "" ? Number(r[4]) : null,
         unidadesDespacho: r[5] !== undefined && r[5] !== "" ? Number(r[5]) : null,
         unidadesEstaOrden: r[6] !== undefined && r[6] !== "" ? Number(r[6]) : null,
-        fuente: r[7] === "costs" || r[7] === "billing" ? r[7] : null,
+        fuente,
       });
     }
     // Tarifa por unidad conocida de un ítem = envío por unidad de un
@@ -237,11 +245,9 @@ export async function POST(request: Request) {
             if (fuenteEnvio === "costs" && costoTotalDespacho !== null && unidadesDespacho !== null) {
               fila.envio = Math.round(costoTotalDespacho * (unidadesEstaOrden / unidadesDespacho) * 10) / 10;
               fila.envioPorUnidad = Math.round((costoTotalDespacho / unidadesDespacho) * 10) / 10;
-              if (fila.cogs !== null) {
-                const precioVentaNeto = fila.precioVenta / (1 + IVA);
-                fila.margenNeto = Math.round((precioVentaNeto - fila.cogs / (1 + IVA) - fila.comision / (1 + IVA) - fila.envio / (1 + IVA) - fila.perdida / (1 + IVA)) * 10) / 10;
-                fila.margenPct = precioVentaNeto > 0 ? Math.round((fila.margenNeto / precioVentaNeto) * 1000) / 10 : null;
-              }
+              const { margenNeto, margenPct } = calcularMargen(fila.precioVenta, fila.cogs, fila.comision, fila.envio, fila.perdida);
+              fila.margenNeto = margenNeto;
+              fila.margenPct = margenPct;
 
               if (itemsDelDespacho) {
                 mixto = detectarMixto(costoTotalDespacho, itemsDelDespacho, tarifasConocidas, logisticTypeDeEstaOrden);
