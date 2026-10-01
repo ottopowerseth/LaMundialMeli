@@ -21,6 +21,17 @@ import { detectarMixto } from "@/lib/envio-real";
 //   "costs": ya tiene el envío real, se salta.
 //   "billing_sin_costs": /shipments/{id}/costs falló en un intento
 //     anterior — no se reintenta en bucle; solo con forzarReintentos:true.
+//
+// DOS FASES separadas (rediseño 2026-10-01, ver docs): antes, la marca de
+// "mixto" se asignaba en la misma pasada que resolvía el envío, así que
+// tarifasConocidas se iba completando a medida que avanzaba el recorrido
+// — dos filas del MISMO ítem podían recibir marcas distintas según cuál
+// se procesara primero (la primera veía tarifasConocidas incompleto, la
+// segunda ya con su propio ítem adentro). Ahora: (1) se resuelven TODOS
+// los despachos de la selección sin marcar nada, (2) se arma
+// tarifasConocidas con lo resuelto en esta corrida + ShippingCache ya
+// existente, (3) recién ahí se asignan las marcas a todas las filas —
+// mismo ítem, misma marca, salvo que su despacho sea realmente mixto.
 export const maxDuration = 60;
 const TIEMPO_MAXIMO_MS = 40000;
 
@@ -38,6 +49,17 @@ type ResultadoFila = {
   envioPorUnidad: string;
   fuente: string;
   mixto: string;
+};
+
+type Resuelta = {
+  idx: number;
+  ordenId: string;
+  itemId: string;
+  costoTotalDespacho: number;
+  unidadesDespacho: number;
+  unidadesEstaOrden: number;
+  logisticType: string;
+  itemsDelDespacho: Map<string, number> | null;
 };
 
 function mediana(valores: number[]): number {
@@ -87,9 +109,9 @@ export async function POST(request: Request) {
     // nunca actualiza una fila existente — confirmado 2026-10-01: cuando
     // ml-sync/backfill-shipping ya escribieron una fila de 4 columnas para
     // una orden y este endpoint agrega otra de 8, quedan 2 filas para el
-    // mismo ID Orden. Como readSheet devuelve las filas en orden de
-    // inserción y acá se itera con Map.set(), la fila más reciente (y más
-    // completa) sobreescribe a la vieja sin deduplicar explícito.
+    // mismo ID Orden. Se prefiere la fila con columna Fuente no vacía, no
+    // la última en orden de inserción — una fila de 4 columnas (sin
+    // fuente) que llega después de una de 8 ya resuelta no debe pisarla.
     const cacheRows = await readSheet("ShippingCache!A2:H100000");
     const cachePorOrden = new Map<string, FilaCache>();
     for (const r of cacheRows) {
@@ -97,11 +119,6 @@ export async function POST(request: Request) {
       const ordenId = String(r[0]).replace(/^'/, "");
       const fuente: "costs" | "billing" | null = r[7] === "costs" || r[7] === "billing" ? r[7] : null;
       const existente = cachePorOrden.get(ordenId);
-      // Preferir la fila con fuente no vacía — NO la última en orden de
-      // inserción. ml-sync/backfill-shipping escriben filas de solo 4
-      // columnas (sin fuente) que pueden llegar DESPUÉS de una fila de 8
-      // columnas ya resuelta por este endpoint o por analyze; sin esta
-      // preferencia, la fila vieja/vacía pisaría a la buena.
       if (existente?.fuente && !fuente) continue;
       cachePorOrden.set(ordenId, {
         shippingId: r[1] ?? "",
@@ -113,38 +130,18 @@ export async function POST(request: Request) {
       });
     }
 
-    // Pasada previa de tarifasConocidas — SOLO despachos de un único ítem
-    // (sin pack compartido), mediana por ítem si hay más de una muestra.
-    // Se arma ANTES de procesar ninguna fila para que la alarma de mixto
-    // no dependa del orden de recorrido (decisión de Otto 2026-10-01).
-    const muestrasPorItem = new Map<string, number[]>();
-    for (const r of filasRent) {
-      const ordenId = String(r[0]).replace(/^'/, "");
-      const itemId = r[2];
-      const cache = cachePorOrden.get(ordenId);
-      if (cache?.fuente === "costs" && cache.unidadesDespacho !== null && cache.unidadesEstaOrden === cache.unidadesDespacho && cache.costoTotalDespacho !== null) {
-        if (!muestrasPorItem.has(itemId)) muestrasPorItem.set(itemId, []);
-        muestrasPorItem.get(itemId)!.push(cache.costoTotalDespacho / cache.unidadesDespacho);
-      }
-    }
-    const tarifasConocidas = new Map<string, number>();
-    for (const [itemId, muestras] of muestrasPorItem) {
-      tarifasConocidas.set(itemId, mediana(muestras));
-    }
-
     // Cache EN MEMORIA para esta invocación — las órdenes hermanas de un
     // mismo despacho comparten shippingId; si ya se pidió /shipments/{id}
     // (o /costs) para ese shippingId en esta misma corrida, no se repite.
     const shipmentCache = new Map<string, { itemsDelDespacho: Map<string, number>; logisticType: string }>();
     const costsCache = new Map<string, number | null>();
 
-    let recalculadas = 0;
+    // ===== FASE 1: resolver TODOS los despachos de la selección, sin marcar nada =====
     let billingSinCosts = 0;
     let saltadas = 0;
-    const conteoMixto = new Map<string, Map<string, number>>(); // tipo -> itemId -> cantidad
     const nuevasEntradasCache: string[][] = [];
-    const resultados: ResultadoFila[] = [];
-    const antesDespues: { ordenId: string; antes: ResultadoFila; despues: ResultadoFila }[] = [];
+    const resueltas: Resuelta[] = [];
+    const sinResolver: { idx: number; fila: number }[] = [];
     let cortadoPorTiempo = false;
 
     for (const idx of indicesOrdenados) {
@@ -154,15 +151,10 @@ export async function POST(request: Request) {
       const ordenId = String(r[0]).replace(/^'/, "");
       const itemId = r[2];
       const fuenteActual = r[15] ?? ""; // columna P (índice 15)
-      const antes: ResultadoFila = {
-        fila: idx + 2, envio: r[7] ?? "", margenNeto: r[9] ?? "", margenPct: r[10] ?? "",
-        envioPorUnidad: r[14] ?? "", fuente: fuenteActual, mixto: r[16] ?? "",
-      };
 
       // En dryRun se ignora el checkpoint para poder mostrar el
-      // antes/después real de una fila ya recalculada (ej. para re-probar
-      // sobre datos ya corregidos) — nunca se escribe nada en dryRun de
-      // todas formas, así que no hay riesgo de reprocesar en producción.
+      // antes/después real de una fila ya recalculada — nunca se escribe
+      // nada en dryRun de todas formas.
       if (!dryRun) {
         if (fuenteActual === "costs") { saltadas++; continue; }
         if (fuenteActual === "billing_sin_costs" && !forzarReintentos) { saltadas++; continue; }
@@ -186,9 +178,7 @@ export async function POST(request: Request) {
         // ya se intentó en analyze/corridas previas y falló /costs —
         // tratar igual que billing_sin_costs, no reintentar en bucle.
         billingSinCosts++;
-        const despues: ResultadoFila = { fila: idx + 2, envio: "", margenNeto: "", margenPct: "", envioPorUnidad: "", fuente: "billing_sin_costs", mixto: "" };
-        resultados.push(despues);
-        if (dryRun) antesDespues.push({ ordenId, antes, despues });
+        sinResolver.push({ idx, fila: idx + 2 });
         continue;
       } else {
         try {
@@ -217,17 +207,13 @@ export async function POST(request: Request) {
             } else {
               const { data: costs } = await mlGet<{ senders?: { cost?: number }[] }>(`/shipments/${shippingId}/costs`);
               const cost = costs.senders?.[0]?.cost;
-              // $0 se trata como "no resuelto", no como envío gratis real
-              // — decisión de Otto 2026-10-01, consistente con el hallazgo
-              // ya documentado de que un $0 suele ser dato incompleto de
-              // la API, no un envío realmente gratuito (ver docs, sección
-              // "Envío Full/xd_drop_off", punto h).
+              // $0 se trata como "no resuelto", no como envío gratis real.
               costoTotalDespacho = cost !== undefined && cost > 0 ? cost : null;
               costsCache.set(shippingId, costoTotalDespacho);
             }
           }
         } catch {
-          // error de red/API — queda sin resolver, se marca billing_sin_costs abajo.
+          // error de red/API — queda sin resolver.
         }
 
         nuevasEntradasCache.push([
@@ -240,19 +226,65 @@ export async function POST(request: Request) {
         ]);
       }
 
-      // costoTotalDespacho === 0 no debería llegar acá (ya se descarta
-      // arriba al leer /costs), pero se re-chequea por si vino de
-      // ShippingCache con un $0 persistido de ANTES de esta decisión.
       if (costoTotalDespacho === null || costoTotalDespacho === 0 || unidadesDespacho === null) {
         billingSinCosts++;
-        const despues: ResultadoFila = { fila: idx + 2, envio: "", margenNeto: "", margenPct: "", envioPorUnidad: "", fuente: "billing_sin_costs", mixto: "" };
-        resultados.push(despues);
-        if (dryRun) antesDespues.push({ ordenId, antes, despues });
+        sinResolver.push({ idx, fila: idx + 2 });
         continue;
       }
 
-      const envioOrden = Math.round(costoTotalDespacho * (unidadesEstaOrden / unidadesDespacho) * 10) / 10;
-      const envioPorUnidad = Math.round((costoTotalDespacho / unidadesDespacho) * 10) / 10;
+      resueltas.push({ idx, ordenId, itemId, costoTotalDespacho, unidadesDespacho, unidadesEstaOrden, logisticType, itemsDelDespacho });
+    }
+
+    // ===== FASE 2: armar tarifasConocidas con TODO lo resuelto (esta corrida + ShippingCache) =====
+    const muestrasPorItem = new Map<string, number[]>();
+    for (const res of resueltas) {
+      if (res.unidadesDespacho === res.unidadesEstaOrden) {
+        if (!muestrasPorItem.has(res.itemId)) muestrasPorItem.set(res.itemId, []);
+        muestrasPorItem.get(res.itemId)!.push(res.costoTotalDespacho / res.unidadesDespacho);
+      }
+    }
+    // ShippingCache ya existente (órdenes fuera de esta selección, de
+    // corridas anteriores de este endpoint o de analyze) — misma fuente
+    // que antes, ahora sumada ANTES de marcar en vez de ir alimentándose
+    // fila por fila dentro del propio loop de marcado.
+    for (const r of filasRent) {
+      const ordenId = String(r[0]).replace(/^'/, "");
+      const itemId = r[2];
+      const cache = cachePorOrden.get(ordenId);
+      if (cache?.fuente === "costs" && cache.unidadesDespacho !== null && cache.unidadesEstaOrden === cache.unidadesDespacho && cache.costoTotalDespacho !== null) {
+        if (!muestrasPorItem.has(itemId)) muestrasPorItem.set(itemId, []);
+        muestrasPorItem.get(itemId)!.push(cache.costoTotalDespacho / cache.unidadesDespacho);
+      }
+    }
+    const tarifasConocidas = new Map<string, number>();
+    for (const [itemId, muestras] of muestrasPorItem) {
+      tarifasConocidas.set(itemId, mediana(muestras));
+    }
+
+    // ===== FASE 3: asignar marcas y calcular margen con tarifasConocidas ya completo =====
+    let recalculadas = 0;
+    const conteoMixto = new Map<string, Map<string, number>>(); // tipo -> itemId -> cantidad
+    const resultados: ResultadoFila[] = [];
+    const antesDespues: { ordenId: string; antes: ResultadoFila; despues: ResultadoFila }[] = [];
+
+    const antesDeFila = (idx: number): ResultadoFila => {
+      const r = filasRent[idx];
+      return {
+        fila: idx + 2, envio: r[7] ?? "", margenNeto: r[9] ?? "", margenPct: r[10] ?? "",
+        envioPorUnidad: r[14] ?? "", fuente: r[15] ?? "", mixto: r[16] ?? "",
+      };
+    };
+
+    for (const { idx, fila } of sinResolver) {
+      const despues: ResultadoFila = { fila, envio: "", margenNeto: "", margenPct: "", envioPorUnidad: "", fuente: "billing_sin_costs", mixto: "" };
+      resultados.push(despues);
+      if (dryRun) antesDespues.push({ ordenId: String(filasRent[idx][0]).replace(/^'/, ""), antes: antesDeFila(idx), despues });
+    }
+
+    for (const res of resueltas) {
+      const r = filasRent[res.idx];
+      const envioOrden = Math.round(res.costoTotalDespacho * (res.unidadesEstaOrden / res.unidadesDespacho) * 10) / 10;
+      const envioPorUnidad = Math.round((res.costoTotalDespacho / res.unidadesDespacho) * 10) / 10;
 
       const cogs = r[5] !== "" ? Number(r[5]) : null;
       const comision = Number(r[6]) || 0;
@@ -261,20 +293,17 @@ export async function POST(request: Request) {
       const { margenNeto, margenPct } = calcularMargen(precioVenta, cogs, comision, envioOrden, perdida);
 
       let mixto: "mixto" | "mixto_tarifas" | "mixto_sin_tarifa" | null = null;
-      if (itemsDelDespacho) {
-        mixto = detectarMixto(costoTotalDespacho, itemsDelDespacho, tarifasConocidas, logisticType);
-      }
-      if (unidadesDespacho === unidadesEstaOrden) {
-        tarifasConocidas.set(itemId, costoTotalDespacho / unidadesDespacho);
+      if (res.itemsDelDespacho) {
+        mixto = detectarMixto(res.costoTotalDespacho, res.itemsDelDespacho, tarifasConocidas, res.logisticType);
       }
       if (mixto) {
         if (!conteoMixto.has(mixto)) conteoMixto.set(mixto, new Map());
         const porItem = conteoMixto.get(mixto)!;
-        porItem.set(itemId, (porItem.get(itemId) ?? 0) + 1);
+        porItem.set(res.itemId, (porItem.get(res.itemId) ?? 0) + 1);
       }
 
       const despues: ResultadoFila = {
-        fila: idx + 2,
+        fila: res.idx + 2,
         envio: String(envioOrden),
         margenNeto: margenNeto === null ? "" : String(margenNeto),
         margenPct: margenPct === null ? "" : String(margenPct),
@@ -283,7 +312,7 @@ export async function POST(request: Request) {
         mixto: mixto ?? "",
       };
       resultados.push(despues);
-      if (dryRun) antesDespues.push({ ordenId, antes, despues });
+      if (dryRun) antesDespues.push({ ordenId: res.ordenId, antes: antesDeFila(res.idx), despues });
       recalculadas++;
     }
 
