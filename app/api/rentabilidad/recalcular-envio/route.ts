@@ -73,6 +73,7 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const forzarReintentos = body?.forzarReintentos === true;
     const dryRun = body?.dryRun === true;
+    const dryRunLimite = Number.isInteger(body?.dryRunLimite) && body.dryRunLimite > 0 ? body.dryRunLimite : 20;
 
     const token = await getValidAccessToken();
     const client = axios.create({
@@ -94,15 +95,16 @@ export async function POST(request: Request) {
       .map((_, i) => i)
       .sort((a, b) => new Date(filasRent[b][1]).getTime() - new Date(filasRent[a][1]).getTime());
 
-    // dryRun: máximo 20 filas, SIN escribir nada — forzando las órdenes de
-    // prueba pedidas explícitamente (3 hermanas de un pack + item_amount=2
-    // + una billing_sin_costs) al frente de la selección si existen en la
-    // hoja, para que el antes/después las incluya siempre.
+    // dryRun: máximo dryRunLimite filas (default 20), SIN escribir nada —
+    // forzando las órdenes de prueba pedidas explícitamente (3 hermanas de
+    // un pack + item_amount=2 + una billing_sin_costs) al frente de la
+    // selección si existen en la hoja, para que el antes/después las
+    // incluya siempre.
     if (dryRun) {
       const idsForzados = new Set(["2000017565265218", "2000017565272130", "2000017565265220", "2000017999196484"]);
       const indicesForzados = indicesOrdenados.filter(i => idsForzados.has(String(filasRent[i][0]).replace(/^'/, "")));
       const resto = indicesOrdenados.filter(i => !idsForzados.has(String(filasRent[i][0]).replace(/^'/, "")));
-      indicesOrdenados = [...indicesForzados, ...resto].slice(0, 20);
+      indicesOrdenados = [...indicesForzados, ...resto].slice(0, dryRunLimite);
     }
 
     // ShippingCache: Map<ordenId, FilaCache>. appendSheet SIEMPRE agrega,
