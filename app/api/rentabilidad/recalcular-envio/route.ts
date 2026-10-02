@@ -74,6 +74,15 @@ export async function POST(request: Request) {
     const forzarReintentos = body?.forzarReintentos === true;
     const dryRun = body?.dryRun === true;
     const dryRunLimite = Number.isInteger(body?.dryRunLimite) && body.dryRunLimite > 0 ? body.dryRunLimite : 20;
+    // omitirMarca: no escribe la columna Q (Mixto) en esta tanda — decisión
+    // de Otto 2026-10-02: las marcas dependen de tarifasConocidas, que
+    // recién queda completo cuando TODO el histórico está resuelto (ver
+    // punto 2, pasada final de marcas); escribirlas tanda por tanda daría
+    // marcas distintas entre tandas para el mismo despacho.
+    const omitirMarca = body?.omitirMarca === true;
+    // limite: tope de filas PENDIENTES a procesar en la corrida real (no
+    // dryRun) — igual que dryRunLimite pero para la escritura real.
+    const limite = Number.isInteger(body?.limite) && body.limite > 0 ? body.limite : null;
 
     const token = await getValidAccessToken();
     const client = axios.create({
@@ -105,6 +114,19 @@ export async function POST(request: Request) {
       const indicesForzados = indicesOrdenados.filter(i => idsForzados.has(String(filasRent[i][0]).replace(/^'/, "")));
       const resto = indicesOrdenados.filter(i => !idsForzados.has(String(filasRent[i][0]).replace(/^'/, "")));
       indicesOrdenados = [...indicesForzados, ...resto].slice(0, dryRunLimite);
+    } else if (limite !== null) {
+      // Tope de filas a procesar en esta corrida real — igual criterio que
+      // el checkpoint normal (se filtran las ya resueltas), pero cortando
+      // la selección antes de entrar al loop en vez de confiar solo en
+      // TIEMPO_MAXIMO_MS, para tandas deliberadamente chicas (ej. primera
+      // tanda de 100 filas, revisar resultado antes de seguir).
+      const pendientes = indicesOrdenados.filter(i => {
+        const fuenteActual = filasRent[i][15] ?? "";
+        if (fuenteActual === "costs") return false;
+        if (fuenteActual === "billing_sin_costs" && !forzarReintentos) return false;
+        return true;
+      });
+      indicesOrdenados = pendientes.slice(0, limite);
     }
 
     // ShippingCache: Map<ordenId, FilaCache>. appendSheet SIEMPRE agrega,
@@ -280,7 +302,7 @@ export async function POST(request: Request) {
     for (const { idx, fila } of sinResolver) {
       const despues: ResultadoFila = { fila, envio: "", margenNeto: "", margenPct: "", envioPorUnidad: "", fuente: "billing_sin_costs", mixto: "" };
       resultados.push(despues);
-      if (dryRun) antesDespues.push({ ordenId: String(filasRent[idx][0]).replace(/^'/, ""), antes: antesDeFila(idx), despues });
+      antesDespues.push({ ordenId: String(filasRent[idx][0]).replace(/^'/, ""), antes: antesDeFila(idx), despues });
     }
 
     for (const res of resueltas) {
@@ -314,7 +336,7 @@ export async function POST(request: Request) {
         mixto: mixto ?? "",
       };
       resultados.push(despues);
-      if (dryRun) antesDespues.push({ ordenId: res.ordenId, antes: antesDeFila(res.idx), despues });
+      antesDespues.push({ ordenId: res.ordenId, antes: antesDeFila(res.idx), despues });
       recalculadas++;
     }
 
@@ -323,19 +345,24 @@ export async function POST(request: Request) {
         await appendSheet("ShippingCache!A:H", nuevasEntradasCache);
       }
 
-      // Una sola llamada batchUpdate para todas las filas afectadas — cada
-      // fila escribe hasta 3 rangos no contiguos (H envío; J:K margen;
-      // O:Q envío por unidad/fuente/mixto), pero sigue siendo 1 llamada
-      // HTTP para todo el lote, no 3 por fila.
+      // Una sola llamada batchUpdate para todas las filas afectadas. Si
+      // omitirMarca, Q (Mixto) no se toca en absoluto — ni se limpia ni
+      // se escribe — se deja para la pasada final dedicada (ver punto 2,
+      // diseño pendiente) que arma tarifasConocidas sobre el histórico ya
+      // completo, no tanda por tanda.
       const updates = resultados.flatMap(({ fila, envio, margenNeto, margenPct, envioPorUnidad, fuente, mixto }) => {
         if (fuente === "billing_sin_costs") {
-          return [{ range: `Rentabilidad!P${fila}:Q${fila}`, values: [[fuente, mixto]] }];
+          return omitirMarca
+            ? [{ range: `Rentabilidad!P${fila}:P${fila}`, values: [[fuente]] }]
+            : [{ range: `Rentabilidad!P${fila}:Q${fila}`, values: [[fuente, mixto]] }];
         }
-        return [
+        const base = [
           { range: `Rentabilidad!H${fila}:H${fila}`, values: [[envio]] },
           { range: `Rentabilidad!J${fila}:K${fila}`, values: [[margenNeto, margenPct]] },
-          { range: `Rentabilidad!O${fila}:Q${fila}`, values: [[envioPorUnidad, fuente, mixto]] },
         ];
+        return omitirMarca
+          ? [...base, { range: `Rentabilidad!O${fila}:P${fila}`, values: [[envioPorUnidad, fuente]] }]
+          : [...base, { range: `Rentabilidad!O${fila}:Q${fila}`, values: [[envioPorUnidad, fuente, mixto]] }];
       });
       await batchWriteSheet(updates);
     }
@@ -351,7 +378,7 @@ export async function POST(request: Request) {
       completo: !cortadoPorTiempo,
       recalculadas,
       billingSinCosts,
-      antesDespues: dryRun ? antesDespues : undefined,
+      antesDespues: dryRun ? antesDespues : antesDespues.slice(0, 5),
       saltadas,
       pendientes: indicesOrdenados.length - recalculadas - billingSinCosts - saltadas,
       mixto: mixtoResumen,
