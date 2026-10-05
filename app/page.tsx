@@ -3,6 +3,7 @@
 import { Fragment, CSSProperties, useEffect, useState, useRef } from "react";
 import Image from "next/image";
 import * as XLSX from "xlsx";
+import RevisionPublicaciones from "./RevisionPublicaciones";
 
 type MLStatus = { ok: boolean; nickname?: string } | null;
 
@@ -1121,6 +1122,8 @@ export default function Home() {
                 </>
               )}
             </div>
+
+            <RevisionPublicaciones mlOk={!!mlStatus?.ok} />
 
             {/* Link al Sheet */}
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex items-center justify-between">
