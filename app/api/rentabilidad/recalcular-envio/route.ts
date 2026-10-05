@@ -25,6 +25,9 @@ import { procesarTanda } from "@/lib/envio-real";
 // La lógica de una tanda vive en lib/envio-real.ts (procesarTanda) —
 // compartida con rentabilidad/completar, que la invoca en loop con
 // condiciones de parada. Ver ese endpoint para el modo automático.
+//
+// Escritura: sin body (o sin confirmar:true) corre en modo simulación y no
+// toca el Sheet; solo escribe con { "confirmar": true }.
 export const maxDuration = 60;
 const TIEMPO_MAXIMO_MS = 40000;
 
@@ -32,7 +35,12 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const forzarReintentos = body?.forzarReintentos === true;
-    const dryRun = body?.dryRun === true;
+    // Por defecto SIMULA (no escribe en Sheets), igual que rentabilidad/
+    // completar — decisión de Otto 2026-10-05: solo escribe con
+    // confirmar:true explícito en el body. dryRun:true se sigue respetando
+    // (aunque venga con confirmar:true, gana la simulación).
+    const confirmar = body?.confirmar === true;
+    const dryRun = !confirmar || body?.dryRun === true;
     const dryRunLimite = Number.isInteger(body?.dryRunLimite) && body.dryRunLimite > 0 ? body.dryRunLimite : 20;
     const omitirMarca = body?.omitirMarca === true;
     const limite = Number.isInteger(body?.limite) && body.limite > 0 ? body.limite : null;
