@@ -4,6 +4,7 @@ import { Fragment, CSSProperties, useEffect, useState, useRef } from "react";
 import Image from "next/image";
 import * as XLSX from "xlsx";
 import RevisionPublicaciones from "./RevisionPublicaciones";
+import Tablero from "./Tablero";
 
 type MLStatus = { ok: boolean; nickname?: string } | null;
 
@@ -340,7 +341,7 @@ const FILE_ZONES: FileZone[] = [
 ];
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"sync" | "auditoria" | "forecast" | "metricas" | "rentabilidad" | "comparador">("sync");
+  const [activeTab, setActiveTab] = useState<"tablero" | "sync" | "auditoria" | "forecast" | "metricas" | "rentabilidad" | "comparador">("tablero");
 
   // --- Sync state ---
   const [mlStatus, setMlStatus] = useState<MLStatus>(null);
@@ -815,6 +816,11 @@ export default function Home() {
       {/* Tabs */}
       <div className="max-w-4xl mx-auto px-6 pt-6">
         <div className="flex gap-1 bg-white rounded-2xl border border-gray-200 shadow-sm p-1 w-fit">
+          <button onClick={() => setActiveTab("tablero")}
+            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "tablero" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            style={activeTab === "tablero" ? { backgroundColor: "#C41230" } : {}}>
+            Tablero
+          </button>
           <button onClick={() => setActiveTab("sync")}
             className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "sync" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "sync" ? { backgroundColor: "#C41230" } : {}}>
@@ -849,6 +855,9 @@ export default function Home() {
       </div>
 
       <div className="max-w-4xl mx-auto px-6 py-6 space-y-5">
+
+        {/* === TAB: TABLERO === */}
+        {activeTab === "tablero" && <Tablero />}
 
         {/* === TAB: PUBLICACIONES === */}
         {activeTab === "sync" && (
