@@ -200,10 +200,20 @@ export async function POST() {
           getComisionPct(item.listing_type_id as string, !!(item.catalog_listing)), // J: Comisión %
           item.status,                                          // K: Estado ML
           item.listing_type_id,                                 // L: Tipo Publicación
-          // M: Ganancia = (Precio/1.19) - (Costo/1.19) - (Com$/1.19) - (Envío/1.19)
-          // — Precio/Costo/Com$/Envío son TODOS brutos (ver comentario de IVA arriba)
-          `=(G${row}/${1 + IVA})-(F${row}/${1 + IVA})-(H${row}/${1 + IVA})-(I${row}/${1 + IVA})`,
-          `=IF(G${row}>0;M${row}/(G${row}/${1 + IVA});"")`,      // N: Margen % — usa ; por locale es_CL
+          // M: Ganancia = (Precio − Costo − Com$ − Envío) / 1.19 — Precio/Costo/
+          // Com$/Envío son TODOS brutos (ver comentario de IVA arriba), así que
+          // restar en bruto y llevar el resultado a neto es lo mismo que llevar
+          // cada término. Se divide como ×100/119 y NO con un literal "1.19":
+          // la hoja está en locale es_ES (coma decimal), donde "1.19" es un
+          // error de parseo — las 620 filas mostraban #ERROR! en Ganancia y
+          // Margen % desde que se agregó el ajuste de IVA (1a0c521/692f8c2).
+          // Vacía si falta Costo (F) o Envío (I): con una celda vacía la resta
+          // la trata como 0 y mostraba una ganancia inflada (ej. Plaisance
+          // ~12% con Envío vacío, contra ~3,8% real). Ojo: Comisión % (J) sigue
+          // siendo la aproximación por tipo de publicación (ver getComisionPct),
+          // que difiere ~2 puntos de la real — por eso M/N son referenciales.
+          `=IF(OR(F${row}="";I${row}="");"";(G${row}-F${row}-H${row}-I${row})*100/${Math.round((1 + IVA) * 100)})`,
+          `=IF(OR(M${row}="";G${row}<=0);"";M${row}/(G${row}*100/${Math.round((1 + IVA) * 100)}))`,      // N: Margen % — usa ; por locale; vacío si M está vacío
           getDiasStock(item, stock),                            // O: Días de Stock
           getAlerta(item, stock),                                // P: Alerta
           item.permalink,                                       // Q: URL
