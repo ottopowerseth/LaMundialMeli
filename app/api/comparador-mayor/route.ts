@@ -96,14 +96,19 @@ export async function GET(req: NextRequest) {
     const mlGet = <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) =>
       withMlRetry(() => mlClient.get<T>(url, { params, headers }), { budget });
 
-    // Publicaciones activas — desde Sheets, columnas A(id) C(titulo)
-    // F(costo, no se usa acá) G(precio) K(estado) L(listing_type_id) S(unidades).
-    const filasPub = await readSheet("Publicaciones!A2:S1000");
+    // Lecturas de Sheets en paralelo (independientes entre sí). Publicaciones
+    // activas — columnas A(id) C(titulo) F(costo, no se usa acá) G(precio)
+    // K(estado) L(listing_type_id) S(unidades).
+    const [filasPub, filasDefontanaRaw, filasEquivalenciasRaw, filasTarifaEnvio] = await Promise.all([
+      readSheet("Publicaciones!A2:S1000"),
+      readSheet("Lista Defontana!A2:H100000"),
+      readSheet("Equivalencias Defontana!A2:C1000"),
+      readSheet("TarifaEnvio!A2:L5000").catch(() => [] as string[][]),
+    ]);
     const activas = filasPub.filter((r) => r[0] && r[10] === "active");
 
     // Lista Defontana + Equivalencias — leídas una vez, reutilizadas para
     // todas las publicaciones.
-    const filasDefontanaRaw = await readSheet("Lista Defontana!A2:H100000");
     const filasDefontana: FilaDefontana[] = filasDefontanaRaw
       .filter((r) => r[3])
       .map((r) => ({
@@ -113,7 +118,6 @@ export async function GET(req: NextRequest) {
       }));
     const { porCod, porBarras } = armarMapasDefontana(filasDefontana);
 
-    const filasEquivalenciasRaw = await readSheet("Equivalencias Defontana!A2:C1000");
     const equivalenciasPorPublicacion = new Map<string, FilaEquivalencia[]>();
     for (const r of filasEquivalenciasRaw) {
       if (!r[0] || !r[1]) continue;
@@ -122,31 +126,63 @@ export async function GET(req: NextRequest) {
       equivalenciasPorPublicacion.get(eq.publicacionId)!.push(eq);
     }
 
-    // Atributos de ML (SELLER_SKU, GTIN/EAN, listing_type_id, category_id,
-    // logistic_type) — batch de 20 ids, mismo endpoint/tope que ya usa ml-sync.
-    // listing_type_id/category_id solo para la comisión calculada de las
-    // publicaciones sin ventas recientes.
     const ids = activas.map((r) => String(r[0]));
-    const atributosPorItem = new Map<string, { sku: string | null; gtin: string | null; listingTypeId: string; categoryId: string; full: boolean }>();
-    for (let i = 0; i < ids.length; i += 20) {
-      const chunk = ids.slice(i, i + 20);
-      const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
-        "/items",
-        { ids: chunk.join(","), attributes: "id,attributes,seller_custom_field,listing_type_id,category_id,shipping" }
-      );
-      for (const r of data) {
-        if (r.code !== 200) continue;
-        const id = String(r.body.id);
-        const shipping = r.body.shipping as Record<string, unknown> | undefined;
-        atributosPorItem.set(id, {
-          sku: getAttr(r.body, "SELLER_SKU") ?? (r.body.seller_custom_field as string | null) ?? null,
-          gtin: getAttr(r.body, "GTIN") ?? getAttr(r.body, "EAN"),
-          listingTypeId: String(r.body.listing_type_id ?? ""),
-          categoryId: String(r.body.category_id ?? ""),
-          full: shipping?.logistic_type === "fulfillment",
-        });
-      }
-    }
+    // Ads del mes en curso — para "vs Mayor con ads". Mismo período que
+    // usa metrics/route.ts para "mes": día 1 del mes actual a día 1 del
+    // mes siguiente (/product_ads/.../search tolera fechas futuras).
+    const ahora = new Date();
+    const desdeAds = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), 1));
+    const hastaAds = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth() + 1, 1));
+
+    // Las tres cargas de ML siguientes NO dependen entre sí, así que corren
+    // en paralelo (antes iban en serie y sumaban ~31 s; medido por fase
+    // 2026-10-07: atributos 6,5 s, ventas 3,6 s, anuncios ~4 s):
+    //  - Atributos de ML (SELLER_SKU, GTIN/EAN, listing_type_id, category_id,
+    //    logistic_type) — lotes de 20 ids, mismo endpoint/tope que ml-sync,
+    //    con concurrencia 4. listing_type_id/category_id solo para la
+    //    comisión calculada de las publicaciones sin ventas recientes.
+    //  - Ventas de los últimos 45 días (sale_fee → comisión real).
+    //  - Ads por ítem.
+    type AtributosItem = { sku: string | null; gtin: string | null; listingTypeId: string; categoryId: string; full: boolean };
+    const cargarAtributos = async () => {
+      const out = new Map<string, AtributosItem>();
+      const lotes: string[][] = [];
+      for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+      let siguienteLote = 0;
+      await Promise.all(Array.from({ length: 4 }, async () => {
+        while (siguienteLote < lotes.length) {
+          const chunk = lotes[siguienteLote++];
+          const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
+            "/items",
+            { ids: chunk.join(","), attributes: "id,attributes,seller_custom_field,listing_type_id,category_id,shipping" }
+          );
+          for (const r of data) {
+            if (r.code !== 200) continue;
+            const id = String(r.body.id);
+            const shipping = r.body.shipping as Record<string, unknown> | undefined;
+            out.set(id, {
+              sku: getAttr(r.body, "SELLER_SKU") ?? (r.body.seller_custom_field as string | null) ?? null,
+              gtin: getAttr(r.body, "GTIN") ?? getAttr(r.body, "EAN"),
+              listingTypeId: String(r.body.listing_type_id ?? ""),
+              categoryId: String(r.body.category_id ?? ""),
+              full: shipping?.logistic_type === "fulfillment",
+            });
+          }
+        }
+      }));
+      return out;
+    };
+    const cargarVentas = async () => {
+      const { data: yo } = await mlGet<{ id: number }>("/users/me");
+      return obtenerVentasPorItem(mlGet, yo.id, 45);
+    };
+    const cargarAds = async () => {
+      const advertiser = await resolverAdvertiser(mlGet);
+      return advertiser
+        ? await obtenerAdsPorItem(mlGet, advertiser, desdeAds.toISOString().slice(0, 10), hastaAds.toISOString().slice(0, 10))
+        : new Map();
+    };
+    const [atributosPorItem, ventas45, adsPorItem] = await Promise.all([cargarAtributos(), cargarVentas(), cargarAds()]);
 
     // Envío por unidad: tarifa MEDIDA de la hoja TarifaEnvio, con respaldo
     // marcado "estimado" (ver lib/envio-medido.ts). Ya no sale de Rentabilidad:
@@ -161,14 +197,12 @@ export async function GET(req: NextRequest) {
       logisticoPorItem.set(id, attrs.full ? "fulfillment" : "otro");
       if (attrs.sku) skuPorItem.set(id, attrs.sku);
     }
-    const filasTarifaEnvio = await readSheet("TarifaEnvio!A2:L5000").catch(() => [] as string[][]);
     const ctxEnvio = armarContextoEnvio(parsearTarifasEnvio(filasTarifaEnvio), precioPorItem, skuPorItem, logisticoPorItem);
 
     // Comisión real: sale_fee de las ventas de los últimos 45 días; si la
     // publicación no vendió, la calculadora oficial de ML ("calculada").
-    // Concurrencia 8 para esa calculadora (hoy ~330 publicaciones sin ventas).
-    const { data: yo } = await mlGet<{ id: number }>("/users/me");
-    const ventas45 = await obtenerVentasPorItem(mlGet, yo.id, 45);
+    // Concurrencia 8 para esa calculadora (hoy ~330 publicaciones sin ventas);
+    // necesita los atributos y las ventas, por eso va después del paralelo.
     const comisionAcc = new Map([...ventas45].map(([id, v]) => [id, { ingreso: v.ingresoConComision, comision: v.comision }]));
     const comisionPorItem = new Map<string, ComisionResuelta>();
     let siguienteComision = 0;
@@ -182,17 +216,6 @@ export async function GET(req: NextRequest) {
         ));
       }
     }));
-
-    // Ads del mes en curso — para "vs Mayor con ads". Mismo período que
-    // usa metrics/route.ts para "mes": día 1 del mes actual a día 1 del
-    // mes siguiente (/product_ads/.../search tolera fechas futuras).
-    const ahora = new Date();
-    const desdeAds = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), 1));
-    const hastaAds = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth() + 1, 1));
-    const advertiser = await resolverAdvertiser(mlGet);
-    const adsPorItem = advertiser
-      ? await obtenerAdsPorItem(mlGet, advertiser, desdeAds.toISOString().slice(0, 10), hastaAds.toISOString().slice(0, 10))
-      : new Map();
 
     const filas: FilaComparador[] = [];
     for (const r of activas) {
