@@ -54,6 +54,13 @@ type MargenApi = {
   };
   filas: FilaMargen[];
 };
+type Pareto = { desde: string; hasta: string; ingreso: number; publicaciones: number; para50: number; para80: number; para95: number; top10Pct: number };
+type PuntoSerie = Resumen & {
+  desde: string; hasta: string; hastaDatos: string; parcial: boolean; incompleto: boolean;
+  variacion: { ingresos: number | null; unidades: number | null; ordenes: number | null; ticket: number | null };
+  comparadoCon: { desde: string; hasta: string } | null;
+};
+type TendenciasApi = { pareto: { ventana: Pareto; noventa: Pareto }; semanas: PuntoSerie[]; meses: PuntoSerie[]; datosDesde: string };
 type TableroApi = {
   ok: boolean;
   error?: string;
@@ -63,6 +70,7 @@ type TableroApi = {
   confianza?: Confianza;
   stock?: StockApi;
   margen?: MargenApi;
+  tendencias?: TendenciasApi;
 };
 
 let cache: { data: TableroApi; ts: number } | null = null;
@@ -149,6 +157,76 @@ function SeccionAlerta({ alerta, total }: { alerta: FilaAlerta[]; total: number 
       {alerta.length > visibles && (
         <button onClick={() => setVisibles((v) => v + 15)} className="text-sm text-gray-700 hover:text-black underline">Mostrar más ({alerta.length - visibles})</button>
       )}
+    </div>
+  );
+}
+
+const fecha = (iso: string) => new Date(iso).toLocaleDateString("es-CL", { day: "2-digit", month: "short", timeZone: "UTC" });
+const mesTxt = (iso: string) => new Date(iso).toLocaleDateString("es-CL", { month: "short", year: "numeric", timeZone: "UTC" });
+function Var({ pct }: { pct: number | null }) {
+  if (pct === null) return <span className="text-gray-400">—</span>;
+  return <span className={pct > 0 ? "text-green-700" : pct < 0 ? "text-red-700" : "text-gray-500"}>{pct > 0 ? "+" : ""}{pct.toFixed(1).replace(".", ",")}%</span>;
+}
+
+// Pareto (cuántas publicaciones hacen el 50/80/95% del ingreso) y series
+// semanal / mensual. La semana o el mes en curso se rotula "parcial" y se
+// compara contra el mismo tramo del período anterior (no contra el entero).
+function SeccionTendencias({ t }: { t: TendenciasApi }) {
+  const [tipo, setTipo] = useState<"semanas" | "meses">("semanas");
+  const puntos = t[tipo];
+  const maxIng = Math.max(1, ...puntos.map((p) => p.ingresos));
+  const etiqueta = (p: PuntoSerie) => (tipo === "semanas" ? `${fecha(p.desde)} – ${fecha(new Date(Date.parse(p.hasta) - 86400000).toISOString())}` : mesTxt(p.desde));
+  const Fila = ({ titulo, p }: { titulo: string; p: Pareto }) => (
+    <div className="bg-gray-50 rounded-xl p-3">
+      <p className="text-xs text-gray-500">{titulo}</p>
+      <p className="text-sm text-gray-800 mt-1"><b>{p.para50}</b> publicaciones hacen el 50% · <b>{p.para80}</b> el 80% · <b>{p.para95}</b> el 95%</p>
+      <p className="text-xs text-gray-400">de {p.publicaciones} con ventas · las 10 mayores = {p.top10Pct}% · ingreso {clp(p.ingreso)}</p>
+    </div>
+  );
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+      <div>
+        <h3 className="font-bold text-gray-900">Concentración y tendencia</h3>
+        <p className="text-xs text-gray-400 mt-1">
+          Pareto por publicación, sobre el ingreso de la línea de venta. Semanas de lunes a domingo y meses calendario (UTC). El período en curso es <b>parcial</b> y se compara con el mismo tramo del anterior.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Fila titulo={`Pareto, ventana (${t.pareto.ventana.desde.slice(0, 10)} → ${new Date(Date.parse(t.pareto.ventana.hasta) - 86400000).toISOString().slice(0, 10)})`} p={t.pareto.ventana} />
+        <Fila titulo="Pareto, últimos 90 días (base de la clase ABC)" p={t.pareto.noventa} />
+      </div>
+      <div className="flex gap-2">
+        {(["semanas", "meses"] as const).map((k) => (
+          <button key={k} onClick={() => setTipo(k)} className={`px-3 py-1.5 rounded-lg text-sm ${tipo === k ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}>{k === "semanas" ? "Semanas (12)" : "Meses"}</button>
+        ))}
+      </div>
+      <div className="overflow-x-auto rounded-xl border border-gray-200">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
+              <th className="px-3 py-2">Período</th><th className="px-3 py-2 w-40"></th><th className="px-3 py-2 text-right">Ingresos</th>
+              <th className="px-3 py-2 text-right">{tipo === "semanas" ? "vs sem. ant." : "vs mes ant."}</th>
+              <th className="px-3 py-2 text-right">Unidades</th><th className="px-3 py-2 text-right">Órdenes</th><th className="px-3 py-2 text-right">Ticket</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {[...puntos].reverse().map((p) => (
+              <tr key={p.desde} className={p.incompleto ? "text-gray-400" : ""}>
+                <td className="px-3 py-2 whitespace-nowrap">{etiqueta(p)}
+                  {p.parcial && <span className="ml-1 rounded-md bg-amber-100 text-amber-800 px-1.5 py-0.5">parcial</span>}
+                  {p.incompleto && <span className="ml-1 rounded-md bg-gray-100 text-gray-500 px-1.5 py-0.5" title={`Solo hay datos desde ${fecha(t.datosDesde)}`}>datos incompletos</span>}
+                </td>
+                <td className="px-3 py-2"><div className="h-2 rounded bg-blue-200" style={{ width: `${Math.max(2, (p.ingresos / maxIng) * 100)}%` }} /></td>
+                <td className="px-3 py-2 text-right font-semibold">{clp(p.ingresos)}</td>
+                <td className="px-3 py-2 text-right" title={p.comparadoCon ? `Contra ${fecha(p.comparadoCon.desde)} – ${fecha(new Date(Date.parse(p.comparadoCon.hasta) - 86400000).toISOString())}` : "Sin base comparable"}><Var pct={p.variacion.ingresos} /></td>
+                <td className="px-3 py-2 text-right">{num(p.unidades)}</td>
+                <td className="px-3 py-2 text-right">{num(p.ordenes)}</td>
+                <td className="px-3 py-2 text-right">{clp(p.ticket)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -460,6 +538,7 @@ export default function Tablero() {
         )}
       </div>
 
+      {datos?.tendencias && <SeccionTendencias t={datos.tendencias} />}
       {datos?.margen && <SeccionMargen margen={datos.margen} />}
       {datos?.stock && <SeccionAlerta alerta={datos.stock.alerta} total={datos.stock.resumen.perdido.total} />}
       {datos?.stock && <SeccionStock stock={datos.stock} />}

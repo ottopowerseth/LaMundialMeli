@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { armarContextoEnvio, parsearTarifasEnvio } from "@/lib/envio-medido";
 import { analizarMargen } from "@/lib/tablero-margen";
+import { calcularPareto, calcularSerie } from "@/lib/tablero-series";
 import { cargarItemsStock, cargarVentas, cargarVisitas, ventanaPorDias } from "@/lib/tablero-datos";
 import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
 import type { ItemStock } from "@/lib/tablero-stock";
@@ -92,6 +93,21 @@ export async function GET(req: NextRequest) {
       costoPorItem, fullPorItem, skuPorItem, ctxEnvio,
     });
 
+    // ---- Pareto y series (ver lib/tablero-series.ts) ----
+    // Las series terminan hoy aunque la ventana pedida llegue más allá (p. ej.
+    // un mes calendario completo): los días futuros no son datos, y contarlos
+    // daría semanas en cero con variación -100%.
+    const finSeriesMs = Math.min(hastaMs, ventanaPorDias(1, ahora).hastaMs);
+    const tendencias = {
+      pareto: {
+        ventana: calcularPareto(ventas.lineas, desdeMs, hastaMs),
+        noventa: calcularPareto(ventas.lineas, hastaMs - 90 * DIA_MS, hastaMs),
+      },
+      semanas: calcularSerie(ventas.ordenes, ventas.lineas, "semana", 12, historiaDesde, finSeriesMs),
+      meses: calcularSerie(ventas.ordenes, ventas.lineas, "mes", 5, historiaDesde, finSeriesMs),
+      datosDesde: new Date(historiaDesde).toISOString(),
+    };
+
     // ---- Stock y alerta de pausadas (ver lib/tablero-stock.ts) ----
     const ahoraMs = ahora.getTime();
     const itemsStock: ItemStock[] = [...itemsMl.values()].map((it) => ({
@@ -122,6 +138,7 @@ export async function GET(req: NextRequest) {
       },
       confianza,
       margen: { resumen: margen.resumen, filas: margen.filas },
+      tendencias,
       stock: {
         resumen: stock.resumen,
         alerta: stock.alerta.map((a) => ({ ...a, tasaDiaria: Math.round(a.tasaDiaria), diasSinVender: Math.round(a.diasSinVender * 10) / 10, ingresoPerdido: Math.round(a.ingresoPerdido), ingreso30: Math.round(a.ingreso30) })),
