@@ -279,12 +279,12 @@ type FilaComparador = {
   marca: string | null;
   proveedor: string | null;
   precio: number;
-  comisionPct: number;
-  comisionMonto: number;
-  envioPorUnidad: number;
-  envioFuente: "item" | "sku" | "tramo" | "sin_dato";
-  envioMuestras: number;
-  netoMlPorUnidad: number;
+  comisionPct: number | null;
+  comisionFuente: "orden" | "calculada" | null;
+  comisionMonto: number | null;
+  envioPorUnidad: number | null;
+  envioFuente: "medido" | "estimado" | "sin_dato";
+  netoMlPorUnidad: number | null;
   precioMayor: number | null;
   precioMayorNeto: number | null;
   fuenteMayor: "cruce_directo" | "equivalencia" | "sin_referencia";
@@ -2340,15 +2340,20 @@ export default function Home() {
                               <td className="py-2 pr-3 text-gray-700">{f.marca ?? "-"}</td>
                               <td className="py-2 pr-3 text-gray-700">{f.proveedor ?? "-"}</td>
                               <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.precio)}</td>
-                              <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.comisionMonto)} <span className="text-xs text-gray-400">({(f.comisionPct*100).toFixed(0)}%)</span></td>
                               <td className="py-2 pr-3 text-right text-gray-700">
-                                {formatCLP(f.envioPorUnidad)}
-                                {f.envioFuente === "sin_dato" && <span className="ml-1 text-xs text-red-500">(sin dato, envío=0)</span>}
-                                {f.envioFuente === "tramo" && <span className="ml-1 text-xs text-gray-400">(tramo, n={f.envioMuestras})</span>}
-                                {f.envioFuente === "sku" && <span className="ml-1 text-xs text-gray-400">(mismo SKU, n={f.envioMuestras})</span>}
-                                {f.envioFuente === "item" && <span className="ml-1 text-xs text-gray-400">(n={f.envioMuestras})</span>}
+                                {f.comisionMonto !== null && f.comisionPct !== null ? (
+                                  <>
+                                    {formatCLP(f.comisionMonto)} <span className="text-xs text-gray-400">({(f.comisionPct*100).toFixed(1)}%)</span>
+                                    {f.comisionFuente === "calculada" && <span className="ml-1 text-xs text-amber-600" title="Sin ventas en los últimos 45 días: tarifa calculada por ML para el precio actual">calc.</span>}
+                                  </>
+                                ) : <span className="text-xs text-red-500">sin dato</span>}
                               </td>
-                              <td className="py-2 pr-3 text-right text-gray-700">{formatCLP(f.netoMlPorUnidad)}</td>
+                              <td className="py-2 pr-3 text-right text-gray-700">
+                                {f.envioPorUnidad !== null ? formatCLP(f.envioPorUnidad) : <span className="text-xs text-red-500">sin dato</span>}
+                                {f.envioFuente === "estimado" && <span className="ml-1 text-xs text-amber-600" title="No hay una tarifa medida para esta publicación: respaldo por SKU gemelo o tramo de precio">(estimado)</span>}
+                                {f.envioFuente === "medido" && <span className="ml-1 text-xs text-gray-400">(medido)</span>}
+                              </td>
+                              <td className="py-2 pr-3 text-right text-gray-700">{f.netoMlPorUnidad !== null ? formatCLP(f.netoMlPorUnidad) : "-"}</td>
                               <td className="py-2 pr-3 text-right text-gray-700">{f.precioMayor !== null ? formatCLP(f.precioMayor) : "-"}</td>
                               <td className="py-2 pr-3 text-right text-gray-500">{f.precioMayorNeto !== null ? formatCLP(f.precioMayorNeto) : "-"}</td>
                               <td className="py-2 pr-3 text-gray-500 text-xs">

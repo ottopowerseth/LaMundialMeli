@@ -51,7 +51,9 @@ export type EstadoTarifa = "ok" | "dispersa" | "estimado" | "sin_muestra" | "sol
 
 export type DespachoCandidato = { shippingId: number; fecha: string };
 // precio: último unit_price visto (bruto), para ubicar el tramo del estimado.
-export type VentaItem = { ingreso: number; precio: number; despachos: DespachoCandidato[] }; // despachos: más reciente primero, sin repetir
+// comision / ingresoConComision: comisión real cobrada (sale_fee × cantidad) y
+// el ingreso de las líneas que traen sale_fee — ver lib/comision-real.ts.
+export type VentaItem = { ingreso: number; precio: number; comision: number; ingresoConComision: number; despachos: DespachoCandidato[] }; // despachos: más reciente primero, sin repetir
 
 type Shipment = { logistic_type?: string; shipping_items?: { id?: string; quantity?: number }[] };
 type ShipmentCosts = { senders?: { cost?: number }[] };
@@ -161,7 +163,7 @@ export async function obtenerVentasPorItem(
   const url = (offset: number) =>
     `/orders/search?seller=${userId}&order.date_created.from=${desde}&order.date_created.to=${hasta}&sort=date_desc&limit=50&offset=${offset}`;
 
-  type OrdenApi = { id: number; date_created: string; status: string; shipping?: { id?: number }; order_items?: { item: { id: string }; quantity: number; unit_price: number }[] };
+  type OrdenApi = { id: number; date_created: string; status: string; shipping?: { id?: number }; order_items?: { item: { id: string }; quantity: number; unit_price: number; sale_fee?: number }[] };
   const primera = await mlGet<{ paging: { total: number }; results: OrdenApi[] }>(url(0));
   const total = Math.min(primera.data.paging.total, 9950); // la API rechaza offset >= 10.000
   const offsets = Array.from({ length: Math.ceil(total / 50) }, (_, i) => i * 50);
@@ -182,8 +184,13 @@ export async function obtenerVentasPorItem(
   for (const o of ordenes) {
     if (o.status !== "paid") continue;
     for (const it of o.order_items ?? []) {
-      const v = out.get(it.item.id) ?? { ingreso: 0, precio: it.unit_price, despachos: [] }; // órdenes de más reciente a más antigua: la primera fija el precio
+      const v = out.get(it.item.id) ?? { ingreso: 0, precio: it.unit_price, comision: 0, ingresoConComision: 0, despachos: [] }; // órdenes de más reciente a más antigua: la primera fija el precio
       v.ingreso += it.quantity * it.unit_price;
+      // sale_fee ausente no es comisión 0: esa línea no entra al cálculo.
+      if (typeof it.sale_fee === "number") {
+        v.comision += it.quantity * it.sale_fee;
+        v.ingresoConComision += it.quantity * it.unit_price;
+      }
       const sh = o.shipping?.id;
       if (sh && !v.despachos.some((d) => d.shippingId === sh)) v.despachos.push({ shippingId: sh, fecha: o.date_created });
       out.set(it.item.id, v);

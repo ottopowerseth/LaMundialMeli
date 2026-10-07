@@ -3,23 +3,26 @@ import axios from "axios";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { readSheet } from "@/lib/sheets";
-import { getComisionPct, IVA } from "@/lib/rentabilidad";
+import { IVA } from "@/lib/rentabilidad";
 import { obtenerAdsPorItem, resolverAdvertiser } from "@/lib/ml-ads";
 import {
   FilaDefontana, FilaEquivalencia,
   armarMapasDefontana, cruzarConDefontana, precioReferenciaEquivalencia,
 } from "@/lib/defontana";
-import { armarMuestrasEnvio, calcularEnvioEstimadoPorUnidad } from "@/lib/envio-estimado";
+import { armarContextoEnvio, parsearTarifasEnvio, resolverEnvio } from "@/lib/envio-medido";
+import { pctComisionListingPrices, resolverComision } from "@/lib/comision-real";
+import type { ComisionResuelta } from "@/lib/comision-real";
+import { obtenerVentasPorItem } from "@/lib/tarifa-envio";
 
 // Comparador vs Mayor — pestaña propia con endpoint propio (no dentro de
 // metrics/route.ts): cubre TODAS las publicaciones activas con cruce
 // (500+), no solo el top 50 de la Tabla por producto — mezclarlo con
 // Métricas alargaría esa respuesta sin necesidad, dado que este endpoint
-// no depende de ventas/visitas del período, solo de Sheets + ads del mes
-// en curso. Usa exclusivamente datos ya en Sheets (Publicaciones, Lista
-// Defontana, Equivalencias, Rentabilidad para envío real) — sin llamadas
-// nuevas a ML salvo el batch de atributos (SKU/GTIN/listing_type) y ads
-// por ítem, ambos ya necesarios para calcular el semáforo.
+// no depende de visitas del período, solo de Sheets + ads del mes en curso +
+// las ventas de los últimos 45 días (para la comisión real, sale_fee). Datos
+// de Sheets: Publicaciones, Lista Defontana, Equivalencias y TarifaEnvio
+// (envío medido). Comisión y envío son REALES o quedan sin dato: nada de
+// tasas por tipo de publicación ni envío = 0.
 export const maxDuration = 60;
 
 // Objetivo de margen por defecto sobre el Mayor, usado tanto en el semáforo
@@ -32,19 +35,21 @@ type FilaComparador = {
   marca: string | null;
   proveedor: string | null;
   precio: number;
-  comisionPct: number;
-  comisionMonto: number;
-  envioPorUnidad: number;
-  // "item": mediana real de este ítem en Rentabilidad. "tramo": sin
-  // muestras propias, mediana del tramo de precio (preferido el mismo
-  // "sku": sin muestras propias, mediana de OTRA publicación con el mismo
-  // SELLER_SKU (mismo producto físico, otro listing). "sin_dato": ningún
-  // nivel tiene muestra — envioPorUnidad queda en 0 y esto SÍ debe
-  // mostrarse como advertencia, no como envío gratis real. Ver
-  // lib/envio-estimado.ts para el orden de prioridad completo.
-  envioFuente: "item" | "sku" | "tramo" | "sin_dato";
-  envioMuestras: number;
-  netoMlPorUnidad: number;
+  // Comisión real (% del precio bruto) y su origen: "orden" = sale_fee
+  // cobrado en las ventas de los últimos 45 días; "calculada" = calculadora
+  // oficial de ML (sin ventas en la ventana). null = sin dato: neto, % vs
+  // Mayor, precio sugerido y semáforo quedan vacíos (no se asume una tasa).
+  comisionPct: number | null;
+  comisionFuente: "orden" | "calculada" | null;
+  comisionMonto: number | null;
+  // "medido" = tarifa real de /shipments/{id}/costs (hoja TarifaEnvio);
+  // "estimado" = respaldo (SKU gemelo, tramo o fila marcada estimada) y la
+  // pantalla debe mostrarlo como tal; "sin_dato" = envioPorUnidad null y no
+  // se calcula nada que dependa de él (antes se usaba 0, lo que inflaba el
+  // neto). Ver lib/envio-medido.ts.
+  envioPorUnidad: number | null;
+  envioFuente: "medido" | "estimado" | "sin_dato";
+  netoMlPorUnidad: number | null;
   precioMayor: number | null;
   // Mismo precio que precioMayor pero llevado a neto (÷1.19) — expuesto
   // explícitamente porque vsMayorPct se calcula contra ESTE valor, no
@@ -117,15 +122,17 @@ export async function GET(req: NextRequest) {
       equivalenciasPorPublicacion.get(eq.publicacionId)!.push(eq);
     }
 
-    // Atributos de ML (SELLER_SKU, GTIN/EAN, listing_type_id, catalog_listing,
+    // Atributos de ML (SELLER_SKU, GTIN/EAN, listing_type_id, category_id,
     // logistic_type) — batch de 20 ids, mismo endpoint/tope que ya usa ml-sync.
+    // listing_type_id/category_id solo para la comisión calculada de las
+    // publicaciones sin ventas recientes.
     const ids = activas.map((r) => String(r[0]));
-    const atributosPorItem = new Map<string, { sku: string | null; gtin: string | null; listingTypeId: string; catalogListing: boolean; full: boolean }>();
+    const atributosPorItem = new Map<string, { sku: string | null; gtin: string | null; listingTypeId: string; categoryId: string; full: boolean }>();
     for (let i = 0; i < ids.length; i += 20) {
       const chunk = ids.slice(i, i + 20);
       const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
         "/items",
-        { ids: chunk.join(","), attributes: "id,attributes,seller_custom_field,listing_type_id,catalog_listing,shipping" }
+        { ids: chunk.join(","), attributes: "id,attributes,seller_custom_field,listing_type_id,category_id,shipping" }
       );
       for (const r of data) {
         if (r.code !== 200) continue;
@@ -135,31 +142,46 @@ export async function GET(req: NextRequest) {
           sku: getAttr(r.body, "SELLER_SKU") ?? (r.body.seller_custom_field as string | null) ?? null,
           gtin: getAttr(r.body, "GTIN") ?? getAttr(r.body, "EAN"),
           listingTypeId: String(r.body.listing_type_id ?? ""),
-          catalogListing: !!r.body.catalog_listing,
+          categoryId: String(r.body.category_id ?? ""),
           full: shipping?.logistic_type === "fulfillment",
         });
       }
     }
 
-    // Envío real por unidad — ver lib/envio-estimado.ts. Orden de
-    // prioridad: 1) mediana del propio ítem en Rentabilidad, 2) mediana de
-    // otra publicación con el mismo SELLER_SKU (mismo producto físico, otro
-    // listing), 3) mediana del tramo de precio × logistic_type (Full si el
-    // ítem es Full). Antes el fallback final usaba 0 cuando el ítem no
-    // tenía datos propios — eso INFLABA el Neto ML al no descontar ningún
-    // envío (bug encontrado 2026-09-30: Serum Dream Liso sin datos en
-    // Rentabilidad mostraba Neto $6.121 vs $4.553 de su publicación gemela
-    // con datos). El nivel "sku" (agregado 2026-09-30) captura justo ese
-    // caso sin caer directo al tramo genérico, que mezcla decenas de
-    // productos sin relación entre sí.
+    // Envío por unidad: tarifa MEDIDA de la hoja TarifaEnvio, con respaldo
+    // marcado "estimado" (ver lib/envio-medido.ts). Ya no sale de Rentabilidad:
+    // esa estimación erraba ~300% (mediana) y dejaba 511 de 573 publicaciones
+    // en rojo con precios sugeridos muy por encima del actual (medido
+    // 2026-10-07). Sin tarifa ni respaldo → "sin_dato" (nunca envío = 0).
     const logisticoPorItem = new Map<string, string>();
     const skuPorItem = new Map<string, string>();
+    const precioPorItem = new Map<string, number>();
+    for (const r of filasPub) { const pr = Number(r[6]); if (r[0] && pr > 0) precioPorItem.set(String(r[0]), pr); }
     for (const [id, attrs] of atributosPorItem) {
-      if (attrs.full) logisticoPorItem.set(id, "fulfillment");
+      logisticoPorItem.set(id, attrs.full ? "fulfillment" : "otro");
       if (attrs.sku) skuPorItem.set(id, attrs.sku);
     }
-    const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
-    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad, skuPorItem, logisticoPorItem);
+    const filasTarifaEnvio = await readSheet("TarifaEnvio!A2:L5000").catch(() => [] as string[][]);
+    const ctxEnvio = armarContextoEnvio(parsearTarifasEnvio(filasTarifaEnvio), precioPorItem, skuPorItem, logisticoPorItem);
+
+    // Comisión real: sale_fee de las ventas de los últimos 45 días; si la
+    // publicación no vendió, la calculadora oficial de ML ("calculada").
+    // Concurrencia 8 para esa calculadora (hoy ~330 publicaciones sin ventas).
+    const { data: yo } = await mlGet<{ id: number }>("/users/me");
+    const ventas45 = await obtenerVentasPorItem(mlGet, yo.id, 45);
+    const comisionAcc = new Map([...ventas45].map(([id, v]) => [id, { ingreso: v.ingresoConComision, comision: v.comision }]));
+    const comisionPorItem = new Map<string, ComisionResuelta>();
+    let siguienteComision = 0;
+    await Promise.all(Array.from({ length: 8 }, async () => {
+      while (siguienteComision < ids.length) {
+        const id = ids[siguienteComision++];
+        const at = atributosPorItem.get(id);
+        const precio = precioPorItem.get(id);
+        comisionPorItem.set(id, await resolverComision(id, comisionAcc, () =>
+          at && precio ? pctComisionListingPrices(mlGet, { precio, listingTypeId: at.listingTypeId, categoryId: at.categoryId }) : Promise.resolve(null)
+        ));
+      }
+    }));
 
     // Ads del mes en curso — para "vs Mayor con ads". Mismo período que
     // usa metrics/route.ts para "mes": día 1 del mes actual a día 1 del
@@ -181,16 +203,19 @@ export async function GET(req: NextRequest) {
       if (!precio || Number.isNaN(precio)) continue; // sin precio, no se puede calcular nada
 
       const atributos = atributosPorItem.get(id);
-      const comisionPct = atributos ? getComisionPct(atributos.listingTypeId, atributos.catalogListing) : 0.14;
+      const comision = comisionPorItem.get(id) ?? { pct: null, fuente: null };
+      const comisionPct = comision.pct;
 
-      const { envio: envioPorUnidad, fuente: envioFuenteBase, muestras: envioMuestras } =
-        calcularEnvioEstimadoPorUnidad(id, precio, atributos?.full ?? false, muestrasEnvio, atributos?.sku);
-      const envioFuente: "item" | "sku" | "tramo" | "sin_dato" = envioMuestras === 0 ? "sin_dato" : envioFuenteBase;
+      const envio = resolverEnvio(id, precio, atributos?.full ?? false, atributos?.sku ?? null, ctxEnvio);
+      const envioPorUnidad = envio.envio;
+      const envioFuente: "medido" | "estimado" | "sin_dato" = envio.fuente ?? "sin_dato";
 
-      // Neto ML por unidad = precio − comisión − envío por unidad (todo bruto).
-      const comisionBruta = precio * comisionPct;
-      const netoMlPorUnidadBruto = precio - comisionBruta - envioPorUnidad;
-      const netoMlPorUnidad = netoMlPorUnidadBruto / (1 + IVA);
+      // Neto ML por unidad = precio − comisión − envío por unidad (todo
+      // bruto). Sin comisión o sin envío no se calcula (null), no se asume.
+      const comisionBruta = comisionPct !== null ? precio * comisionPct : null;
+      const netoMlPorUnidad = comisionBruta !== null && envioPorUnidad !== null
+        ? (precio - comisionBruta - envioPorUnidad) / (1 + IVA)
+        : null;
 
       // Precio de referencia: equivalencia manual si existe, si no cruce
       // directo contra Lista Defontana × Unidades de la publicación.
@@ -215,14 +240,14 @@ export async function GET(req: NextRequest) {
       }
 
       const precioMayorNeto = precioMayor !== null ? precioMayor / (1 + IVA) : null;
-      const vsMayorPct = precioMayorNeto !== null && precioMayorNeto > 0
+      const vsMayorPct = precioMayorNeto !== null && precioMayorNeto > 0 && netoMlPorUnidad !== null
         ? Math.round(((netoMlPorUnidad - precioMayorNeto) / precioMayorNeto) * 1000) / 10
         : null;
 
       // Precio sugerido = (Mayor × (1+objetivo) + envío por unidad) / (1 − comisión%)
       // — todo llevado a neto, resultado en bruto (×1.19) para publicar directo.
       let precioSugerido: number | null = null;
-      if (precioMayorNeto !== null) {
+      if (precioMayorNeto !== null && comisionPct !== null && envioPorUnidad !== null) {
         const envioNeto = envioPorUnidad / (1 + IVA);
         const precioSugeridoNeto = (precioMayorNeto * (1 + objetivo) + envioNeto) / (1 - comisionPct);
         precioSugerido = Math.round(precioSugeridoNeto * (1 + IVA));
@@ -231,7 +256,7 @@ export async function GET(req: NextRequest) {
       const ad = adsPorItem.get(id);
       const costoAdsPorUnidadPeriodo = ad ? Math.round((ad.cost / unidades) * 10) / 10 : null;
       let vsMayorConAdsPct: number | null = null;
-      if (ad && precioMayorNeto !== null && precioMayorNeto > 0 && costoAdsPorUnidadPeriodo !== null) {
+      if (ad && precioMayorNeto !== null && precioMayorNeto > 0 && costoAdsPorUnidadPeriodo !== null && netoMlPorUnidad !== null) {
         const netoMlConAdsNeto = netoMlPorUnidad - costoAdsPorUnidadPeriodo / (1 + IVA);
         vsMayorConAdsPct = Math.round(((netoMlConAdsNeto - precioMayorNeto) / precioMayorNeto) * 1000) / 10;
       }
@@ -240,9 +265,12 @@ export async function GET(req: NextRequest) {
         id, titulo,
         marca: matchDirecto?.marca ?? null,
         proveedor: matchDirecto?.proveedor ?? null,
-        precio, comisionPct, comisionMonto: Math.round(comisionBruta * 10) / 10,
-        envioPorUnidad, envioFuente, envioMuestras,
-        netoMlPorUnidad: Math.round(netoMlPorUnidad * 10) / 10,
+        precio,
+        comisionPct: comisionPct !== null ? Math.round(comisionPct * 1000) / 1000 : null,
+        comisionFuente: comision.fuente,
+        comisionMonto: comisionBruta !== null ? Math.round(comisionBruta * 10) / 10 : null,
+        envioPorUnidad, envioFuente,
+        netoMlPorUnidad: netoMlPorUnidad !== null ? Math.round(netoMlPorUnidad * 10) / 10 : null,
         precioMayor,
         precioMayorNeto: precioMayorNeto !== null ? Math.round(precioMayorNeto * 10) / 10 : null,
         fuenteMayor,
