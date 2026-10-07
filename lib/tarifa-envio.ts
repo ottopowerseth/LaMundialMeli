@@ -21,11 +21,13 @@
 // (no se adivina) y se cuenta como "mixta".
 import type { MlGet } from "@/lib/envio-real";
 import { mediana } from "@/lib/envio-real";
+import { armarMuestrasEnvio, calcularEnvioEstimadoPorUnidad } from "@/lib/envio-estimado";
 
 export const HOJA_TARIFA_ENVIO = "TarifaEnvio";
 export const HEADERS_TARIFA_ENVIO = [
   "ID Item", "SKU", "Tarifa por Unidad (bruto)", "Tipo Logístico", "Muestras",
   "Dispersión %", "Despacho Muestra", "Unidades Despacho", "Estado", "Actualizado",
+  "Fuente Estimación", "Motivo",
 ];
 
 // Muestras limpias que se buscan por publicación, y cuántos despachos se
@@ -41,10 +43,15 @@ export const DISPERSION_ALERTA_PCT = 5;
 export const TTL_DIAS_OK = 30;
 export const TTL_DIAS_REINTENTO = 3;
 
-export type EstadoTarifa = "ok" | "dispersa" | "sin_muestra" | "solo_despachos_mixtos" | "sin_costo" | "error";
+// "estimado": no hubo ninguna muestra limpia propia y la tarifa sale del
+// respaldo de lib/envio-estimado.ts (ver estimarFaltantes) — el tablero debe
+// mostrarla distinta de una tarifa medida. "Motivo" conserva por qué no hubo
+// muestra propia (solo_despachos_mixtos, sin_costo...).
+export type EstadoTarifa = "ok" | "dispersa" | "estimado" | "sin_muestra" | "solo_despachos_mixtos" | "sin_costo" | "error";
 
 export type DespachoCandidato = { shippingId: number; fecha: string };
-export type VentaItem = { ingreso: number; despachos: DespachoCandidato[] }; // despachos: más reciente primero, sin repetir
+// precio: último unit_price visto (bruto), para ubicar el tramo del estimado.
+export type VentaItem = { ingreso: number; precio: number; despachos: DespachoCandidato[] }; // despachos: más reciente primero, sin repetir
 
 type Shipment = { logistic_type?: string; shipping_items?: { id?: string; quantity?: number }[] };
 type ShipmentCosts = { senders?: { cost?: number }[] };
@@ -57,6 +64,8 @@ export type ResultadoTarifa = {
   despachoMuestra: string;
   unidadesDespacho: number | null;
   estado: EstadoTarifa;
+  fuenteEstimacion?: string; // solo estado "estimado": "sku" o "tramo <rango> <logística> (n=…)"
+  motivo?: EstadoTarifa; // solo estado "estimado": por qué no hubo muestra propia
 };
 
 const redondear1 = (n: number) => Math.round(n * 10) / 10;
@@ -173,7 +182,7 @@ export async function obtenerVentasPorItem(
   for (const o of ordenes) {
     if (o.status !== "paid") continue;
     for (const it of o.order_items ?? []) {
-      const v = out.get(it.item.id) ?? { ingreso: 0, despachos: [] };
+      const v = out.get(it.item.id) ?? { ingreso: 0, precio: it.unit_price, despachos: [] }; // órdenes de más reciente a más antigua: la primera fija el precio
       v.ingreso += it.quantity * it.unit_price;
       const sh = o.shipping?.id;
       if (sh && !v.despachos.some((d) => d.shippingId === sh)) v.despachos.push({ shippingId: sh, fecha: o.date_created });
@@ -197,6 +206,7 @@ export type OpcionesTarifas = {
   batchWriteSheet: (updates: { range: string; values: unknown[][] }[]) => Promise<void>;
   ventas: Map<string, VentaItem>;
   skuPorItem: Map<string, string>;
+  logisticoPorItem?: Map<string, string>; // logistic_type vigente de cada publicación (para el tramo del estimado)
   ahora: Date;
   dryRun: boolean;
   forzar: boolean;
@@ -231,19 +241,62 @@ function filaDeSheet(f: FilaTarifa): string[] {
     r.dispersionPct === null ? "" : String(r.dispersionPct),
     r.despachoMuestra, r.unidadesDespacho === null ? "" : String(r.unidadesDespacho),
     r.estado, f.actualizado,
+    r.fuenteEstimacion ?? "", r.motivo ?? "",
   ];
+}
+
+// Respaldo para las publicaciones sin muestra limpia propia: mediana de
+// lib/envio-estimado.ts (otra publicación con el mismo SELLER_SKU, o el tramo
+// de precio × tipo logístico). La fuente de las muestras es la propia caché
+// de tarifas medidas (las "ok"), NO la hoja Rentabilidad que usan hoy el
+// Comparador y Métricas: medido 2026-10-07 con "dejar uno afuera" sobre 205
+// tarifas reales, alimentado con Rentabilidad el nivel tramo erra ~300%
+// (mediana), alimentado con esta caché erra 0% (mediana; 95% dentro de ±15%
+// en envío estándar). En Full es peor (mediana 49%): el tipo logístico
+// importa y la tarifa Full no sigue el precio.
+export function estimarFaltantes(
+  hechas: FilaTarifa[],
+  muestrasOk: { itemId: string; sku: string; precio: number; tarifa: number }[],
+  ventas: Map<string, VentaItem>,
+  logisticoPorItem: Map<string, string>
+): void {
+  const filasMuestra = muestrasOk.map((m) => {
+    const f: string[] = [];
+    f[2] = m.itemId; f[4] = String(m.precio); f[14] = String(m.tarifa);
+    return f;
+  });
+  const skuPorItem = new Map(muestrasOk.map((m) => [m.itemId, m.sku]));
+  for (const h of hechas) if (h.sku) skuPorItem.set(h.itemId, h.sku);
+  const muestras = armarMuestrasEnvio(filasMuestra, skuPorItem, logisticoPorItem);
+
+  for (const h of hechas) {
+    if (h.r.tarifaPorUnidad !== null) continue;
+    const precio = ventas.get(h.itemId)?.precio;
+    if (!precio) continue;
+    const esFull = logisticoPorItem.get(h.itemId) === "fulfillment";
+    const e = calcularEnvioEstimadoPorUnidad(h.itemId, precio, esFull, muestras, h.sku || null);
+    if (e.muestras === 0 || e.envio <= 0) continue; // sin referencia: se deja el estado original, nunca 0
+    h.r = {
+      ...h.r,
+      tarifaPorUnidad: redondear1(e.envio),
+      tipoLogistico: esFull ? "fulfillment" : (logisticoPorItem.get(h.itemId) ?? ""),
+      estado: "estimado",
+      motivo: h.r.estado,
+      fuenteEstimacion: e.fuente === "sku" ? `sku (n=${e.muestras})` : `tramo ${esFull ? "Full" : "estándar"} (n=${e.muestras})`,
+    };
+  }
 }
 
 export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTarifas> {
   const inicio = Date.now();
   const hoja = HOJA_TARIFA_ENVIO;
 
-  const existentes = new Map<string, { fila: number; estado: string; actualizado: number }>();
+  const existentes = new Map<string, { fila: number; estado: string; actualizado: number; sku: string; tarifa: number; tipo: string }>();
   try {
-    const rows = await op.readSheet(`${hoja}!A2:J20000`);
+    const rows = await op.readSheet(`${hoja}!A2:L20000`);
     rows.forEach((r, i) => {
       if (!r[0]) return;
-      existentes.set(String(r[0]), { fila: i + 2, estado: r[8] ?? "", actualizado: r[9] ? new Date(r[9]).getTime() : 0 });
+      existentes.set(String(r[0]), { fila: i + 2, estado: r[8] ?? "", actualizado: r[9] ? new Date(r[9]).getTime() : 0, sku: r[1] ?? "", tarifa: Number(r[2]), tipo: r[3] ?? "" });
     });
   } catch { /* hoja nueva o vacía */ }
 
@@ -270,26 +323,47 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
     }
   }));
 
+  // Respaldo estimado para lo que quedó sin muestra limpia. Las muestras son
+  // las tarifas "ok": las ya guardadas en la hoja (vigentes) más las medidas en
+  // esta corrida. Cada publicación entra con el precio de su última venta.
+  const muestrasOk: { itemId: string; sku: string; precio: number; tarifa: number }[] = [];
+  const idsEnCorrida = new Set(hechas.map((h) => h.itemId));
+  for (const [id, e] of existentes) {
+    const precio = op.ventas.get(id)?.precio;
+    if (e.estado === "ok" && Number.isFinite(e.tarifa) && e.tarifa > 0 && precio && !idsEnCorrida.has(id)) muestrasOk.push({ itemId: id, sku: e.sku, precio, tarifa: e.tarifa });
+  }
+  for (const h of hechas) {
+    const precio = op.ventas.get(h.itemId)?.precio;
+    if (h.r.estado === "ok" && h.r.tarifaPorUnidad !== null && precio) muestrasOk.push({ itemId: h.itemId, sku: h.sku, precio, tarifa: h.r.tarifaPorUnidad });
+  }
+  // Tipo logístico: el vigente según ML si se pasó; si no, el de la muestra.
+  const logistico = new Map(op.logisticoPorItem ?? []);
+  for (const m of muestrasOk) if (!logistico.has(m.itemId)) logistico.set(m.itemId, existentes.get(m.itemId)?.tipo ?? hechas.find((h) => h.itemId === m.itemId)?.r.tipoLogistico ?? "");
+  estimarFaltantes(hechas, muestrasOk, op.ventas, logistico);
+
   const porEstado: Record<string, number> = {};
   for (const h of hechas) porEstado[h.r.estado] = (porEstado[h.r.estado] ?? 0) + 1;
 
   let nuevas = 0;
   let actualizadas = 0;
   if (!op.dryRun && hechas.length > 0) {
-    const encabezado = await op.readSheet(`${hoja}!A1:A1`).catch(() => [] as string[][]);
-    if (!encabezado.length || !encabezado[0]?.length) await op.writeSheet(`${hoja}!A1`, [HEADERS_TARIFA_ENVIO]);
+    // Encabezado: se crea si falta y se amplía si la hoja es de una versión
+    // anterior con menos columnas (la 1ª versión tenía 10: sin Fuente
+    // Estimación ni Motivo).
+    const encabezado = await op.readSheet(`${hoja}!A1:L1`).catch(() => [] as string[][]);
+    if (!encabezado.length || (encabezado[0]?.length ?? 0) < HEADERS_TARIFA_ENVIO.length) await op.writeSheet(`${hoja}!A1`, [HEADERS_TARIFA_ENVIO]);
 
     const updates: { range: string; values: unknown[][] }[] = [];
     const filasNuevas: string[][] = [];
     for (const h of hechas) {
       const e = existentes.get(h.itemId);
-      if (e) { updates.push({ range: `${hoja}!A${e.fila}:J${e.fila}`, values: [filaDeSheet(h)] }); actualizadas++; }
+      if (e) { updates.push({ range: `${hoja}!A${e.fila}:L${e.fila}`, values: [filaDeSheet(h)] }); actualizadas++; }
       else { filasNuevas.push(filaDeSheet(h)); nuevas++; }
     }
     // Se escribe lo ya resuelto aunque la corrida se haya cortado por
     // tiempo: nada de lo calculado se pierde ni se vuelve a pedir.
     if (updates.length > 0) await op.batchWriteSheet(updates);
-    if (filasNuevas.length > 0) await op.appendSheet(`${hoja}!A:J`, filasNuevas);
+    if (filasNuevas.length > 0) await op.appendSheet(`${hoja}!A:L`, filasNuevas);
   }
 
   return {

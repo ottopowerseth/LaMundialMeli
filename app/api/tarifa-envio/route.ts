@@ -7,8 +7,9 @@ import { HOJA_TARIFA_ENVIO, obtenerVentasPorItem, procesarTarifas } from "@/lib/
 
 // Cachea en la hoja "TarifaEnvio" la tarifa de envío por unidad de cada
 // publicación con ventas recientes (ver lib/tarifa-envio.ts para el método,
-// la base de IVA y el manejo de despachos compartidos). Es insumo del margen
-// de contribución por SKU del tablero.
+// la base de IVA, el manejo de despachos compartidos y el respaldo "estimado"
+// para publicaciones sin muestra propia). Es insumo del margen de
+// contribución por SKU del tablero.
 //
 // Por defecto SIMULA (calcula y devuelve, sin escribir en Sheets), igual que
 // rentabilidad/completar: solo escribe con { "confirmar": true }. Sin estado
@@ -46,18 +47,20 @@ export async function POST(request: Request) {
     const { data: user } = await mlGet<{ id: number }>("/users/me");
     const ventas = await obtenerVentasPorItem(mlGet, user.id, dias);
 
-    // SELLER_SKU de cada publicación vendida, solo para dejarlo legible en
-    // la hoja (la clave de la caché es el id de publicación).
+    // SELLER_SKU (legible en la hoja; la clave de la caché es el id de
+    // publicación) y tipo logístico vigente (para el respaldo estimado).
     const ids = [...ventas.keys()];
     const skuPorItem = new Map<string, string>();
+    const logisticoPorItem = new Map<string, string>();
     for (let i = 0; i < ids.length; i += 20) {
-      const { data } = await mlGet<{ code: number; body: { id: string; attributes?: { id: string; value_name?: string | null }[] } }[]>(
-        `/items?ids=${ids.slice(i, i + 20).join(",")}&attributes=id,attributes`
+      const { data } = await mlGet<{ code: number; body: { id: string; attributes?: { id: string; value_name?: string | null }[]; shipping?: { logistic_type?: string } } }[]>(
+        `/items?ids=${ids.slice(i, i + 20).join(",")}&attributes=id,attributes,shipping`
       );
       for (const r of data) {
         if (r.code !== 200) continue;
         const sku = r.body.attributes?.find((a) => a.id === "SELLER_SKU")?.value_name?.trim();
         if (sku) skuPorItem.set(r.body.id, sku);
+        if (r.body.shipping?.logistic_type) logisticoPorItem.set(r.body.id, r.body.shipping.logistic_type);
       }
     }
 
@@ -65,7 +68,7 @@ export async function POST(request: Request) {
 
     const resultado = await procesarTarifas({
       mlGet, readSheet, writeSheet, appendSheet, batchWriteSheet,
-      ventas, skuPorItem, ahora: new Date(),
+      ventas, skuPorItem, logisticoPorItem, ahora: new Date(),
       dryRun: !confirmar, forzar, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
     });
 
