@@ -337,6 +337,28 @@ Rentabilidad, la cobertura de "envío real" en el top 50 pasó de 16/50
 
 ## Pendiente / sin decidir
 
+### Bug latente — `variantesCodigoAer` no genera la variante del cero (diagnosticado 2026-10-07, SIN corregir)
+
+`variantesCodigoAer` en `lib/defontana.ts` existe para cruzar los códigos Aer:
+ML usa `COS022117` y Defontana `COS0022117` (un cero más). Pero su regex
+(`/^(COS)0*(\d+)$/`) consume **todos** los ceros iniciales, así que desde
+`COS022117` genera solo `COS022117` y `COS0` + `22117` = `COS022117` — nunca
+`COS0022117`. Verificado con datos reales: `cruzarConDefontana("COS022117"…)`
+devuelve `null` para los 5 packs Aer (`COS022114`…`COS022118`), cuyo artículo
+en Defontana es "PACK AER CAJA 6 UN … (WEB)" con `Mayor` = precio público.
+
+**Impacto hoy: ninguno.** Esos packs se resuelven por la tabla de
+Equivalencias (6 × el artículo suelto de $690), que es justamente lo correcto
+porque el `Mayor` del pack "(WEB)" no es un costo. 0 publicaciones activas
+dependen de la variante. El riesgo es futuro: si alguien borra una
+equivalencia esperando que el cruce directo la reemplace, el pack quedaría sin
+Costo (y, de arreglarse la variante, tomaría el precio público como costo).
+No tocar sin decidir antes qué debe pasar con los artículos "(WEB)".
+
+Pendiente relacionado: `COS022114` (MLC4111943362, pausado, ~$536.000 de
+ingreso en 30 días) todavía no tiene fila en Equivalencias; a la espera de
+confirmar unidades del pack y aroma.
+
 ### Auditoría — reemplazar CSV manual por la API de Facturación de ML
 
 Ya está confirmado (investigación previa) que `/billing/integration/periods/key/{KEY}/group/ML/details`
