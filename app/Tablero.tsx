@@ -37,6 +37,23 @@ type StockApi = {
   filas: FilaStock[];
   llamadas: { visitas: number };
 };
+type FilaMargen = {
+  id: string; titulo: string; full: boolean; unidades: number; ingreso: number; precioProm: number;
+  costo: number | null; comisionPct: number | null; envioUnidad: number | null; envioFuente: "medido" | "estimado" | null;
+  margenPct: number | null; estado: "ok" | "sin_costo" | "sin_envio" | "sin_comision"; menosFiable: boolean; pierde: boolean;
+};
+type SubtotalMargen = { ingreso: number; margenPct: number | null; publicaciones: number };
+type MargenApi = {
+  resumen: {
+    total: SubtotalMargen & { coberturaPct: number; ingresoVentana: number };
+    porTipo: { full: SubtotalMargen; estandar: SubtotalMargen };
+    menosFiable: { pctIngreso: number; fullEstimado: number };
+    pierden: { publicaciones: number; pctIngreso: number };
+    margenBajo: { publicaciones: number };
+    sinCosto: { publicaciones: number; pctIngreso: number };
+  };
+  filas: FilaMargen[];
+};
 type TableroApi = {
   ok: boolean;
   error?: string;
@@ -45,6 +62,7 @@ type TableroApi = {
   resumen?: { actual: Resumen; anterior: Resumen; variaciones: { ingresos: Variacion; unidades: Variacion; ordenes: Variacion; ticket: Variacion } };
   confianza?: Confianza;
   stock?: StockApi;
+  margen?: MargenApi;
 };
 
 let cache: { data: TableroApi; ts: number } | null = null;
@@ -130,6 +148,118 @@ function SeccionAlerta({ alerta, total }: { alerta: FilaAlerta[]; total: number 
       </div>
       {alerta.length > visibles && (
         <button onClick={() => setVisibles((v) => v + 15)} className="text-sm text-gray-700 hover:text-black underline">Mostrar más ({alerta.length - visibles})</button>
+      )}
+    </div>
+  );
+}
+
+const COBERTURA_MIN_CIFRA = 90; // % del ingreso con datos completos para mostrar el margen como cifra principal
+
+function SeccionMargen({ margen }: { margen: MargenApi }) {
+  const [fTipo, setFTipo] = useState<"todos" | "full" | "estandar">("todos");
+  const [fEstado, setFEstado] = useState<"todos" | "pierde" | "bajo" | "sin_costo" | "menos_fiable">("todos");
+  const [busqueda, setBusqueda] = useState("");
+  const [visibles, setVisibles] = useState(30);
+  const r = margen.resumen;
+  const parcial = r.total.coberturaPct < COBERTURA_MIN_CIFRA;
+  const pctTxt = (x: number | null) => (x === null ? "—" : `${x.toFixed(1).replace(".", ",")}%`);
+
+  const filas = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    return margen.filas
+      .filter((f) => fTipo === "todos" || (fTipo === "full") === f.full)
+      .filter((f) => fEstado === "todos"
+        || (fEstado === "pierde" && f.pierde)
+        || (fEstado === "bajo" && f.margenPct !== null && f.margenPct >= 0 && f.margenPct < 10)
+        || (fEstado === "sin_costo" && f.estado === "sin_costo")
+        || (fEstado === "menos_fiable" && f.margenPct !== null && f.menosFiable))
+      .filter((f) => !q || `${f.id} ${f.titulo}`.toLowerCase().includes(q));
+  }, [margen.filas, fTipo, fEstado, busqueda]);
+  const reset = () => setVisibles(30);
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+      <div>
+        <h3 className="font-bold text-gray-900">Margen de contribución (estimado)</h3>
+        <p className="text-xs text-gray-400 mt-1">
+          En % del precio neto, antes de publicidad. Usa la comisión real cobrada por ML y el envío medido por publicación (el estimado se marca como menos fiable);
+          Precio, comisión, envío y Costo se llevan a neto (÷1,19). Sin Costo la publicación no tiene margen: no se asume 0.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-gray-50 rounded-xl p-3" title="Solo publicaciones con Costo, comisión y envío. Ponderado por ingreso neto.">
+          <p className="text-xs text-gray-500">Margen total {parcial ? "(parcial)" : "(est.)"}</p>
+          {parcial ? (
+            <>
+              <p className="text-sm font-semibold text-amber-700 mt-1">Costo cargado en solo {r.total.coberturaPct}% del ingreso</p>
+              <p className="text-xs text-gray-400">Solo lo evaluable ({r.total.publicaciones} publicaciones): {pctTxt(r.total.margenPct)}. No es el margen del negocio.</p>
+            </>
+          ) : (
+            <>
+              <p className="text-xl font-bold text-gray-900">{pctTxt(r.total.margenPct)}</p>
+              <p className="text-xs text-gray-400">sobre {r.total.coberturaPct}% del ingreso ({r.total.publicaciones} publicaciones)</p>
+            </>
+          )}
+        </div>
+        <div className="bg-gray-50 rounded-xl p-3">
+          <p className="text-xs text-gray-500">Full / Estándar</p>
+          <p className="text-sm font-semibold text-gray-800 mt-1">{pctTxt(r.porTipo.full.margenPct)} <span className="text-gray-400 font-normal">· {pctTxt(r.porTipo.estandar.margenPct)}</span></p>
+          <p className="text-xs text-gray-400">{r.porTipo.full.publicaciones} Full · {r.porTipo.estandar.publicaciones} estándar con margen</p>
+        </div>
+        <div className="bg-red-50 rounded-xl p-3"><p className="text-xs text-gray-500">Pierden plata</p><p className="text-xl font-bold text-red-800">{r.pierden.publicaciones}</p><p className="text-xs text-gray-400">{r.pierden.pctIngreso}% del ingreso · margen bajo (&lt;10%): {r.margenBajo.publicaciones}</p></div>
+        <div className="bg-amber-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sin Costo</p><p className="text-xl font-bold text-amber-800">{r.sinCosto.publicaciones}</p><p className="text-xs text-gray-400">{r.sinCosto.pctIngreso}% del ingreso de la ventana</p></div>
+      </div>
+      {r.menosFiable.pctIngreso > 0 && (
+        <p className="text-xs text-amber-700">
+          {r.menosFiable.pctIngreso}% del ingreso con margen depende de un envío <b>estimado</b> (menos fiable{r.menosFiable.fullEstimado > 0 ? `; ${r.menosFiable.fullEstimado} son Full, donde la estimación es la más imprecisa` : ""}).
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={fEstado} onChange={(e) => { setFEstado(e.target.value as typeof fEstado); reset(); }} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+          <option value="todos">Todas</option><option value="pierde">Pierden plata</option><option value="bajo">Margen bajo (&lt;10%)</option>
+          <option value="sin_costo">Sin Costo</option><option value="menos_fiable">Envío estimado (menos fiable)</option>
+        </select>
+        <select value={fTipo} onChange={(e) => { setFTipo(e.target.value as typeof fTipo); reset(); }} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+          <option value="todos">Full y estándar</option><option value="full">Solo Full</option><option value="estandar">Solo estándar</option>
+        </select>
+        <input value={busqueda} onChange={(e) => { setBusqueda(e.target.value); reset(); }} placeholder="Buscar ID o título" className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-40" />
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-gray-200">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
+              <th className="px-3 py-2">Publicación</th><th className="px-3 py-2">Tipo</th>
+              <th className="px-3 py-2 text-right">Unid.</th><th className="px-3 py-2 text-right">Ingreso</th>
+              <th className="px-3 py-2 text-right">Precio prom.</th><th className="px-3 py-2 text-right">Costo</th>
+              <th className="px-3 py-2 text-right">Comisión</th><th className="px-3 py-2 text-right">Envío/u</th>
+              <th className="px-3 py-2 text-right">Margen (est.)</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filas.slice(0, visibles).map((f) => (
+              <tr key={f.id} className="align-top">
+                <td className="px-3 py-2"><Enlace id={f.id} /><div className="text-gray-700 max-w-[15rem] truncate" title={f.titulo}>{f.titulo}</div></td>
+                <td className="px-3 py-2"><Tipo full={f.full} /></td>
+                <td className="px-3 py-2 text-right">{f.unidades}</td>
+                <td className="px-3 py-2 text-right">{clp(f.ingreso)}</td>
+                <td className="px-3 py-2 text-right">{clp(f.precioProm)}</td>
+                <td className="px-3 py-2 text-right">{f.costo !== null ? clp(f.costo) : <span className="text-amber-600">sin Costo</span>}</td>
+                <td className="px-3 py-2 text-right">{f.comisionPct !== null ? `${(f.comisionPct * 100).toFixed(1).replace(".", ",")}%` : "—"}</td>
+                <td className="px-3 py-2 text-right" title={f.envioFuente === "estimado" ? (f.full ? "Envío ESTIMADO en Full: la estimación más imprecisa (error mediano ~49%)." : "Envío estimado: menos fiable que el medido.") : "Envío medido"}>
+                  {f.envioUnidad !== null ? clp(f.envioUnidad) : "—"}
+                  {f.menosFiable && <span className={`ml-1 ${f.full ? "text-red-500" : "text-amber-600"}`}>{f.full ? "⚠ est." : "est."}</span>}
+                </td>
+                <td className={`px-3 py-2 text-right font-semibold ${f.pierde ? "text-red-700" : "text-gray-900"}`}>{f.margenPct !== null ? pctTxt(f.margenPct) : <span className="text-gray-400 font-normal">{f.estado === "sin_costo" ? "sin Costo" : "sin dato"}</span>}</td>
+              </tr>
+            ))}
+            {filas.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">Ninguna publicación coincide con los filtros.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {filas.length > visibles && (
+        <button onClick={() => setVisibles((v) => v + 30)} className="w-full text-sm text-gray-700 hover:text-black underline">Mostrando {visibles} de {filas.length} — mostrar más</button>
       )}
     </div>
   );
@@ -330,6 +460,7 @@ export default function Tablero() {
         )}
       </div>
 
+      {datos?.margen && <SeccionMargen margen={datos.margen} />}
       {datos?.stock && <SeccionAlerta alerta={datos.stock.alerta} total={datos.stock.resumen.perdido.total} />}
       {datos?.stock && <SeccionStock stock={datos.stock} />}
     </div>

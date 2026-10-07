@@ -3,7 +3,8 @@ import axios from "axios";
 import { readSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
-import { parsearTarifasEnvio } from "@/lib/envio-medido";
+import { armarContextoEnvio, parsearTarifasEnvio } from "@/lib/envio-medido";
+import { analizarMargen } from "@/lib/tablero-margen";
 import { cargarItemsStock, cargarVentas, cargarVisitas, ventanaPorDias } from "@/lib/tablero-datos";
 import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
 import type { ItemStock } from "@/lib/tablero-stock";
@@ -73,6 +74,24 @@ export async function GET(req: NextRequest) {
       costoPorItem, origenPorItem, tarifas,
     });
 
+    // ---- Margen de contribución (ver lib/tablero-margen.ts) ----
+    const precioPorItem = new Map<string, number>();
+    for (const r of filasPub) {
+      const p = Number(String(r[6] ?? "").trim());
+      if (r[0] && Number.isFinite(p) && p > 0) precioPorItem.set(String(r[0]), p);
+    }
+    const fullPorItem = new Map<string, boolean>();
+    for (const it of itemsMl.values()) fullPorItem.set(it.id, it.full);
+    const logisticoPorItem = new Map<string, string>();
+    for (const [id, esFull] of fullPorItem) logisticoPorItem.set(id, esFull ? "fulfillment" : "otro");
+    const skuPorItem = new Map<string, string>();
+    for (const [id, t] of tarifas) if (t.sku) skuPorItem.set(id, t.sku);
+    const ctxEnvio = armarContextoEnvio(tarifas, precioPorItem, skuPorItem, logisticoPorItem);
+    const margen = analizarMargen({
+      lineas: ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs),
+      costoPorItem, fullPorItem, skuPorItem, ctxEnvio,
+    });
+
     // ---- Stock y alerta de pausadas (ver lib/tablero-stock.ts) ----
     const ahoraMs = ahora.getTime();
     const itemsStock: ItemStock[] = [...itemsMl.values()].map((it) => ({
@@ -102,6 +121,7 @@ export async function GET(req: NextRequest) {
         },
       },
       confianza,
+      margen: { resumen: margen.resumen, filas: margen.filas },
       stock: {
         resumen: stock.resumen,
         alerta: stock.alerta.map((a) => ({ ...a, tasaDiaria: Math.round(a.tasaDiaria), diasSinVender: Math.round(a.diasSinVender * 10) / 10, ingresoPerdido: Math.round(a.ingresoPerdido), ingreso30: Math.round(a.ingreso30) })),
