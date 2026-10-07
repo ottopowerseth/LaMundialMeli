@@ -150,6 +150,7 @@ function SeccionStock({ stock }: { stock: StockApi }) {
   const [busqueda, setBusqueda] = useState("");
   const [visibles, setVisibles] = useState(40);
   const r = stock.resumen;
+  const capitalParcial = r.capital.pctConCosto < 90;
 
   const filas = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -168,7 +169,7 @@ function SeccionStock({ stock }: { stock: StockApi }) {
       <div>
         <h3 className="font-bold text-gray-900">Stock: cobertura y capital inmovilizado</h3>
         <p className="text-xs text-gray-400 mt-1">
-          Velocidad = unidades de 30 días ÷ días con stock (excluye los días sin stock detectados por visitas: {r.deteccion.conDiasSinStock} publicaciones afectadas).
+          Velocidad y cobertura son <b>estimadas</b>: unidades de 30 días ÷ días con stock. Día sin stock = 3 o más días seguidos con 0 visitas (en publicaciones con tráfico mediano ≥ 3 visitas/día), o los días posteriores a la última venta si está pausada por falta de stock ({r.deteccion.conDiasSinStock} publicaciones afectadas).
           Clase ABC por ingreso de 90 días (A hasta 80%, B hasta 95%). Alerta de reposición: SKU A con cobertura ≤ 21 días. Sobrestock (&gt; 90 días): solo B y C.
         </p>
       </div>
@@ -177,9 +178,18 @@ function SeccionStock({ stock }: { stock: StockApi }) {
         <div className="bg-amber-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sobrestock (B/C &gt; 90 d)</p><p className="text-xl font-bold text-amber-800">{r.porEstado.sobrestock}</p></div>
         <div className="bg-gray-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sin ventas en 90 días</p><p className="text-xl font-bold text-gray-800">{r.porEstado.muerto}</p></div>
         <div className="bg-gray-50 rounded-xl p-3" title="Costo × stock de las publicaciones en sobrestock o sin ventas. Solo cuenta las que tienen Costo cargado.">
-          <p className="text-xs text-gray-500">Capital inmovilizado (est.)</p>
-          <p className="text-xl font-bold text-gray-900">{clp(r.capital.inmovilizado)}</p>
-          <p className={`text-xs ${r.capital.pctConCosto >= 90 ? "text-gray-400" : "text-amber-600"}`}>con Costo en {r.capital.pctConCosto}% de esas publicaciones</p>
+          <p className="text-xs text-gray-500">Capital inmovilizado {capitalParcial ? "(parcial)" : "(est.)"}</p>
+          {capitalParcial ? (
+            <>
+              <p className="text-sm font-semibold text-amber-700 mt-1">Costo cargado en solo {r.capital.pctConCosto}%</p>
+              <p className="text-xs text-gray-400">Solo lo que tiene Costo: {clp(r.capital.inmovilizado)}. No es el total; se mostrará completo al cargar los Costos.</p>
+            </>
+          ) : (
+            <>
+              <p className="text-xl font-bold text-gray-900">{clp(r.capital.inmovilizado)}</p>
+              <p className="text-xs text-gray-400">con Costo en {r.capital.pctConCosto}% de esas publicaciones</p>
+            </>
+          )}
         </div>
       </div>
       <p className="text-xs text-gray-500">
@@ -205,8 +215,8 @@ function SeccionStock({ stock }: { stock: StockApi }) {
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
               <th className="px-3 py-2">Publicación</th><th className="px-3 py-2">Clase</th><th className="px-3 py-2">Tipo</th>
-              <th className="px-3 py-2 text-right">Stock</th><th className="px-3 py-2 text-right">Vel./día</th>
-              <th className="px-3 py-2 text-right">Cobertura</th><th className="px-3 py-2">Estado</th><th className="px-3 py-2">Acción</th>
+              <th className="px-3 py-2 text-right">Stock</th><th className="px-3 py-2 text-right">Vel./día (est.)</th>
+              <th className="px-3 py-2 text-right">Cobertura (est.)</th><th className="px-3 py-2">Estado</th><th className="px-3 py-2">Acción</th>
               <th className="px-3 py-2 text-right">Capital</th>
             </tr>
           </thead>
