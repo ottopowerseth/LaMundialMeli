@@ -159,7 +159,10 @@ type FilaTablaProducto = {
   costo: number | null;
   margenPct: number | null;
   costoMax: number | null;
-  costoMaxFuenteEnvio: "item" | "tramo" | null;
+  costoMaxFuenteEnvio: "medido" | "estimado" | null;
+  comisionPct: number | null;
+  comisionFuente: "orden" | "calculada" | null;
+  envioPorUnidad: number | null;
   precioEquilibrio: number | null;
   pierde: boolean;
   campana: string | null;
@@ -2046,8 +2049,14 @@ export default function Home() {
                                 <td className="py-2 pr-3 text-gray-700">{f.full ? "Sí" : "No"}</td>
                                 <td className="py-2 pr-3 text-gray-700">{f.precio !== null ? `$${f.precio.toLocaleString("es-CL")}` : "-"}</td>
                                 <td className="py-2 pr-3 text-gray-700">{f.costo !== null ? `$${f.costo.toLocaleString("es-CL")}` : "SIN DATO"}</td>
-                                <td className="py-2 pr-3 text-gray-700">
+                                <td className="py-2 pr-3 text-gray-700"
+                                  title={f.comisionPct !== null && f.envioPorUnidad !== null
+                                    ? `Margen de contribución antes de publicidad. Comisión ${(f.comisionPct * 100).toFixed(1)}% (${f.comisionFuente === "orden" ? "cobrada en las ventas del período" : "calculada por ML"}) · envío $${Math.round(f.envioPorUnidad).toLocaleString("es-CL")} por unidad (${f.costoMaxFuenteEnvio})`
+                                    : undefined}>
                                   {f.margenPct !== null ? `${f.margenPct}%` : "-"}
+                                  {f.margenPct !== null && (f.costoMaxFuenteEnvio === "estimado" || f.comisionFuente === "calculada") && (
+                                    <span className="ml-1 text-xs text-amber-600">est.</span>
+                                  )}
                                   {f.pierde && (
                                     <span className="ml-1 text-xs font-medium bg-red-100 text-red-700 rounded-full px-2 py-0.5">Pierde</span>
                                   )}
@@ -2055,7 +2064,7 @@ export default function Home() {
                                 <td className="py-2 pr-3 text-gray-700">
                                   {f.costoMax !== null ? `$${f.costoMax.toLocaleString("es-CL")}` : "-"}
                                   {f.costoMaxFuenteEnvio && (
-                                    <span className="ml-1 text-xs text-gray-400">({f.costoMaxFuenteEnvio === "item" ? "envío real" : "envío tramo"})</span>
+                                    <span className={`ml-1 text-xs ${f.costoMaxFuenteEnvio === "estimado" ? "text-amber-600" : "text-gray-400"}`}>(envío {f.costoMaxFuenteEnvio})</span>
                                   )}
                                 </td>
                                 <td className="py-2 pr-3 text-gray-700">{f.costo !== null && f.precioEquilibrio !== null ? `$${f.precioEquilibrio.toLocaleString("es-CL")}` : "-"}</td>

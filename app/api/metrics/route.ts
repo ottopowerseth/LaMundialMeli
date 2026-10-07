@@ -3,9 +3,11 @@ import axios from "axios";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { readSheet } from "@/lib/sheets";
-import { getComisionPct, IVA } from "@/lib/rentabilidad";
+import { calcularMargen, IVA } from "@/lib/rentabilidad";
 import { obtenerAdsPorItem, ROAS_METRICS_FIELDS } from "@/lib/ml-ads";
-import { armarMuestrasEnvio, calcularEnvioEstimadoPorUnidad } from "@/lib/envio-estimado";
+import { armarContextoEnvio, parsearTarifasEnvio, resolverEnvio } from "@/lib/envio-medido";
+import { acumularComision, pctComisionListingPrices, resolverComision } from "@/lib/comision-real";
+import type { AcumuladoComision, ComisionResuelta } from "@/lib/comision-real";
 
 // Endpoint separado de ml-sync (no reutiliza su maxDuration ni su budget):
 // mismo criterio que backfill-shipping, para no arriesgar timeouts en rutas
@@ -21,6 +23,9 @@ type VentasMetrics = {
   cantidadOrdenes?: number;
   ticketPromedio?: number;
   ventasPorItem?: Record<string, { titulo: string; unidades: number; monto: number }>;
+  // Ingreso y comisión (sale_fee × cantidad) de las líneas del período que
+  // traen sale_fee, por publicación — ver lib/comision-real.ts.
+  comisionPorItem?: Record<string, AcumuladoComision>;
   ranking?: ProductoRanking[];
   comparacion?: ComparacionPeriodo | null;
   error?: string;
@@ -123,7 +128,17 @@ type FilaTablaProducto = {
   costo: number | null;
   margenPct: number | null;
   costoMax: number | null;
-  costoMaxFuenteEnvio: "item" | "sku" | "tramo" | null;
+  // Origen del envío usado en Costo máx./Precio equilibrio/Pierde/Margen %:
+  // "medido" = tarifa real de /shipments/{id}/costs (hoja TarifaEnvio);
+  // "estimado" = respaldo (SKU gemelo, tramo de precio, o fila marcada
+  // estimada). null = sin dato: esas celdas quedan vacías, no se inventan.
+  costoMaxFuenteEnvio: "medido" | "estimado" | null;
+  // Comisión real como % del precio bruto y su origen: "orden" = sale_fee
+  // cobrado en las ventas del período; "calculada" = calculadora oficial de
+  // ML (publicación sin ventas en el período).
+  comisionPct: number | null;
+  comisionFuente: "orden" | "calculada" | null;
+  envioPorUnidad: number | null; // bruto
   precioEquilibrio: number | null;
   pierde: boolean;
   campana: string | null;
@@ -307,6 +322,7 @@ async function calcularVentas(
     let unidades = 0;
     let cantidadOrdenes = 0;
     const ventasPorItem: Record<string, { titulo: string; unidades: number; monto: number }> = {};
+    const comisionAcc = new Map<string, AcumuladoComision>();
     let offset = 0;
     while (offset <= 1000) {
       const { data } = await mlGet<{ results: Record<string, unknown>[]; paging: { total: number } }>(
@@ -337,6 +353,8 @@ async function calcularVentas(
           }
           ventasPorItem[itemId].unidades += qty;
           ventasPorItem[itemId].monto += qty * precio;
+          // sale_fee es POR UNIDAD (comisión real cobrada, bruta).
+          acumularComision(comisionAcc, itemId, qty, precio, it.sale_fee);
         }
       }
       if (data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
@@ -349,6 +367,7 @@ async function calcularVentas(
       cantidadOrdenes,
       ticketPromedio: cantidadOrdenes > 0 ? Math.round(totalVendido / cantidadOrdenes) : 0,
       ventasPorItem,
+      comisionPorItem: Object.fromEntries(comisionAcc),
     };
   } catch (err) {
     return { ok: false, error: String(err) };
@@ -795,18 +814,17 @@ async function calcularTablaProductos(
       for (const r of resultados) if (r.visitas !== null) visitasPorItem.set(r.id, r.visitas);
     }
 
-    // Stock + Full + tipo de publicación + SKU — batch de 20 ids por
-    // llamada (mismo endpoint y tope que ya usa ml-sync). listing_type_id/
-    // catalog_listing/attributes/seller_custom_field se agregan a los
-    // mismos atributos ya pedidos (sin llamada extra): comisión real por
-    // ítem (getComisionPct) y SELLER_SKU para el respaldo de envío por
-    // SKU (ver lib/envio-estimado.ts).
-    const stockPorItem = new Map<string, { stock: number | null; full: boolean; listingTypeId: string; catalogListing: boolean; sku: string | null }>();
+    // Stock + Full + tipo de publicación + categoría + SKU — batch de 20 ids
+    // por llamada (mismo endpoint y tope que ya usa ml-sync). listing_type_id/
+    // category_id sirven solo para la comisión calculada de las publicaciones
+    // sin ventas en el período (ver lib/comision-real.ts); SELLER_SKU para el
+    // respaldo de envío por SKU gemelo (ver lib/envio-medido.ts).
+    const stockPorItem = new Map<string, { stock: number | null; full: boolean; listingTypeId: string; categoryId: string; sku: string | null }>();
     for (let i = 0; i < idsFilas.length; i += 20) {
       const chunk = idsFilas.slice(i, i + 20);
       const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
         "/items",
-        { ids: chunk.join(","), attributes: "id,available_quantity,variations,shipping,listing_type_id,catalog_listing,attributes,seller_custom_field" }
+        { ids: chunk.join(","), attributes: "id,available_quantity,variations,shipping,listing_type_id,category_id,attributes,seller_custom_field" }
       );
       for (const r of data) {
         if (r.code !== 200) continue;
@@ -818,7 +836,7 @@ async function calcularTablaProductos(
           stock: resolveStockTabla(r.body),
           full: shipping?.logistic_type === "fulfillment",
           listingTypeId: String(r.body.listing_type_id ?? ""),
-          catalogListing: !!r.body.catalog_listing,
+          categoryId: String(r.body.category_id ?? ""),
           sku,
         });
       }
@@ -838,24 +856,36 @@ async function calcularTablaProductos(
       });
     }
 
-    // Envío real POR UNIDAD por ítem — ver lib/envio-estimado.ts para el
-    // detalle completo (mediana, no promedio: el envío por unidad de un
-    // mismo ítem varía mucho entre órdenes reales, un promedio simple se
-    // deja arrastrar por outliers; orden de prioridad ítem → mismo SKU en
-    // otra publicación → tramo × logistic_type). No se usa la columna H
-    // (Envío total de la orden): mezclar órdenes de 1 y de varias unidades
-    // del mismo ítem infla el número (gotcha ya corregido). No es una
-    // llamada nueva a ML: la Billing API tiene rate limit de 5 req/min,
-    // inviable dentro de este endpoint — cobertura hoy es baja (Rentabilidad
-    // se corre manual por mes), por eso el fallback a mediana por SKU/tramo.
+    // Envío por unidad: tarifa MEDIDA de la hoja TarifaEnvio (ver
+    // lib/envio-medido.ts y lib/tarifa-envio.ts), con respaldo marcado como
+    // "estimado". Ya no sale de la hoja Rentabilidad: esa estimación erraba
+    // ~300% (mediana): con el Costo cargado habría marcado "Pierde" en 36 de
+    // los 49 productos top evaluables, contra 9 con la tarifa y la comisión
+    // reales (medido 2026-10-07). Si la hoja aún no existe, todo queda como
+    // estimado/sin dato (nunca se rompe la tabla).
+    const precioPorItem = new Map<string, number>();
+    for (const [id, cp] of costoPrecioPorItem) if (cp.precio !== null && cp.precio > 0) precioPorItem.set(id, cp.precio);
     const skuPorItemEnvio = new Map<string, string>();
     const logisticoPorItemEnvio = new Map<string, string>();
     for (const [id, info] of stockPorItem) {
       if (info.sku) skuPorItemEnvio.set(id, info.sku);
-      if (info.full) logisticoPorItemEnvio.set(id, "fulfillment");
+      logisticoPorItemEnvio.set(id, info.full ? "fulfillment" : "otro");
     }
-    const filasRentabilidad = await readSheet("Rentabilidad!A2:O100000");
-    const muestrasEnvio = armarMuestrasEnvio(filasRentabilidad, skuPorItemEnvio, logisticoPorItemEnvio);
+    const filasTarifaEnvio = await readSheet("TarifaEnvio!A2:L5000").catch(() => [] as string[][]);
+    const ctxEnvio = armarContextoEnvio(parsearTarifasEnvio(filasTarifaEnvio), precioPorItem, skuPorItemEnvio, logisticoPorItemEnvio);
+
+    // Comisión real por ítem: sale_fee de las órdenes del período; si no
+    // hubo ventas, la calculadora oficial de ML (marcada "calculada"). Nunca
+    // getComisionPct (aproxima por tipo de publicación y yerra ~2 puntos).
+    const comisionAcc = new Map(Object.entries(ventas.comisionPorItem ?? {}));
+    const comisionPorItem = new Map<string, ComisionResuelta>();
+    await Promise.all(idsFilas.map(async (id) => {
+      const info = stockPorItem.get(id);
+      const precio = costoPrecioPorItem.get(id)?.precio ?? null;
+      comisionPorItem.set(id, await resolverComision(id, comisionAcc, () =>
+        info && precio ? pctComisionListingPrices(mlGet, { precio, listingTypeId: info.listingTypeId, categoryId: info.categoryId }) : Promise.resolve(null)
+      ));
+    }));
 
     const filasBase: Omit<FilaTablaProducto, "etiquetas">[] = idsFilas.map((id) => {
       const venta = ventas.ventasPorItem![id];
@@ -871,34 +901,38 @@ async function calcularTablaProductos(
       // comparar, mismo criterio que calcularFilaOrden en lib/rentabilidad.ts.
       const precioNeto = precio !== null ? precio / (1 + IVA) : null;
       const costoNeto = costo !== null ? costo / (1 + IVA) : null;
-      const margenPct = costoNeto !== null && precioNeto !== null && precioNeto > 0
-        ? Math.round(((precioNeto - costoNeto) / precioNeto) * 1000) / 10
-        : null;
 
       // Costo máx. = costo neto máximo que se puede pagar por el producto
       // sin perder plata AL PRECIO ACTUAL de venta — despejando margen=0 de
       // la misma fórmula que usa calcularFilaOrden en lib/rentabilidad.ts:
       //   margenNeto = precioNeto - costoNeto - comisionNeta - envioNeto = 0
       //   => costoMax = precioNeto × (1 − comisión%) − envioNeto
-      // Comisión real por tipo de publicación (getComisionPct), no una tasa
-      // fija — mismo criterio que ml-sync usa para Publicaciones.
+      // Comisión y envío reales (ver arriba). Si falta cualquiera de los dos
+      // NO se calcula nada (celdas vacías), en vez de asumir un valor.
       let costoMax: number | null = null;
-      let costoMaxFuenteEnvio: "item" | "sku" | "tramo" | null = null;
+      let costoMaxFuenteEnvio: "medido" | "estimado" | null = null;
       let precioEquilibrio: number | null = null;
       let pierde = false;
+      let margenPct: number | null = null;
+      const comision = comisionPorItem.get(id) ?? { pct: null, fuente: null };
+      let envioPorUnidad: number | null = null;
       if (precio !== null && precioNeto !== null && stockInfo) {
-        const comisionPct = getComisionPct(stockInfo.listingTypeId, stockInfo.catalogListing);
-        const { envio: envioEstimadoBruto, fuente } = calcularEnvioEstimadoPorUnidad(id, precio, stockInfo.full, muestrasEnvio, stockInfo.sku);
-        const envioEstimadoNeto = envioEstimadoBruto / (1 + IVA);
-        costoMax = Math.round((precioNeto * (1 - comisionPct) - envioEstimadoNeto) * 10) / 10;
-        costoMaxFuenteEnvio = fuente;
-        // Precio de equilibrio: solo tiene sentido si hay Costo cargado —
-        // despejando precioNeto de la misma fórmula (margen=0):
-        //   precioNeto = (costoNeto + envioNeto) / (1 − comisión%)
-        if (costoNeto !== null) {
-          const precioNetoEquilibrio = (costoNeto + envioEstimadoNeto) / (1 - comisionPct);
-          precioEquilibrio = Math.round(precioNetoEquilibrio * (1 + IVA));
-          pierde = costoNeto > costoMax;
+        const envio = resolverEnvio(id, precio, stockInfo.full, stockInfo.sku, ctxEnvio);
+        envioPorUnidad = envio.envio;
+        if (comision.pct !== null && envio.envio !== null) {
+          const envioNeto = envio.envio / (1 + IVA);
+          costoMax = Math.round((precioNeto * (1 - comision.pct) - envioNeto) * 10) / 10;
+          costoMaxFuenteEnvio = envio.fuente;
+          // Precio de equilibrio y margen: solo con Costo cargado —
+          //   precioNeto = (costoNeto + envioNeto) / (1 − comisión%)
+          if (costoNeto !== null) {
+            precioEquilibrio = Math.round(((costoNeto + envioNeto) / (1 - comision.pct)) * (1 + IVA));
+            pierde = costoNeto > costoMax;
+            // Margen de contribución antes de publicidad, % del precio neto.
+            // Antes era (precio − costo)/precio, que ignoraba comisión y envío
+            // e inflaba el margen (Plaisance: 25% contra 3,8% real).
+            margenPct = calcularMargen(precio, costo, precio * comision.pct, envio.envio, 0).margenPct;
+          }
         }
       }
 
@@ -916,6 +950,9 @@ async function calcularTablaProductos(
         margenPct,
         costoMax,
         costoMaxFuenteEnvio,
+        comisionPct: comision.pct !== null ? Math.round(comision.pct * 1000) / 1000 : null,
+        comisionFuente: comision.fuente,
+        envioPorUnidad,
         precioEquilibrio,
         pierde,
         campana: ad ? nombrePorCampana.get(ad.campaignId) ?? `Campaña ${ad.campaignId}` : null,
