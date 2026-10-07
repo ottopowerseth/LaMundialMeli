@@ -83,3 +83,65 @@ export async function cargarVentas(mlGet: MlGet, userId: string | number, desdeM
   }
   return { lineas, ordenes, desdeMs, hastaMs };
 }
+
+// ---------------------------------------------------------------------
+// Cargas para la sección de stock (ver lib/tablero-stock.ts).
+// ---------------------------------------------------------------------
+export type ItemMl = {
+  id: string; titulo: string; estado: string; subEstado: string[];
+  stock: number | null; full: boolean; inventoryId: string | null; precio: number;
+};
+
+async function enParalelo<T>(lista: T[], limite: number, fn: (x: T) => Promise<void>): Promise<void> {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limite, lista.length) }, async () => {
+    while (i < lista.length) await fn(lista[i++]);
+  }));
+}
+
+// Estado vigente de las publicaciones: lotes de 20 con concurrencia 4 (~31
+// llamadas para ~620 publicaciones). Stock = available_quantity o, si no
+// viene, la suma de las variaciones (mismo criterio que ml-sync).
+export async function cargarItemsStock(mlGet: MlGet, ids: string[]): Promise<Map<string, ItemMl>> {
+  const out = new Map<string, ItemMl>();
+  const lotes: string[][] = [];
+  for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+  await enParalelo(lotes, 4, async (lote) => {
+    const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
+      `/items?ids=${lote.join(",")}&attributes=id,title,status,sub_status,available_quantity,variations,shipping,inventory_id,price`
+    );
+    for (const r of data) {
+      if (r.code !== 200) continue;
+      const b = r.body;
+      let stock: number | null = typeof b.available_quantity === "number" ? b.available_quantity : null;
+      if (stock === null && Array.isArray(b.variations) && b.variations.length > 0) {
+        const qs = (b.variations as { available_quantity?: number }[]).map((v) => v.available_quantity).filter((q): q is number => typeof q === "number");
+        if (qs.length > 0) stock = qs.reduce((s, q) => s + q, 0);
+      }
+      const shipping = b.shipping as { logistic_type?: string } | undefined;
+      out.set(String(b.id), {
+        id: String(b.id), titulo: String(b.title ?? b.id), estado: String(b.status ?? ""),
+        subEstado: Array.isArray(b.sub_status) ? (b.sub_status as string[]) : [],
+        stock, full: shipping?.logistic_type === "fulfillment",
+        inventoryId: typeof b.inventory_id === "string" ? b.inventory_id : null, precio: Number(b.price) || 0,
+      });
+    }
+  });
+  return out;
+}
+
+// Visitas diarias de los últimos N días: los días con 0 visitas NO vienen en
+// la serie (por eso "ausente" = 0). Concurrencia 6; ML limita las ráfagas
+// (429), withMlRetry reintenta.
+export async function cargarVisitas(mlGet: MlGet, ids: string[], dias: number): Promise<Map<string, Record<string, number>>> {
+  const out = new Map<string, Record<string, number>>();
+  await enParalelo(ids, 6, async (id) => {
+    try {
+      const { data } = await mlGet<{ results?: { date: string; total: number }[] }>(`/items/${id}/visits/time_window?last=${dias}&unit=day`);
+      const m: Record<string, number> = {};
+      for (const x of data.results ?? []) m[x.date.slice(0, 10)] = x.total;
+      out.set(id, m);
+    } catch { /* sin serie: esa publicación queda sin detección por visitas */ }
+  });
+  return out;
+}

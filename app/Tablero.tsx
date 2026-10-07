@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 // Tablero "desde arriba". Un solo endpoint (/api/tablero) calculado en vivo.
 // El resultado se guarda en una variable de módulo para que al cambiar de
@@ -16,6 +16,27 @@ type Confianza = {
   comisionReal: { pct: number };
   publicacionesConVenta: number;
 };
+type EstadoStock = "sin_stock" | "reponer" | "sobrestock" | "muerto" | "ok";
+type FilaStock = {
+  id: string; titulo: string; estado: string; abc: "A" | "B" | "C" | "S"; full: boolean; stock: number | null;
+  unidades30: number; ingreso30: number; ingreso90: number;
+  velocidadIngenua: number; velocidad: number; velocidadConfiable: boolean;
+  diasSinStock: number; diasDisponibles: number; fuenteDisponibilidad: string;
+  cobertura: number | null; coberturaIngenua: number | null;
+  estadoStock: EstadoStock; estadoStockIngenuo: EstadoStock; accion: string; costo: number | null; capital: number | null;
+};
+type FilaAlerta = { id: string; titulo: string; full: boolean; ingreso30: number; tasaDiaria: number; diasSinVender: number; ingresoPerdido: number; accion: string };
+type StockApi = {
+  resumen: {
+    activas: number; pausadas: number; pausadasSinStockConVentas: number;
+    abc: Record<"A" | "B" | "C" | "S", number>; porEstado: Record<EstadoStock, number>;
+    capital: { inmovilizado: number; pctConCosto: number }; perdido: { total: number; publicaciones: number };
+    deteccion: { conDiasSinStock: number; porFuente: Record<string, number>; cambianEstado: number };
+  };
+  alerta: FilaAlerta[];
+  filas: FilaStock[];
+  llamadas: { visitas: number };
+};
 type TableroApi = {
   ok: boolean;
   error?: string;
@@ -23,6 +44,7 @@ type TableroApi = {
   ventana?: { desde: string; hasta: string; dias: number };
   resumen?: { actual: Resumen; anterior: Resumen; variaciones: { ingresos: Variacion; unidades: Variacion; ordenes: Variacion; ticket: Variacion } };
   confianza?: Confianza;
+  stock?: StockApi;
 };
 
 let cache: { data: TableroApi; ts: number } | null = null;
@@ -50,6 +72,171 @@ function Tarjeta({ titulo, valor, v, anterior }: { titulo: string; valor: string
       <p className={`text-xs font-medium ${pct === null ? "text-gray-400" : pct > 0 ? "text-green-600" : pct < 0 ? "text-red-600" : "text-gray-500"}`}>
         {pct === null ? "sin período previo" : `${pct > 0 ? "▲" : pct < 0 ? "▼" : "→"} ${Math.abs(pct)}% vs anterior`}
       </p>
+    </div>
+  );
+}
+
+const linkPublicacion = (id: string) => `https://articulo.mercadolibre.cl/${id.replace("MLC", "MLC-")}`;
+
+function Enlace({ id }: { id: string }) {
+  return <a href={linkPublicacion(id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline whitespace-nowrap">{id} ↗</a>;
+}
+const Tipo = ({ full }: { full: boolean }) => (
+  <span className={`rounded-md px-2 py-0.5 ${full ? "bg-blue-50 text-blue-700" : "bg-gray-100 text-gray-600"}`}>{full ? "Full" : "Estándar"}</span>
+);
+
+// Alerta: publicaciones pausadas por falta de stock que vendieron en los últimos
+// 30 días, ordenadas por ingreso perdido ESTIMADO.
+function SeccionAlerta({ alerta, total }: { alerta: FilaAlerta[]; total: number }) {
+  const [visibles, setVisibles] = useState(15);
+  if (alerta.length === 0) return null;
+  return (
+    <div className="bg-white rounded-2xl border border-red-200 shadow-sm p-6 space-y-3">
+      <div>
+        <h3 className="font-bold text-gray-900">Pausadas por falta de stock con ventas</h3>
+        <p className="text-sm text-gray-600">
+          {alerta.length} publicaciones · ingreso perdido <b>estimado</b> {clp(total)}
+          <span className="text-gray-400"> (tope 30 días por publicación)</span>
+        </p>
+        <p className="text-xs text-gray-400 mt-1">
+          Estimado = tasa diaria × días sin vender. La tasa es el ingreso de los 30 días previos a la última venta dividido por los días en que sí había stock
+          (excluye los días agotados). ML no informa desde cuándo está pausada: se usa la última venta.
+        </p>
+      </div>
+      <div className="overflow-x-auto rounded-xl border border-gray-200">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
+              <th className="px-3 py-2">Publicación</th><th className="px-3 py-2">Tipo</th>
+              <th className="px-3 py-2 text-right">Ingreso 30d</th><th className="px-3 py-2 text-right">Tasa $/día (est.)</th>
+              <th className="px-3 py-2 text-right">Días sin vender</th><th className="px-3 py-2 text-right">Ingreso perdido (est.)</th>
+              <th className="px-3 py-2">Acción</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {alerta.slice(0, visibles).map((a) => (
+              <tr key={a.id} className="align-top">
+                <td className="px-3 py-2"><Enlace id={a.id} /><div className="text-gray-700 max-w-[16rem] truncate" title={a.titulo}>{a.titulo}</div></td>
+                <td className="px-3 py-2"><Tipo full={a.full} /></td>
+                <td className="px-3 py-2 text-right">{clp(a.ingreso30)}</td>
+                <td className="px-3 py-2 text-right">{clp(a.tasaDiaria)}</td>
+                <td className="px-3 py-2 text-right">{a.diasSinVender.toFixed(1)}</td>
+                <td className="px-3 py-2 text-right font-semibold text-red-700">{clp(a.ingresoPerdido)}</td>
+                <td className="px-3 py-2 text-gray-800">{a.accion}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {alerta.length > visibles && (
+        <button onClick={() => setVisibles((v) => v + 15)} className="text-sm text-gray-700 hover:text-black underline">Mostrar más ({alerta.length - visibles})</button>
+      )}
+    </div>
+  );
+}
+
+const ETIQUETA_ESTADO: Record<EstadoStock, { texto: string; clase: string }> = {
+  reponer: { texto: "Reponer", clase: "bg-red-100 text-red-800" },
+  sobrestock: { texto: "Sobrestock", clase: "bg-amber-100 text-amber-800" },
+  muerto: { texto: "Sin ventas 90d", clase: "bg-gray-200 text-gray-700" },
+  sin_stock: { texto: "Sin stock", clase: "bg-red-100 text-red-800" },
+  ok: { texto: "OK", clase: "bg-green-50 text-green-700" },
+};
+
+function SeccionStock({ stock }: { stock: StockApi }) {
+  const [fEstado, setFEstado] = useState<"todos" | EstadoStock>("reponer");
+  const [fClase, setFClase] = useState<"todas" | "A" | "B" | "C" | "S">("todas");
+  const [fTipo, setFTipo] = useState<"todos" | "full" | "estandar">("todos");
+  const [busqueda, setBusqueda] = useState("");
+  const [visibles, setVisibles] = useState(40);
+  const r = stock.resumen;
+
+  const filas = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    return stock.filas
+      .filter((f) => f.estado === "active")
+      .filter((f) => fEstado === "todos" || f.estadoStock === fEstado)
+      .filter((f) => fClase === "todas" || f.abc === fClase)
+      .filter((f) => fTipo === "todos" || (fTipo === "full") === f.full)
+      .filter((f) => !q || `${f.id} ${f.titulo}`.toLowerCase().includes(q))
+      .sort((a, b) => (a.cobertura ?? 1e9) - (b.cobertura ?? 1e9) || b.ingreso90 - a.ingreso90);
+  }, [stock.filas, fEstado, fClase, fTipo, busqueda]);
+
+  const reset = () => setVisibles(40);
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+      <div>
+        <h3 className="font-bold text-gray-900">Stock: cobertura y capital inmovilizado</h3>
+        <p className="text-xs text-gray-400 mt-1">
+          Velocidad = unidades de 30 días ÷ días con stock (excluye los días sin stock detectados por visitas: {r.deteccion.conDiasSinStock} publicaciones afectadas).
+          Clase ABC por ingreso de 90 días (A hasta 80%, B hasta 95%). Alerta de reposición: SKU A con cobertura ≤ 21 días. Sobrestock (&gt; 90 días): solo B y C.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-red-50 rounded-xl p-3"><p className="text-xs text-gray-500">Reponer (SKU A ≤ 21 d)</p><p className="text-xl font-bold text-red-800">{r.porEstado.reponer}</p></div>
+        <div className="bg-amber-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sobrestock (B/C &gt; 90 d)</p><p className="text-xl font-bold text-amber-800">{r.porEstado.sobrestock}</p></div>
+        <div className="bg-gray-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sin ventas en 90 días</p><p className="text-xl font-bold text-gray-800">{r.porEstado.muerto}</p></div>
+        <div className="bg-gray-50 rounded-xl p-3" title="Costo × stock de las publicaciones en sobrestock o sin ventas. Solo cuenta las que tienen Costo cargado.">
+          <p className="text-xs text-gray-500">Capital inmovilizado (est.)</p>
+          <p className="text-xl font-bold text-gray-900">{clp(r.capital.inmovilizado)}</p>
+          <p className={`text-xs ${r.capital.pctConCosto >= 90 ? "text-gray-400" : "text-amber-600"}`}>con Costo en {r.capital.pctConCosto}% de esas publicaciones</p>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500">
+        Activas por clase: A {r.abc.A} · B {r.abc.B} · C {r.abc.C} · sin ventas 90 d {r.abc.S}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={fEstado} onChange={(e) => { setFEstado(e.target.value as typeof fEstado); reset(); }} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+          <option value="todos">Todos los estados</option><option value="reponer">Reponer</option><option value="sobrestock">Sobrestock</option>
+          <option value="muerto">Sin ventas 90 d</option><option value="ok">OK</option>
+        </select>
+        <select value={fClase} onChange={(e) => { setFClase(e.target.value as typeof fClase); reset(); }} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+          <option value="todas">Todas las clases</option><option value="A">Clase A</option><option value="B">Clase B</option><option value="C">Clase C</option><option value="S">Sin ventas</option>
+        </select>
+        <select value={fTipo} onChange={(e) => { setFTipo(e.target.value as typeof fTipo); reset(); }} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+          <option value="todos">Full y estándar</option><option value="full">Solo Full</option><option value="estandar">Solo estándar</option>
+        </select>
+        <input value={busqueda} onChange={(e) => { setBusqueda(e.target.value); reset(); }} placeholder="Buscar ID o título" className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-40" />
+      </div>
+
+      <div className="overflow-x-auto rounded-xl border border-gray-200">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
+              <th className="px-3 py-2">Publicación</th><th className="px-3 py-2">Clase</th><th className="px-3 py-2">Tipo</th>
+              <th className="px-3 py-2 text-right">Stock</th><th className="px-3 py-2 text-right">Vel./día</th>
+              <th className="px-3 py-2 text-right">Cobertura</th><th className="px-3 py-2">Estado</th><th className="px-3 py-2">Acción</th>
+              <th className="px-3 py-2 text-right">Capital</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filas.slice(0, visibles).map((f) => (
+              <tr key={f.id} className="align-top">
+                <td className="px-3 py-2"><Enlace id={f.id} /><div className="text-gray-700 max-w-[15rem] truncate" title={f.titulo}>{f.titulo}</div></td>
+                <td className="px-3 py-2 font-semibold">{f.abc === "S" ? "—" : f.abc}</td>
+                <td className="px-3 py-2"><Tipo full={f.full} /></td>
+                <td className="px-3 py-2 text-right">{f.stock ?? "—"}</td>
+                <td className="px-3 py-2 text-right" title={f.diasSinStock > 0 ? `Excluye ${f.diasSinStock} días sin stock (detectado por ${f.fuenteDisponibilidad}). Sin corregir serían ${f.velocidadIngenua.toFixed(2)}/día.` : undefined}>
+                  {f.unidades30 > 0 ? f.velocidad.toFixed(2) : "0"}
+                  {f.diasSinStock > 0 && <span className={`ml-1 ${f.velocidadConfiable ? "text-amber-600" : "text-red-500"}`}>{f.velocidadConfiable ? "*" : "?"}</span>}
+                </td>
+                <td className="px-3 py-2 text-right">{f.cobertura !== null ? `${f.cobertura} d` : "—"}</td>
+                <td className="px-3 py-2"><span className={`rounded-md px-2 py-0.5 ${ETIQUETA_ESTADO[f.estadoStock].clase}`}>{ETIQUETA_ESTADO[f.estadoStock].texto}</span></td>
+                <td className="px-3 py-2 text-gray-800">{f.accion || "—"}</td>
+                <td className="px-3 py-2 text-right text-gray-600">{f.capital !== null && (f.estadoStock === "sobrestock" || f.estadoStock === "muerto") ? clp(f.capital) : "—"}</td>
+              </tr>
+            ))}
+            {filas.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">Ninguna publicación coincide con los filtros.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-gray-400">* velocidad corregida por días sin stock · ? pocos días con stock (&lt; 7): poco confiable</p>
+      {filas.length > visibles && (
+        <button onClick={() => setVisibles((v) => v + 40)} className="w-full text-sm text-gray-700 hover:text-black underline">
+          Mostrando {visibles} de {filas.length} — mostrar más
+        </button>
+      )}
     </div>
   );
 }
@@ -132,6 +319,9 @@ export default function Tablero() {
           </div>
         )}
       </div>
+
+      {datos?.stock && <SeccionAlerta alerta={datos.stock.alerta} total={datos.stock.resumen.perdido.total} />}
+      {datos?.stock && <SeccionStock stock={datos.stock} />}
     </div>
   );
 }

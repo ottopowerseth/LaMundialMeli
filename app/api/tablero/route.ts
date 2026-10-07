@@ -4,7 +4,9 @@ import { readSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { parsearTarifasEnvio } from "@/lib/envio-medido";
-import { cargarVentas, ventanaPorDias } from "@/lib/tablero-datos";
+import { cargarItemsStock, cargarVentas, cargarVisitas, ventanaPorDias } from "@/lib/tablero-datos";
+import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
+import type { ItemStock } from "@/lib/tablero-stock";
 import { calcularConfianza, resumirVentas, variacion } from "@/lib/tablero-resumen";
 
 // Tablero "desde arriba": un solo endpoint, calculado en vivo y sin hojas
@@ -43,14 +45,15 @@ export async function GET(req: NextRequest) {
     // atrás) hasta el fin de la ventana.
     const historiaDesde = Math.min(anterior.desdeMs, hastaMs - HISTORIA_DIAS * DIA_MS);
 
-    const [ventas, filasPub, filasTarifa, filasOrigen] = await Promise.all([
-      (async () => {
-        const { data: user } = await mlGet<{ id: number }>("/users/me");
-        return cargarVentas(mlGet, user.id, historiaDesde, hastaMs);
-      })(),
-      readSheet("Publicaciones!A2:S3000"),
+    // Fase 1 (en paralelo): ventas, hojas y estado vigente de las publicaciones.
+    const filasPub = await readSheet("Publicaciones!A2:S3000");
+    const idsPublicaciones = filasPub.filter((r) => r[0] && ["active", "paused"].includes(r[10])).map((r) => String(r[0]));
+    const yoP = mlGet<{ id: number }>("/users/me").then((r) => r.data);
+    const [ventas, filasTarifa, filasOrigen, itemsMl] = await Promise.all([
+      yoP.then((user) => cargarVentas(mlGet, user.id, historiaDesde, hastaMs)),
       readSheet("TarifaEnvio!A2:L5000").catch(() => [] as string[][]),
       readSheet("CostoOrigen!A2:J5000").catch(() => [] as string[][]),
+      cargarItemsStock(mlGet, idsPublicaciones),
     ]);
 
     const costoPorItem = new Map<string, number | null>();
@@ -70,6 +73,21 @@ export async function GET(req: NextRequest) {
       costoPorItem, origenPorItem, tarifas,
     });
 
+    // ---- Stock y alerta de pausadas (ver lib/tablero-stock.ts) ----
+    const ahoraMs = ahora.getTime();
+    const itemsStock: ItemStock[] = [...itemsMl.values()].map((it) => ({
+      id: it.id, titulo: it.titulo, estado: it.estado, subEstado: it.subEstado, stock: it.stock,
+      full: it.full, costo: costoPorItem.get(it.id) ?? null, precio: it.precio,
+    }));
+    // Fase 2: visitas diarias (60 días: la ventana de 30 d y los 30 previos, para
+    // la tasa de venta antes de una pausa) de las publicaciones relevantes.
+    const candidatas = candidatosVisitas(itemsStock, ventas.lineas, desdeMs, hastaMs);
+    const visitas = await cargarVisitas(mlGet, candidatas, 60);
+    const stock = analizarStock({
+      items: itemsStock, lineas: ventas.lineas.filter((l) => l.ms < hastaMs),
+      desdeMs, hastaMs, ahoraMs: Math.min(ahoraMs, hastaMs), visitas,
+    });
+
     return NextResponse.json({
       ok: true,
       generadoEn: new Date().toISOString(),
@@ -84,6 +102,16 @@ export async function GET(req: NextRequest) {
         },
       },
       confianza,
+      stock: {
+        resumen: stock.resumen,
+        alerta: stock.alerta.map((a) => ({ ...a, tasaDiaria: Math.round(a.tasaDiaria), diasSinVender: Math.round(a.diasSinVender * 10) / 10, ingresoPerdido: Math.round(a.ingresoPerdido), ingreso30: Math.round(a.ingreso30) })),
+        filas: stock.filas.map((f) => ({
+          ...f, velocidad: Math.round(f.velocidad * 100) / 100, velocidadIngenua: Math.round(f.velocidadIngenua * 100) / 100,
+          cobertura: f.cobertura === null ? null : Math.round(f.cobertura), coberturaIngenua: f.coberturaIngenua === null ? null : Math.round(f.coberturaIngenua),
+          ingreso30: Math.round(f.ingreso30), ingreso90: Math.round(f.ingreso90),
+        })),
+        llamadas: { visitas: candidatas.length },
+      },
     });
   } catch (error) {
     console.error("[tablero]", error);
