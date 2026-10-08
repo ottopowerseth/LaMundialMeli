@@ -1,6 +1,8 @@
 // Revisión de faltantes por publicación: descripción e ISP (registro sanitario
 // del Instituto de Salud Pública). Solo lectura (no escribe en ML ni en Sheets).
-// Vive en una librería para poder reutilizarla desde otros endpoints.
+// Vive en una librería para que la compartan /api/revision-publicaciones y
+// /api/completitud (que además pide fotos, GTIN, categoría y tipo logístico:
+// ver `extras`).
 
 // Una descripción con menos caracteres (sin espacios en los extremos) se
 // considera faltante. Medido contra las 616 publicaciones reales (2026-10-05):
@@ -57,6 +59,15 @@ export type FilaRevision = {
   error?: string;
 };
 
+// Campos adicionales (solo con extras: true): los usa /api/completitud.
+export type ExtrasRevision = {
+  categoriaId: string | null;
+  fotos: number;
+  gtin: { estado: "con_valor" | "ausente"; valor: string | null };
+  full: boolean;
+};
+export type FilaRevisionExtendida = FilaRevision & Partial<ExtrasRevision>;
+
 type MlAttr = { id: string; value_id?: string | null; value_name?: string | null };
 type MlItem = {
   id: string;
@@ -64,6 +75,8 @@ type MlItem = {
   status?: string;
   category_id?: string;
   catalog_listing?: boolean;
+  pictures?: unknown[];
+  shipping?: { logistic_type?: string };
   permalink?: string;
   seller_custom_field?: string | null;
   attributes?: MlAttr[];
@@ -133,8 +146,9 @@ export async function listarIdsPublicaciones(mlGet: MlGet): Promise<{ ids: strin
 
 export async function revisarPublicaciones(
   mlGet: MlGet,
-  ids: string[]
-): Promise<{ filas: FilaRevision[]; pendientes: string[]; tiempoMs: number }> {
+  ids: string[],
+  opciones: { extras?: boolean } = {}
+): Promise<{ filas: FilaRevisionExtendida[]; pendientes: string[]; tiempoMs: number }> {
   const inicio = Date.now();
   const agotado = () => Date.now() - inicio > TIEMPO_MAXIMO_MS;
 
@@ -144,7 +158,9 @@ export async function revisarPublicaciones(
   for (let i = 0; i < ids.length; i += MULTIGET_SIZE) chunks.push(ids.slice(i, i + MULTIGET_SIZE));
   const detalle = new Map<string, MlItem>();
   const errorPorId = new Map<string, string>();
-  const attrsPedidos = "id,title,status,category_id,catalog_listing,permalink,seller_custom_field,attributes";
+  const attrsPedidos =
+    "id,title,status,category_id,catalog_listing,permalink,seller_custom_field,attributes" +
+    (opciones.extras ? ",pictures,shipping" : "");
   await mapConLimite(chunks, 4, async (chunk) => {
     try {
       const { data } = await mlGet<{ code: number; body: MlItem }[]>(
@@ -183,7 +199,7 @@ export async function revisarPublicaciones(
 
   // 3) Descripciones, con corte por tiempo.
   const pendientes: string[] = [];
-  const filas = await mapConLimite(ids, CONCURRENCIA, async (id): Promise<FilaRevision | null> => {
+  const filas = await mapConLimite(ids, CONCURRENCIA, async (id): Promise<FilaRevisionExtendida | null> => {
     const it = detalle.get(id);
     if (!it) {
       return {
@@ -226,7 +242,7 @@ export async function revisarPublicaciones(
     else if (soporta === false) isp = { estado: "no_aplica", valor: null };
     else isp = { estado: "error", valor: null, error: "No se pudo consultar la categoría" };
 
-    return {
+    const fila: FilaRevisionExtendida = {
       id,
       titulo: it.title ?? "",
       sku,
@@ -236,7 +252,16 @@ export async function revisarPublicaciones(
       descripcion,
       isp,
     };
+    if (opciones.extras) {
+      const gtinAttr = (it.attributes ?? []).find((a) => a.id === "GTIN");
+      const gtinValor = typeof gtinAttr?.value_name === "string" ? gtinAttr.value_name.trim() : "";
+      fila.categoriaId = it.category_id ?? null;
+      fila.fotos = it.pictures?.length ?? 0;
+      fila.gtin = gtinValor ? { estado: "con_valor", valor: gtinValor } : { estado: "ausente", valor: null };
+      fila.full = it.shipping?.logistic_type === "fulfillment";
+    }
+    return fila;
   });
 
-  return { filas: filas.filter((f): f is FilaRevision => f !== null), pendientes, tiempoMs: Date.now() - inicio };
+  return { filas: filas.filter((f): f is FilaRevisionExtendida => f !== null), pendientes, tiempoMs: Date.now() - inicio };
 }
