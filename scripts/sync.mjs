@@ -1,3 +1,12 @@
+// ⚠ NO USAR — SCRIPT ANTIGUO. Para sincronizar, usar el endpoint /api/ml-sync (botón
+// "Actualizar ahora" de la pantalla de Sync).
+// Este script reescribe Publicaciones con el diseño de columnas VIEJO (Costo en K, Envío
+// en N) y deja Costo y Envío en blanco: pisa el diseño actual de la hoja (Costo en F,
+// Envío en I, Unidades en S) y BORRA los Costos y Envíos manuales y los Costos
+// automáticos. /api/ml-sync los conserva; este script no.
+// No lo invoca package.json, ni la documentación, ni otro script. Se deja solo como
+// referencia histórica.
+
 import axios from "axios";
 import { google } from "googleapis";
 import { readFileSync } from "fs";
