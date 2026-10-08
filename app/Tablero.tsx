@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Completitud from "./Completitud";
+import Publicidad from "./Publicidad";
 
 // Tablero "desde arriba". Un solo endpoint (/api/tablero) calculado en vivo.
 // El resultado se guarda en una variable de módulo para que al cambiar de
@@ -546,6 +547,8 @@ export default function Tablero() {
       {datos?.stock && <SeccionStock stock={datos.stock} />}
       {/* A pedido: no se calcula al abrir el Tablero (~40 s, ~730 llamadas a ML). */}
       <Completitud />
+      {/* A pedido (~10 s): ACoS, equilibrio y TACoS de Product Ads. */}
+      <Publicidad />
     </div>
   );
 }
