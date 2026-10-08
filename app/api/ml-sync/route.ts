@@ -172,7 +172,16 @@ export async function POST() {
           stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
           datosManual[r[0]] = { costo: r[5] ?? "", envio: r[8] ?? "", unidades: r[18] ?? "" };
         }
-      } catch { /* primera vez */ }
+      } catch (err) {
+        // La hoja ya existe (ensureSheets arriba) y una hoja vacía se lee como [],
+        // así que un error acá es una falla real de lectura, NO "primera vez".
+        // Seguir con datosManual vacío borraría Costo, Envío y Unidades manuales
+        // al limpiar la hoja: se aborta ANTES de tocar nada.
+        throw new Error(
+          `No se pudo leer la hoja Publicaciones anterior (${err instanceof Error ? err.message : String(err)}). ` +
+          "Se aborta el sync de Publicaciones sin borrar ni escribir nada, para no perder Costo/Envío/Unidades manuales. Reintenta."
+        );
+      }
 
       const rows = items.map((item, i) => {
         const row = i + 2;
