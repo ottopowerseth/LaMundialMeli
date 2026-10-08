@@ -337,6 +337,23 @@ Rentabilidad, la cobertura de "envío real" en el top 50 pasó de 16/50
 
 ## Pendiente / sin decidir
 
+### Tablero — decisiones y pendientes (2026-10-08)
+
+Pestaña "Tablero" (primera): resumen de ventas, confianza de datos, margen, stock + alerta de pausadas por falta de stock, Pareto y series. Costo (519 automáticos, origen en la hoja CostoOrigen) ya escrito el 2026-10-08; la cobertura de Costo no cuenta publicaciones cerradas o inactivas sin Costo.
+
+**Decisiones de Otto (2026-10-08)**
+- Gillette Prestobarba MLC4366166348: **cerrado, costo correcto**. Es el display x28 (SKU PRO180207, GTIN 7500435180207, UNITS_PER_PACK 28); Unidades = 1 es correcto. Margen real −0,6%.
+- Katteyes (18 publicaciones, Costo calculado ≈ precio de venta): **se quedan en "revisar"**, no se escribe su Costo.
+- Orden de implementación: **J (completitud) → G (TACoS y ACoS de equilibrio) → F (price_to_win) → H (operación)**. I (calidad de ML) y M (campañas nuevas) quedan fuera por ahora.
+- F y G: solo lectura, equilibrio y precio para ganar lado a lado, **sin sugerir acciones**, con la nota "base de IVA y costo Katteyes pendientes".
+- Siguen en espera: Aer COS022114, margen en pesos, Envío (I) desde TarifaEnvio, "Mayor en revisión".
+
+**Para el equipo de publicaciones (sin escribir en ML)**
+- **Schick Quattro Titanium, MLC4485749662:** el atributo de unidades de la publicación está inconsistente con el título. El título dice "10 Unidades" pero `UNITS_PER_PACK` = 1 y `SALE_FORMAT` = Unidad; el artículo de Defontana es un cartón de 10 (SCHICK QUATTRO4 CARTON 10 UN TITANIUM) y el Costo ($7.990) parece corresponder al cartón: la hermana MLC4485749640 (Quattro For Women, "Pack X10", `UNITS_PER_PACK` = 10) tiene el mismo precio ($9.990) y el mismo Costo. Es una inferencia, no una confirmación: el equipo de publicaciones debe confirmar que se vende el cartón de 10 y corregir el atributo en ML a mano (no corregido).
+- Otros dos nombres para confirmar que son el mismo producto: Paris Hilton Heiress MLC4447122436 (título "Colonia", Defontana "B MIST", es decir body mist) y S By Shakira MLC4447128692 (Defontana "SHAKIRA 50 CLASICA").
+
+**Riesgo a vigilar:** `/api/tablero` llegó a 34 s en 4 llamadas seguidas (ML frena las ráfagas de visitas; ~15 s en frío). Si en producción pasa de ~45 s, partirlo por dominios. Límite de Vercel: 60 s.
+
 ### Bug latente — `variantesCodigoAer` no genera la variante del cero (diagnosticado 2026-10-07, SIN corregir)
 
 `variantesCodigoAer` en `lib/defontana.ts` existe para cruzar los códigos Aer:
