@@ -33,6 +33,7 @@ export type FilaMargen = {
   estado: EstadoMargen;
   menosFiable: boolean; // envío estimado (más aún si es Full)
   pierde: boolean;
+  fueraDeAlcance: boolean; // cerrada/inactiva sin Costo: no entra a los totales ni a "sin Costo"
 };
 export type SubtotalMargen = {
   ingreso: number; // ingreso de las filas con margen
@@ -54,6 +55,7 @@ export type EntradaMargen = {
   fullPorItem: Map<string, boolean>;
   skuPorItem: Map<string, string>;
   ctxEnvio: ContextoEnvio;
+  fueraDeAlcance?: Set<string>; // closed/inactive: sin Costo no cuentan como faltante ni en la cobertura
 };
 
 const redondear1 = (x: number) => Math.round(x * 10) / 10;
@@ -93,6 +95,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
       costo, comisionPct: comisionPct !== null ? Math.round(comisionPct * 1000) / 1000 : null,
       envioUnidad: envio.envio, envioFuente: envio.fuente, margenPct, estado,
       menosFiable: envio.fuente === "estimado", pierde: margenPct !== null && margenPct < 0,
+      fueraDeAlcance: estado === "sin_costo" && (e.fueraDeAlcance?.has(id) ?? false),
     });
   }
   filas.sort((x, y) => y.ingreso - x.ingreso);
@@ -103,10 +106,11 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
     const ing = sel.reduce((s, x) => s + (interno.get(x.id)?.ingresoNeto ?? 0), 0);
     return { ingreso: Math.round(sel.reduce((s, x) => s + x.ingreso, 0)), margenPct: ing > 0 ? redondear1((mn / ing) * 100) : null, publicaciones: sel.length };
   };
-  const ingresoVentana = filas.reduce((s, x) => s + x.ingreso, 0);
+  const enAlcance = filas.filter((x) => !x.fueraDeAlcance);
+  const ingresoVentana = enAlcance.reduce((s, x) => s + x.ingreso, 0);
   const conMargen = sub(() => true);
   const pct = (x: number, base: number) => (base > 0 ? Math.round((x / base) * 1000) / 10 : 0);
-  const sinCosto = filas.filter((x) => x.estado === "sin_costo");
+  const sinCosto = enAlcance.filter((x) => x.estado === "sin_costo");
   const pierden = filas.filter((x) => x.pierde);
   return {
     filas,

@@ -15,6 +15,7 @@ type Confianza = {
   envioMedido: { pct: number; estimado: number; sinDato: number };
   comisionReal: { pct: number };
   publicacionesConVenta: number;
+  excluidas: { publicaciones: number; ingreso: number };
 };
 type EstadoStock = "sin_stock" | "reponer" | "sobrestock" | "muerto" | "ok";
 type FilaStock = {
@@ -40,7 +41,7 @@ type StockApi = {
 type FilaMargen = {
   id: string; titulo: string; full: boolean; unidades: number; ingreso: number; precioProm: number;
   costo: number | null; comisionPct: number | null; envioUnidad: number | null; envioFuente: "medido" | "estimado" | null;
-  margenPct: number | null; estado: "ok" | "sin_costo" | "sin_envio" | "sin_comision"; menosFiable: boolean; pierde: boolean;
+  margenPct: number | null; estado: "ok" | "sin_costo" | "sin_envio" | "sin_comision"; menosFiable: boolean; pierde: boolean; fueraDeAlcance: boolean;
 };
 type SubtotalMargen = { ingreso: number; margenPct: number | null; publicaciones: number };
 type MargenApi = {
@@ -249,7 +250,7 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
       .filter((f) => fEstado === "todos"
         || (fEstado === "pierde" && f.pierde)
         || (fEstado === "bajo" && f.margenPct !== null && f.margenPct >= 0 && f.margenPct < 10)
-        || (fEstado === "sin_costo" && f.estado === "sin_costo")
+        || (fEstado === "sin_costo" && f.estado === "sin_costo" && !f.fueraDeAlcance)
         || (fEstado === "menos_fiable" && f.margenPct !== null && f.menosFiable))
       .filter((f) => !q || `${f.id} ${f.titulo}`.toLowerCase().includes(q));
   }, [margen.filas, fTipo, fEstado, busqueda]);
@@ -285,7 +286,7 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
           <p className="text-xs text-gray-400">{r.porTipo.full.publicaciones} Full · {r.porTipo.estandar.publicaciones} estándar con margen</p>
         </div>
         <div className="bg-red-50 rounded-xl p-3"><p className="text-xs text-gray-500">Pierden plata</p><p className="text-xl font-bold text-red-800">{r.pierden.publicaciones}</p><p className="text-xs text-gray-400">{r.pierden.pctIngreso}% del ingreso · margen bajo (&lt;10%): {r.margenBajo.publicaciones}</p></div>
-        <div className="bg-amber-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sin Costo</p><p className="text-xl font-bold text-amber-800">{r.sinCosto.publicaciones}</p><p className="text-xs text-gray-400">{r.sinCosto.pctIngreso}% del ingreso de la ventana</p></div>
+        <div className="bg-amber-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sin Costo</p><p className="text-xl font-bold text-amber-800">{r.sinCosto.publicaciones}</p><p className="text-xs text-gray-400">{r.sinCosto.pctIngreso}% del ingreso de la ventana · sin contar cerradas/inactivas</p></div>
       </div>
       {r.menosFiable.pctIngreso > 0 && (
         <p className="text-xs text-amber-700">
@@ -323,13 +324,13 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
                 <td className="px-3 py-2 text-right">{f.unidades}</td>
                 <td className="px-3 py-2 text-right">{clp(f.ingreso)}</td>
                 <td className="px-3 py-2 text-right">{clp(f.precioProm)}</td>
-                <td className="px-3 py-2 text-right">{f.costo !== null ? clp(f.costo) : <span className="text-amber-600">sin Costo</span>}</td>
+                <td className="px-3 py-2 text-right">{f.costo !== null ? clp(f.costo) : f.fueraDeAlcance ? <span className="text-gray-400" title="Cerrada o inactiva: no cuenta como falta de Costo">cerrada/inactiva</span> : <span className="text-amber-600">sin Costo</span>}</td>
                 <td className="px-3 py-2 text-right">{f.comisionPct !== null ? `${(f.comisionPct * 100).toFixed(1).replace(".", ",")}%` : "—"}</td>
                 <td className="px-3 py-2 text-right" title={f.envioFuente === "estimado" ? (f.full ? "Envío ESTIMADO en Full: la estimación más imprecisa (error mediano ~49%)." : "Envío estimado: menos fiable que el medido.") : "Envío medido"}>
                   {f.envioUnidad !== null ? clp(f.envioUnidad) : "—"}
                   {f.menosFiable && <span className={`ml-1 ${f.full ? "text-red-500" : "text-amber-600"}`}>{f.full ? "⚠ est." : "est."}</span>}
                 </td>
-                <td className={`px-3 py-2 text-right font-semibold ${f.pierde ? "text-red-700" : "text-gray-900"}`}>{f.margenPct !== null ? pctTxt(f.margenPct) : <span className="text-gray-400 font-normal">{f.estado === "sin_costo" ? "sin Costo" : "sin dato"}</span>}</td>
+                <td className={`px-3 py-2 text-right font-semibold ${f.pierde ? "text-red-700" : "text-gray-900"}`}>{f.margenPct !== null ? pctTxt(f.margenPct) : <span className="text-gray-400 font-normal">{f.fueraDeAlcance ? "—" : f.estado === "sin_costo" ? "sin Costo" : "sin dato"}</span>}</td>
               </tr>
             ))}
             {filas.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">Ninguna publicación coincide con los filtros.</td></tr>}
@@ -516,7 +517,7 @@ export default function Tablero() {
             <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Confianza de los datos (% del ingreso de la ventana)</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               <Chip etiqueta="Con Costo" pct={c.costo.pct}
-                detalle={`Con Costo ${c.costo.pct}% (automático ${c.costo.auto}%, manual ${c.costo.manual}%). En revisión (sin escribir): ${c.costo.enRevision}%. Sin Costo ni propuesta: ${(c.costo.sinCosto - c.costo.enRevision).toFixed(1)}%.`} />
+                detalle={`Con Costo ${c.costo.pct}% (automático ${c.costo.auto}%, manual ${c.costo.manual}%). En revisión (sin escribir): ${c.costo.enRevision}%. Sin Costo ni propuesta: ${(c.costo.sinCosto - c.costo.enRevision).toFixed(1)}%.${c.excluidas.publicaciones > 0 ? ` No cuenta ${c.excluidas.publicaciones} publicaciones cerradas o inactivas sin Costo (${clp(c.excluidas.ingreso)}).` : ""}`} />
               <Chip etiqueta="Envío medido" pct={c.envioMedido.pct}
                 detalle={`Tarifa medida en /shipments/costs: ${c.envioMedido.pct}%. Estimado (respaldo): ${c.envioMedido.estimado}%. Sin fila en la caché: ${c.envioMedido.sinDato}%.`} />
               <Chip etiqueta="Comisión real" pct={c.comisionReal.pct}

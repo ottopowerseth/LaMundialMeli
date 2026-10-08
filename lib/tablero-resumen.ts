@@ -31,6 +31,9 @@ export type Confianza = {
   envioMedido: { pct: number; estimado: number; sinDato: number };
   comisionReal: { pct: number };
   publicacionesConVenta: number;
+  // Cerradas o inactivas SIN Costo: no se pueden completar ni vender, así que
+  // no cuentan en la cobertura (ni en el total ni en lo que falta).
+  excluidas: { publicaciones: number; ingreso: number };
 };
 
 export type EntradaConfianza = {
@@ -38,6 +41,7 @@ export type EntradaConfianza = {
   costoPorItem: Map<string, number | null>; // Publicaciones!F (null = vacío)
   origenPorItem: Map<string, string>; // CostoOrigen: auto | manual | revisar
   tarifas: Map<string, TarifaEnvioFila>;
+  fueraDeAlcance?: Set<string>; // publicaciones closed/inactive (ver route del Tablero)
 };
 
 // Cobertura ponderada por ingreso: un dato faltante en un SKU que casi no
@@ -53,7 +57,10 @@ export function calcularConfianza(e: EntradaConfianza): Confianza {
     ingresoPorItem.set(l.item, a);
   }
   let total = 0, conCosto = 0, auto = 0, manual = 0, enRevision = 0, medido = 0, estimado = 0, sinEnvio = 0, comReal = 0;
+  let excluidas = 0, ingresoExcluido = 0;
   for (const [id, a] of ingresoPorItem) {
+    // Una cerrada/inactiva que ya tiene Costo sí cuenta: solo se excluye lo que no tiene arreglo.
+    if (e.fueraDeAlcance?.has(id) && !((e.costoPorItem.get(id) ?? 0) > 0)) { excluidas++; ingresoExcluido += a.ing; continue; }
     total += a.ing;
     comReal += a.conFee;
     const costo = e.costoPorItem.get(id) ?? null;
@@ -74,6 +81,7 @@ export function calcularConfianza(e: EntradaConfianza): Confianza {
     costo: { pct: pct(conCosto), conCosto: pct(conCosto), auto: pct(auto), manual: pct(manual), enRevision: pct(enRevision), sinCosto: pct(total - conCosto) },
     envioMedido: { pct: pct(medido), estimado: pct(estimado), sinDato: pct(sinEnvio) },
     comisionReal: { pct: pct(comReal) },
-    publicacionesConVenta: ingresoPorItem.size,
+    publicacionesConVenta: ingresoPorItem.size - excluidas,
+    excluidas: { publicaciones: excluidas, ingreso: Math.round(ingresoExcluido) },
   };
 }

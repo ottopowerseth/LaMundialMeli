@@ -68,11 +68,24 @@ export async function GET(req: NextRequest) {
     for (const r of filasOrigen) if (r[0]) origenPorItem.set(String(r[0]), r[2] ?? "");
     const tarifas = parsearTarifasEnvio(filasTarifa);
 
+    // Publicaciones que vendieron en la ventana y no están entre las activas o
+    // pausadas de la hoja (cerradas, inactivas o ya fuera de la hoja): se
+    // consulta su estado real (1-2 llamadas) para no contarlas como "falta
+    // Costo" cuando ya no se pueden completar ni vender.
+    const vendidasEnVentana = new Set(ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs).map((l) => l.item));
+    const sinEstado = [...vendidasEnVentana].filter((id) => !itemsMl.has(id));
+    const fueraDeAlcance = new Set<string>();
+    for (const it of (await cargarItemsStock(mlGet, sinEstado)).values()) {
+      if (it.estado === "closed" || it.estado === "inactive") fueraDeAlcance.add(it.id);
+    }
+    // Las de la hoja que no son activas/pausadas (p. ej. inactive) y ya traen su estado en la hoja.
+    for (const r of filasPub) if (r[0] && ["closed", "inactive"].includes(r[10])) fueraDeAlcance.add(String(r[0]));
+
     const actual = resumirVentas(ventas.ordenes, ventas.lineas, desdeMs, hastaMs);
     const previo = resumirVentas(ventas.ordenes, ventas.lineas, anterior.desdeMs, anterior.hastaMs);
     const confianza = calcularConfianza({
       lineas: ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs),
-      costoPorItem, origenPorItem, tarifas,
+      costoPorItem, origenPorItem, tarifas, fueraDeAlcance,
     });
 
     // ---- Margen de contribución (ver lib/tablero-margen.ts) ----
@@ -90,7 +103,7 @@ export async function GET(req: NextRequest) {
     const ctxEnvio = armarContextoEnvio(tarifas, precioPorItem, skuPorItem, logisticoPorItem);
     const margen = analizarMargen({
       lineas: ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs),
-      costoPorItem, fullPorItem, skuPorItem, ctxEnvio,
+      costoPorItem, fullPorItem, skuPorItem, ctxEnvio, fueraDeAlcance,
     });
 
     // ---- Pareto y series (ver lib/tablero-series.ts) ----
