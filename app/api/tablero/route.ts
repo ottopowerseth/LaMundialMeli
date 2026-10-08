@@ -3,8 +3,8 @@ import axios from "axios";
 import { readSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
-import { armarContextoEnvio, parsearTarifasEnvio } from "@/lib/envio-medido";
-import { analizarMargen } from "@/lib/tablero-margen";
+import { parsearTarifasEnvio } from "@/lib/envio-medido";
+import { costoPorItemDesdeHoja, margenDesdeDatos } from "@/lib/tablero-margen-datos";
 import { calcularPareto, calcularSerie } from "@/lib/tablero-series";
 import { cargarItemsStock, cargarVentas, cargarVisitas, ventanaPorDias } from "@/lib/tablero-datos";
 import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
@@ -58,12 +58,7 @@ export async function GET(req: NextRequest) {
       cargarItemsStock(mlGet, idsPublicaciones),
     ]);
 
-    const costoPorItem = new Map<string, number | null>();
-    for (const r of filasPub) {
-      if (!r[0]) continue;
-      const c = Number(String(r[5] ?? "").trim());
-      costoPorItem.set(String(r[0]), String(r[5] ?? "").trim() !== "" && Number.isFinite(c) && c > 0 ? c : null);
-    }
+    const costoPorItem = costoPorItemDesdeHoja(filasPub);
     const origenPorItem = new Map<string, string>();
     for (const r of filasOrigen) if (r[0]) origenPorItem.set(String(r[0]), r[2] ?? "");
     const tarifas = parsearTarifasEnvio(filasTarifa);
@@ -89,21 +84,11 @@ export async function GET(req: NextRequest) {
     });
 
     // ---- Margen de contribución (ver lib/tablero-margen.ts) ----
-    const precioPorItem = new Map<string, number>();
-    for (const r of filasPub) {
-      const p = Number(String(r[6] ?? "").trim());
-      if (r[0] && Number.isFinite(p) && p > 0) precioPorItem.set(String(r[0]), p);
-    }
     const fullPorItem = new Map<string, boolean>();
     for (const it of itemsMl.values()) fullPorItem.set(it.id, it.full);
-    const logisticoPorItem = new Map<string, string>();
-    for (const [id, esFull] of fullPorItem) logisticoPorItem.set(id, esFull ? "fulfillment" : "otro");
-    const skuPorItem = new Map<string, string>();
-    for (const [id, t] of tarifas) if (t.sku) skuPorItem.set(id, t.sku);
-    const ctxEnvio = armarContextoEnvio(tarifas, precioPorItem, skuPorItem, logisticoPorItem);
-    const margen = analizarMargen({
+    const margen = margenDesdeDatos({
+      filasPub, fullPorItem, tarifas, costoPorItem, fueraDeAlcance,
       lineas: ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs),
-      costoPorItem, fullPorItem, skuPorItem, ctxEnvio, fueraDeAlcance,
     });
 
     // ---- Pareto y series (ver lib/tablero-series.ts) ----
