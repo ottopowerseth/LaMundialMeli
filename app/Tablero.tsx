@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Completitud from "./Completitud";
 
 // Tablero "desde arriba". Un solo endpoint (/api/tablero) calculado en vivo.
 // El resultado se guarda en una variable de módulo para que al cambiar de
@@ -543,6 +544,8 @@ export default function Tablero() {
       {datos?.margen && <SeccionMargen margen={datos.margen} />}
       {datos?.stock && <SeccionAlerta alerta={datos.stock.alerta} total={datos.stock.resumen.perdido.total} />}
       {datos?.stock && <SeccionStock stock={datos.stock} />}
+      {/* A pedido: no se calcula al abrir el Tablero (~40 s, ~730 llamadas a ML). */}
+      <Completitud />
     </div>
   );
 }
