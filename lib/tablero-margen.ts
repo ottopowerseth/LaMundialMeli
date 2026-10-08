@@ -1,5 +1,10 @@
-// Margen de contribución del Tablero, por publicación y total, EN PORCENTAJE.
-// (El margen en pesos queda fuera hasta confirmar la base de IVA del Mayor.)
+// Margen de contribución del Tablero, por publicación y total, en porcentaje y en pesos.
+// Base de IVA del Mayor: SUPUESTO, pendiente de confirmar con una factura de compra real.
+// Se asume que el Mayor de la Lista Defontana TRAE IVA (es bruto), así que el Costo se
+// trata como bruto y se lleva a neto con el resto. Si el Mayor fuera neto, el margen (en %
+// y en pesos) estaría sobreestimado. Margen en pesos = margen NETO (sin IVA, antes de
+// publicidad) de las unidades vendidas en la ventana; siempre es una ESTIMACIÓN (comisión
+// real, pero envío medido o estimado, y Mayor ≠ costo de reposición).
 //
 // Misma fórmula e insumos que la tabla por producto de Métricas, para que los
 // números cuadren:
@@ -30,6 +35,7 @@ export type FilaMargen = {
   costo: number | null; comisionPct: number | null;
   envioUnidad: number | null; envioFuente: "medido" | "estimado" | null;
   margenPct: number | null;
+  margenPesos: number | null; // margen neto estimado de las unidades vendidas en la ventana (CLP, sin IVA, antes de publicidad)
   estado: EstadoMargen;
   menosFiable: boolean; // envío estimado (más aún si es Full)
   pierde: boolean;
@@ -38,6 +44,7 @@ export type FilaMargen = {
 export type SubtotalMargen = {
   ingreso: number; // ingreso de las filas con margen
   margenPct: number | null;
+  margenPesos: number; // suma del margen neto estimado de esas filas (CLP, sin IVA, antes de publicidad)
   publicaciones: number;
 };
 export type ResumenMargen = {
@@ -70,7 +77,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
     acc.set(l.item, a);
   }
 
-  // margenNeto total (pesos, solo interno para ponderar: NO sale en la API).
+  // margenNeto total en pesos (neto, de todas las unidades de la ventana): pondera el % y sale como margenPesos.
   const interno = new Map<string, { margenNeto: number; ingresoNeto: number }>();
   const filas: FilaMargen[] = [];
   for (const [id, a] of acc) {
@@ -93,7 +100,8 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
     filas.push({
       id, titulo: a.titulo, full, unidades: a.u, ingreso: a.ing, precioProm: Math.round(precioProm),
       costo, comisionPct: comisionPct !== null ? Math.round(comisionPct * 1000) / 1000 : null,
-      envioUnidad: envio.envio, envioFuente: envio.fuente, margenPct, estado,
+      envioUnidad: envio.envio, envioFuente: envio.fuente, margenPct,
+      margenPesos: interno.has(id) ? Math.round(interno.get(id)!.margenNeto) : null, estado,
       menosFiable: envio.fuente === "estimado", pierde: margenPct !== null && margenPct < 0,
       fueraDeAlcance: estado === "sin_costo" && (e.fueraDeAlcance?.has(id) ?? false),
     });
@@ -104,7 +112,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
     const sel = filas.filter((x) => x.margenPct !== null && f(x));
     const mn = sel.reduce((s, x) => s + (interno.get(x.id)?.margenNeto ?? 0), 0);
     const ing = sel.reduce((s, x) => s + (interno.get(x.id)?.ingresoNeto ?? 0), 0);
-    return { ingreso: Math.round(sel.reduce((s, x) => s + x.ingreso, 0)), margenPct: ing > 0 ? redondear1((mn / ing) * 100) : null, publicaciones: sel.length };
+    return { ingreso: Math.round(sel.reduce((s, x) => s + x.ingreso, 0)), margenPct: ing > 0 ? redondear1((mn / ing) * 100) : null, margenPesos: Math.round(mn), publicaciones: sel.length };
   };
   const enAlcance = filas.filter((x) => !x.fueraDeAlcance);
   const ingresoVentana = enAlcance.reduce((s, x) => s + x.ingreso, 0);

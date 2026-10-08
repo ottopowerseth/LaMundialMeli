@@ -45,9 +45,9 @@ type StockApi = {
 type FilaMargen = {
   id: string; titulo: string; full: boolean; unidades: number; ingreso: number; precioProm: number;
   costo: number | null; comisionPct: number | null; envioUnidad: number | null; envioFuente: "medido" | "estimado" | null;
-  margenPct: number | null; estado: "ok" | "sin_costo" | "sin_envio" | "sin_comision"; menosFiable: boolean; pierde: boolean; fueraDeAlcance: boolean;
+  margenPct: number | null; margenPesos: number | null; estado: "ok" | "sin_costo" | "sin_envio" | "sin_comision"; menosFiable: boolean; pierde: boolean; fueraDeAlcance: boolean;
 };
-type SubtotalMargen = { ingreso: number; margenPct: number | null; publicaciones: number };
+type SubtotalMargen = { ingreso: number; margenPct: number | null; margenPesos: number; publicaciones: number };
 type MargenApi = {
   resumen: {
     total: SubtotalMargen & { coberturaPct: number; ingresoVentana: number };
@@ -83,6 +83,8 @@ const VIGENCIA_MS = 10 * 60 * 1000;
 
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 const num = (n: number) => Math.round(n).toLocaleString("es-CL");
+// Con signo delante del $ ("-$1.234", no "$-1.234") para los márgenes en pesos, que pueden ser negativos.
+const clpSigno = (n: number) => (n < 0 ? "-" : "") + "$" + Math.round(Math.abs(n)).toLocaleString("es-CL");
 
 function Chip({ etiqueta, pct, detalle }: { etiqueta: string; pct: number; detalle: string }) {
   const color = pct >= 90 ? "bg-green-50 border-green-200 text-green-800" : pct >= 60 ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-red-50 border-red-200 text-red-800";
@@ -238,7 +240,7 @@ function SeccionTendencias({ t }: { t: TendenciasApi }) {
 
 const COBERTURA_MIN_CIFRA = 90; // % del ingreso con datos completos para mostrar el margen como cifra principal
 
-function SeccionMargen({ margen }: { margen: MargenApi }) {
+function SeccionMargen({ margen, dias }: { margen: MargenApi; dias?: number }) {
   const [fTipo, setFTipo] = useState<"todos" | "full" | "estandar">("todos");
   const [fEstado, setFEstado] = useState<"todos" | "pierde" | "bajo" | "sin_costo" | "menos_fiable">("todos");
   const [busqueda, setBusqueda] = useState("");
@@ -246,6 +248,7 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
   const r = margen.resumen;
   const parcial = r.total.coberturaPct < COBERTURA_MIN_CIFRA;
   const pctTxt = (x: number | null) => (x === null ? "—" : `${x.toFixed(1).replace(".", ",")}%`);
+  const enDias = dias ? ` en ${dias} días` : " en la ventana";
 
   const filas = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -265,8 +268,10 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
       <div>
         <h3 className="font-bold text-gray-900">Margen de contribución (estimado)</h3>
         <p className="text-xs text-gray-400 mt-1">
-          En % del precio neto, antes de publicidad. Usa la comisión real cobrada por ML y el envío medido por publicación (el estimado se marca como menos fiable);
-          Precio, comisión, envío y Costo se llevan a neto (÷1,19). Sin Costo la publicación no tiene margen: no se asume 0.
+          En % del precio neto y en pesos netos (sin IVA), antes de publicidad. Usa la comisión real cobrada por ML y el envío medido por publicación (el estimado se marca como menos fiable);
+          Precio, comisión, envío y Costo se llevan a neto (÷1,19). Los pesos son una <b>estimación</b> de las unidades vendidas en la ventana, no una utilidad contable.{" "}
+          <b>Supone que el Mayor trae IVA (pendiente de confirmar con factura de compra).</b>{" "}
+          Sin Costo la publicación no tiene margen: no se asume 0.
         </p>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -275,11 +280,12 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
           {parcial ? (
             <>
               <p className="text-sm font-semibold text-amber-700 mt-1">Costo cargado en solo {r.total.coberturaPct}% del ingreso</p>
-              <p className="text-xs text-gray-400">Solo lo evaluable ({r.total.publicaciones} publicaciones): {pctTxt(r.total.margenPct)}. No es el margen del negocio.</p>
+              <p className="text-xs text-gray-400">Solo lo evaluable ({r.total.publicaciones} publicaciones): {pctTxt(r.total.margenPct)} · {clpSigno(r.total.margenPesos)} neto (est.){enDias}. No es el margen del negocio.</p>
             </>
           ) : (
             <>
               <p className="text-xl font-bold text-gray-900">{pctTxt(r.total.margenPct)}</p>
+              <p className="text-sm font-semibold text-gray-800" title="Supone que el Mayor trae IVA (pendiente de confirmar con factura de compra)">≈ {clpSigno(r.total.margenPesos)} neto (est.){enDias}</p>
               <p className="text-xs text-gray-400">sobre {r.total.coberturaPct}% del ingreso ({r.total.publicaciones} publicaciones)</p>
             </>
           )}
@@ -287,7 +293,7 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
         <div className="bg-gray-50 rounded-xl p-3">
           <p className="text-xs text-gray-500">Full / Estándar</p>
           <p className="text-sm font-semibold text-gray-800 mt-1">{pctTxt(r.porTipo.full.margenPct)} <span className="text-gray-400 font-normal">· {pctTxt(r.porTipo.estandar.margenPct)}</span></p>
-          <p className="text-xs text-gray-400">{r.porTipo.full.publicaciones} Full · {r.porTipo.estandar.publicaciones} estándar con margen</p>
+          <p className="text-xs text-gray-400">{clpSigno(r.porTipo.full.margenPesos)} · {clpSigno(r.porTipo.estandar.margenPesos)} neto (est.) · {r.porTipo.full.publicaciones} Full · {r.porTipo.estandar.publicaciones} estándar con margen</p>
         </div>
         <div className="bg-red-50 rounded-xl p-3"><p className="text-xs text-gray-500">Pierden plata</p><p className="text-xl font-bold text-red-800">{r.pierden.publicaciones}</p><p className="text-xs text-gray-400">{r.pierden.pctIngreso}% del ingreso · margen bajo (&lt;10%): {r.margenBajo.publicaciones}</p></div>
         <div className="bg-amber-50 rounded-xl p-3"><p className="text-xs text-gray-500">Sin Costo</p><p className="text-xl font-bold text-amber-800">{r.sinCosto.publicaciones}</p><p className="text-xs text-gray-400">{r.sinCosto.pctIngreso}% del ingreso de la ventana · sin contar cerradas/inactivas</p></div>
@@ -317,7 +323,7 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
               <th className="px-3 py-2 text-right">Unid.</th><th className="px-3 py-2 text-right">Ingreso</th>
               <th className="px-3 py-2 text-right">Precio prom.</th><th className="px-3 py-2 text-right">Costo</th>
               <th className="px-3 py-2 text-right">Comisión</th><th className="px-3 py-2 text-right">Envío/u</th>
-              <th className="px-3 py-2 text-right">Margen (est.)</th>
+              <th className="px-3 py-2 text-right">Margen (est.)</th><th className="px-3 py-2 text-right" title="Margen neto estimado (sin IVA, antes de publicidad) de las unidades vendidas en la ventana. Supone que el Mayor trae IVA (pendiente de confirmar con factura de compra).">Margen $ (est.)</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -335,9 +341,10 @@ function SeccionMargen({ margen }: { margen: MargenApi }) {
                   {f.menosFiable && <span className={`ml-1 ${f.full ? "text-red-500" : "text-amber-600"}`}>{f.full ? "⚠ est." : "est."}</span>}
                 </td>
                 <td className={`px-3 py-2 text-right font-semibold ${f.pierde ? "text-red-700" : "text-gray-900"}`}>{f.margenPct !== null ? pctTxt(f.margenPct) : <span className="text-gray-400 font-normal">{f.fueraDeAlcance ? "—" : f.estado === "sin_costo" ? "sin Costo" : "sin dato"}</span>}</td>
+                <td className={`px-3 py-2 text-right ${f.pierde || (f.margenPesos ?? 0) < 0 ? "text-red-700" : "text-gray-900"}`} title="Estimado: neto, sin IVA, antes de publicidad. Supone que el Mayor trae IVA (pendiente de confirmar con factura de compra).">{f.margenPesos !== null ? clpSigno(f.margenPesos) : <span className="text-gray-400">—</span>}</td>
               </tr>
             ))}
-            {filas.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-400">Ninguna publicación coincide con los filtros.</td></tr>}
+            {filas.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-gray-400">Ninguna publicación coincide con los filtros.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -544,7 +551,7 @@ export default function Tablero() {
       </div>
 
       {datos?.tendencias && <SeccionTendencias t={datos.tendencias} />}
-      {datos?.margen && <SeccionMargen margen={datos.margen} />}
+      {datos?.margen && <SeccionMargen margen={datos.margen} dias={datos.ventana?.dias} />}
       {datos?.stock && <SeccionAlerta alerta={datos.stock.alerta} total={datos.stock.resumen.perdido.total} />}
       {datos?.stock && <SeccionStock stock={datos.stock} />}
       {/* A pedido: no se calcula al abrir el Tablero (~40 s, ~730 llamadas a ML). */}
