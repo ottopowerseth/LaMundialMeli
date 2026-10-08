@@ -13,6 +13,7 @@ import { armarContextoEnvio, parsearTarifasEnvio, resolverEnvio } from "@/lib/en
 import { pctComisionListingPrices, resolverComision } from "@/lib/comision-real";
 import type { ComisionResuelta } from "@/lib/comision-real";
 import { obtenerVentasPorItem } from "@/lib/tarifa-envio";
+import { mayoresEnRevision } from "@/lib/mayor-en-revision";
 
 // Comparador vs Mayor — pestaña propia con endpoint propio (no dentro de
 // metrics/route.ts): cubre TODAS las publicaciones activas con cruce
@@ -62,7 +63,14 @@ type FilaComparador = {
   fuenteMayor: "cruce_directo" | "equivalencia" | "sin_referencia";
   vsMayorPct: number | null;
   precioSugerido: number | null;
+  // null = sin semáforo: o falta algún dato, o el Mayor está en revisión (ver
+  // mayorEnRevision): un color calculado con un Mayor dudoso no se muestra.
   semaforo: "rojo" | "amarillo" | "verde" | null;
+  // true = el Mayor de esta publicación quedó marcado como dudoso en CostoOrigen
+  // (origen "revisar"); motivoRevision trae la razón registrada. vsMayorPct y
+  // precioSugerido se siguen calculando (para poder revisarlos) pero sin color.
+  mayorEnRevision: boolean;
+  motivoRevision: string | null;
   campanaId: number | null;
   statusAnuncio: string | null;
   costoAdsPorUnidadPeriodo: number | null;
@@ -99,12 +107,15 @@ export async function GET(req: NextRequest) {
     // Lecturas de Sheets en paralelo (independientes entre sí). Publicaciones
     // activas — columnas A(id) C(titulo) F(costo, no se usa acá) G(precio)
     // K(estado) L(listing_type_id) S(unidades).
-    const [filasPub, filasDefontanaRaw, filasEquivalenciasRaw, filasTarifaEnvio] = await Promise.all([
+    const [filasPub, filasDefontanaRaw, filasEquivalenciasRaw, filasTarifaEnvio, filasCostoOrigen] = await Promise.all([
       readSheet("Publicaciones!A2:S1000"),
       readSheet("Lista Defontana!A2:H100000"),
       readSheet("Equivalencias Defontana!A2:C1000"),
       readSheet("TarifaEnvio!A2:L5000").catch(() => [] as string[][]),
+      // Si la hoja aún no existe, ninguna publicación queda "en revisión".
+      readSheet("CostoOrigen!A2:J5000").catch(() => [] as string[][]),
     ]);
+    const mayorEnRevisionPorItem = mayoresEnRevision(filasCostoOrigen);
     const activas = filasPub.filter((r) => r[0] && r[10] === "active");
 
     // Lista Defontana + Equivalencias — leídas una vez, reutilizadas para
@@ -276,6 +287,7 @@ export async function GET(req: NextRequest) {
         precioSugerido = Math.round(precioSugeridoNeto * (1 + IVA));
       }
 
+      const motivoRevision = mayorEnRevisionPorItem.get(id) ?? null;
       const ad = adsPorItem.get(id);
       const costoAdsPorUnidadPeriodo = ad ? Math.round((ad.cost / unidades) * 10) / 10 : null;
       let vsMayorConAdsPct: number | null = null;
@@ -298,7 +310,9 @@ export async function GET(req: NextRequest) {
         precioMayorNeto: precioMayorNeto !== null ? Math.round(precioMayorNeto * 10) / 10 : null,
         fuenteMayor,
         vsMayorPct, precioSugerido,
-        semaforo: vsMayorPct !== null ? semaforoDe(vsMayorPct) : null,
+        semaforo: vsMayorPct !== null && motivoRevision === null ? semaforoDe(vsMayorPct) : null,
+        mayorEnRevision: motivoRevision !== null,
+        motivoRevision,
         campanaId: ad?.campaignId ?? null,
         statusAnuncio: ad?.status ?? null,
         costoAdsPorUnidadPeriodo,

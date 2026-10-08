@@ -292,6 +292,8 @@ type FilaComparador = {
   vsMayorPct: number | null;
   precioSugerido: number | null;
   semaforo: "rojo" | "amarillo" | "verde" | null;
+  mayorEnRevision: boolean;
+  motivoRevision: string | null;
   campanaId: number | null;
   statusAnuncio: string | null;
   costoAdsPorUnidadPeriodo: number | null;
@@ -403,7 +405,7 @@ export default function Home() {
   const [loadingComparador, setLoadingComparador] = useState(false);
   const [comparadorResult, setComparadorResult] = useState<ComparadorApiResult>(null);
   const [objetivoComparador, setObjetivoComparador] = useState(10);
-  const [filtroSemaforo, setFiltroSemaforo] = useState<"todos" | "rojo" | "amarillo" | "verde">("todos");
+  const [filtroSemaforo, setFiltroSemaforo] = useState<"todos" | "rojo" | "amarillo" | "verde" | "revision">("todos");
   const [filtroMarca, setFiltroMarca] = useState("");
   const [filtroProveedor, setFiltroProveedor] = useState("");
   const [ordenComparador, setOrdenComparador] = useState<{ campo: keyof FilaComparador; asc: boolean }>({ campo: "vsMayorPct", asc: true });
@@ -2259,6 +2261,7 @@ export default function Home() {
                   <option value="rojo">🔴 Rojo</option>
                   <option value="amarillo">🟡 Amarillo</option>
                   <option value="verde">🟢 Verde</option>
+                  <option value="revision">⚠ Mayor en revisión</option>
                 </select>
                 <input type="text" placeholder="Filtrar por marca" value={filtroMarca} onChange={e => setFiltroMarca(e.target.value)}
                   className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
@@ -2273,7 +2276,7 @@ export default function Home() {
 
             {comparadorResult?.ok && comparadorResult.filas && (() => {
               const filasFiltradas = comparadorResult.filas
-                .filter(f => filtroSemaforo === "todos" || f.semaforo === filtroSemaforo)
+                .filter(f => filtroSemaforo === "todos" || (filtroSemaforo === "revision" ? f.mayorEnRevision : f.semaforo === filtroSemaforo))
                 .filter(f => !filtroMarca || (f.marca ?? "").toLowerCase().includes(filtroMarca.toLowerCase()))
                 .filter(f => !filtroProveedor || (f.proveedor ?? "").toLowerCase().includes(filtroProveedor.toLowerCase()));
 
@@ -2290,9 +2293,10 @@ export default function Home() {
                 setOrdenComparador(prev => prev.campo === campo ? { campo, asc: !prev.asc } : { campo, asc: true });
               }
 
-              const conteoSemaforo = { rojo: 0, amarillo: 0, verde: 0, sin: 0 };
+              const conteoSemaforo = { rojo: 0, amarillo: 0, verde: 0, revision: 0, sin: 0 };
               for (const f of comparadorResult.filas!) {
-                if (f.semaforo === "rojo") conteoSemaforo.rojo++;
+                if (f.mayorEnRevision) conteoSemaforo.revision++;
+                else if (f.semaforo === "rojo") conteoSemaforo.rojo++;
                 else if (f.semaforo === "amarillo") conteoSemaforo.amarillo++;
                 else if (f.semaforo === "verde") conteoSemaforo.verde++;
                 else conteoSemaforo.sin++;
@@ -2300,7 +2304,7 @@ export default function Home() {
 
               return (
                 <>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                     <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
                       <p className="text-2xl font-bold text-red-600">{conteoSemaforo.rojo}</p>
                       <p className="text-xs text-gray-500 mt-1">🔴 Rojo (&lt;0%)</p>
@@ -2312,6 +2316,10 @@ export default function Home() {
                     <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
                       <p className="text-2xl font-bold text-green-600">{conteoSemaforo.verde}</p>
                       <p className="text-xs text-gray-500 mt-1">🟢 Verde (&gt;10%)</p>
+                    </div>
+                    <div className="bg-amber-50 rounded-xl p-3 text-center border border-amber-200" title="El Mayor de estas publicaciones quedó marcado como dudoso en CostoOrigen (por ejemplo, costo igual al precio o una cantidad distinta en el título): no se les da semáforo hasta revisarlo.">
+                      <p className="text-2xl font-bold text-amber-700">{conteoSemaforo.revision}</p>
+                      <p className="text-xs text-gray-500 mt-1">⚠ Mayor en revisión (sin semáforo)</p>
                     </div>
                     <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
                       <p className="text-2xl font-bold text-gray-400">{conteoSemaforo.sin}</p>
@@ -2368,15 +2376,16 @@ export default function Home() {
                               <td className="py-2 pr-3 text-gray-500 text-xs">
                                 {f.fuenteMayor === "cruce_directo" ? "Cruce directo" : f.fuenteMayor === "equivalencia" ? "Equivalencia" : "Sin referencia"}
                               </td>
-                              <td className={`py-2 pr-3 text-right font-semibold ${f.vsMayorPct === null ? "text-gray-400" : f.vsMayorPct < 0 ? "text-red-600" : f.vsMayorPct <= 10 ? "text-yellow-600" : "text-green-600"}`}>
+                              <td title={f.mayorEnRevision ? `Mayor en revisión: ${f.motivoRevision}` : undefined} className={`py-2 pr-3 text-right font-semibold ${f.vsMayorPct === null || f.mayorEnRevision ? "text-gray-400" : f.vsMayorPct < 0 ? "text-red-600" : f.vsMayorPct <= 10 ? "text-yellow-600" : "text-green-600"}`}>
                                 {f.vsMayorPct !== null ? `${f.vsMayorPct}%` : "-"}
                               </td>
-                              <td className="py-2 pr-3 text-right text-gray-700">{f.precioSugerido !== null ? formatCLP(f.precioSugerido) : "-"}</td>
+                              <td title={f.mayorEnRevision ? "Calculado con un Mayor en revisión: no usarlo hasta revisarlo" : undefined} className={`py-2 pr-3 text-right ${f.mayorEnRevision ? "text-gray-400" : "text-gray-700"}`}>{f.precioSugerido !== null ? formatCLP(f.precioSugerido) : "-"}</td>
                               <td className="py-2 pr-3">
                                 {f.semaforo === "rojo" && "🔴"}
                                 {f.semaforo === "amarillo" && "🟡"}
                                 {f.semaforo === "verde" && "🟢"}
-                                {f.semaforo === null && "-"}
+                                {f.semaforo === null && !f.mayorEnRevision && "-"}
+                                {f.mayorEnRevision && <span className="text-xs text-amber-700 whitespace-nowrap" title={`Mayor en revisión: ${f.motivoRevision}`}>⚠ Mayor en revisión</span>}
                               </td>
                               <td className="py-2 pr-3 text-gray-700 capitalize">{f.statusAnuncio ?? "-"}</td>
                               <td className="py-2 pr-3 text-right text-gray-700">{f.vsMayorConAdsPct !== null ? `${f.vsMayorConAdsPct}%` : "-"}</td>
