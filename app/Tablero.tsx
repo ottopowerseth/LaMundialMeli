@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Completitud from "./Completitud";
 import Publicidad from "./Publicidad";
+import PrecioParaGanar from "./PrecioParaGanar";
 
 // Tablero "desde arriba". Un solo endpoint (/api/tablero) calculado en vivo.
 // El resultado se guarda en una variable de módulo para que al cambiar de
@@ -549,6 +550,8 @@ export default function Tablero() {
       <Completitud />
       {/* A pedido (~10 s): ACoS, equilibrio y TACoS de Product Ads. */}
       <Publicidad />
+      {/* A pedido (~20 s): precio para ganar (price_to_win) frente al equilibrio. */}
+      <PrecioParaGanar />
     </div>
   );
 }
