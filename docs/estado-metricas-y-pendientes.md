@@ -337,24 +337,49 @@ Rentabilidad, la cobertura de "envío real" en el top 50 pasó de 16/50
 
 ## Pendiente / sin decidir
 
-### Tablero — decisiones y pendientes (2026-10-08)
+### Tablero — estado actual (2026-10-08; `origin/master` = `68f02d3`)
 
-Pestaña "Tablero" (primera): resumen de ventas, confianza de datos, margen, stock + alerta de pausadas por falta de stock, Pareto y series. Costo (519 automáticos, origen en la hoja CostoOrigen) ya escrito el 2026-10-08; la cobertura de Costo no cuenta publicaciones cerradas o inactivas sin Costo.
+Pestaña "Tablero" (la primera). Todo es de **solo lectura**: no escribe en ML ni en Sheets (la única escritura fue la de los Costos automáticos, 2026-10-08, hecha aparte con `/api/costo-auto`). Cada sección está pusheada; el despliegue en producción no se verificó desde aquí.
 
-**Decisiones de Otto (2026-10-08)**
-- Gillette Prestobarba MLC4366166348: **cerrado, costo correcto**. Es el display x28 (SKU PRO180207, GTIN 7500435180207, UNITS_PER_PACK 28); Unidades = 1 es correcto. Margen real −0,6%.
-- Katteyes (18 publicaciones, Costo calculado ≈ precio de venta): **se quedan en "revisar"**, no se escribe su Costo.
-- Orden de implementación: **J (completitud) → G (TACoS y ACoS de equilibrio) → F (price_to_win) → H (operación)**. I (calidad de ML) y M (campañas nuevas) quedan fuera por ahora.
-- F y G: solo lectura, equilibrio y precio para ganar lado a lado, **sin sugerir acciones**, con la nota "base de IVA y costo Katteyes pendientes".
-- Siguen en espera: Aer COS022114, margen en pesos, Envío (I) desde TarifaEnvio, "Mayor en revisión".
+**Secciones que cargan al abrir** — un solo endpoint, `/api/tablero` (tiempos medidos el 2026-10-08: ~15 s tras reposo; 18 a 34 s con llamadas seguidas porque ML frena las ráfagas de visitas; ~400 KB; el navegador lo guarda 10 min):
+1. **Barra de confianza y resumen de ventas** — ingresos, unidades, órdenes y ticket contra el período anterior; % del ingreso con Costo, con envío medido y con comisión real.
+2. **Concentración y tendencia (Pareto y series)** — cuántas publicaciones hacen el 50/80/95% del ingreso; series semanales (12) y mensuales; el período en curso va "parcial" y se compara con el mismo tramo del anterior.
+3. **Margen de contribución** — en %, antes de publicidad, por publicación y total; "parcial" si el Costo cubre menos del 90% de las ventas; envío estimado marcado.
+4. **Alerta de pausadas por falta de stock con ventas** — ingreso perdido **estimado** (tope de 30 días).
+5. **Stock** — clase ABC (ingreso de 90 días), cobertura con velocidad corregida por días sin stock, reponer, sobrestock, sin ventas en 90 días, capital inmovilizado ("parcial" si falta Costo).
+
+**Secciones a pedido** (un botón; no se calculan al abrir el Tablero; cada una con su endpoint y su caché del navegador):
+6. **Completitud de publicaciones** — `/api/completitud`, ~40 s (~730 llamadas, encadenadas en varias llamadas de ≤60 s): ISP por bloque de categoría, descripción, fotos, GTIN; ordenada por ingreso de 90 días.
+7. **Publicidad (ACoS real, equilibrio y TACoS)** — `/api/publicidad?dias=7|30|90`, ~8 s (2,4 s con 7 días): el gasto de Ads viene SIN IVA y se muestra también con IVA (×1,19, verificado contra Billing); ACoS de ML y "con IVA" lado a lado; equilibrio = margen antes de publicidad.
+8. **Precio para ganar (catálogo)** — `/api/precio-para-ganar`, ~20 s, ventana fija de 30 días: precio actual, equilibrio (estimado) y precio para ganar lado a lado, con sensibilidades y factores de ML colapsados.
+
+**Reglas que conviene recordar al leer los números**
+- El margen usa el Costo como **Mayor con IVA** (pendiente de confirmar con facturas): si el Mayor fuera neto, el margen bajaría en la misma proporción que el IVA sobre el costo y, con los márgenes de un dígito bajo que hay hoy, quedaría negativo. El equilibrio de publicidad y el de precio para ganar dependen de lo mismo.
+- La cobertura de Costo no cuenta las publicaciones cerradas o inactivas sin Costo; el valor vigente está en la barra de confianza del Tablero.
+- Comisión: siempre la real cobrada (`sale_fee`); es un % fijo, igual a cualquier precio (verificado). Envío: medido por publicación; a otro precio es estimado (cambia por tramo de precio y tamaño).
+- **Ninguna sección autoriza por sí sola pausar campañas, cambiar precios ni descontinuar productos**: son insumos para decidir junto con el resto de la información (la guía para el equipo lo repite en cada cuadro "qué no concluir").
+- Publicidad y precio para ganar no sugieren acciones: rotulan "sobre/bajo el equilibrio" y muestran el dato (decisión de Otto). Completitud sí ordena una tarea principal (el ISP de las que más venden), pero no escribe nada.
+- ML pierde o repite alguna orden al paginar (medido el 2026-10-08: del orden de 0,03%); con datos en vivo dos llamadas seguidas no dan exactamente lo mismo. Decisión de Otto: se deja el método actual.
+
+**Código** — librerías puras en `lib/` (`tablero-*.ts`, `revision-publicaciones.ts`, `completitud.ts`, `publicidad-*.ts`, `precio-para-ganar*.ts`); pruebas autónomas con `node scripts/test-publicidad-equilibrio.mjs` y `node scripts/test-precio-para-ganar.mjs`. Los refactors se verificaron comparando el JSON COMPLETO de la respuesta antes y después con respuestas de ML y Sheets grabadas (con datos en vivo no es reproducible).
+
+**Datos de costo** — el 2026-10-08 se escribieron los Costos automáticos en `Publicaciones!F` (solo celdas vacías) y su origen quedó en la hoja `CostoOrigen`; los 7 Costos manuales no se tocaron. Sin escribir: los sospechosos (entre ellos la línea Katteyes, con Costo calculado ≈ precio de venta) y las publicaciones sin match en Defontana (la principal, el Aer COS022114). Las cantidades vigentes salen de `/api/costo-auto` en modo simulación y de la barra de confianza del Tablero.
+
+**En espera / decisiones de Otto**
+- **H (operación)**: en espera hasta que Otto lo pida. **I** (calidad de ML) y **M** (campañas nuevas) quedan fuera por ahora.
+- **`ml-sync`**: Otto lo lanza; después hay que verificar que `Publicaciones!F` conserva los Costos escritos el 2026-10-08 (automáticos y manuales) y que `CostoOrigen` sigue coincidiendo (hay un script y una foto de lo escrito ese día).
+- **Base de IVA del Mayor** (con facturas) y **Costo de Katteyes**: de ellos dependen el margen, el equilibrio de publicidad y el de precio para ganar.
+- **Aer COS022114** (equivalencia: propuesta COS025068 × 6; falta confirmar unidades y aroma), **margen en pesos** (hasta confirmar la base de IVA), **Envío (I) desde TarifaEnvio** (commit aparte) y **"Mayor en revisión"** en el Comparador.
+- Categorías ISP del bloque "a confirmar": con el proveedor (abajo).
+- Gillette Prestobarba MLC4366166348: cerrado, costo correcto (display x28, Unidades = 1).
 
 **Para el equipo de publicaciones (sin escribir en ML)**
-- **Schick Quattro Titanium, MLC4485749662:** el atributo de unidades de la publicación está inconsistente con el título. El título dice "10 Unidades" pero `UNITS_PER_PACK` = 1 y `SALE_FORMAT` = Unidad; el artículo de Defontana es un cartón de 10 (SCHICK QUATTRO4 CARTON 10 UN TITANIUM) y el Costo ($7.990) parece corresponder al cartón: la hermana MLC4485749640 (Quattro For Women, "Pack X10", `UNITS_PER_PACK` = 10) tiene el mismo precio ($9.990) y el mismo Costo. Es una inferencia, no una confirmación: el equipo de publicaciones debe confirmar que se vende el cartón de 10 y corregir el atributo en ML a mano (no corregido).
+- **Schick Quattro Titanium, MLC4485749662:** el atributo de unidades de la publicación está inconsistente con el título. El título dice "10 Unidades" pero `UNITS_PER_PACK` = 1 y `SALE_FORMAT` = Unidad; el artículo de Defontana es un cartón de 10 (SCHICK QUATTRO4 CARTON 10 UN TITANIUM) y el Costo parece corresponder al cartón: la hermana MLC4485749640 (Quattro For Women, "Pack X10", `UNITS_PER_PACK` = 10) tiene el mismo precio y el mismo Costo. Es una inferencia, no una confirmación: el equipo de publicaciones debe confirmar que se vende el cartón de 10 y corregir el atributo en ML a mano (no corregido).
 - Otros dos nombres para confirmar que son el mismo producto: Paris Hilton Heiress MLC4447122436 (título "Colonia", Defontana "B MIST", es decir body mist) y S By Shakira MLC4447128692 (Defontana "SHAKIRA 50 CLASICA").
 
-**Completitud de publicaciones (J), pusheada el 2026-10-08 (`origin/master` = `09b9b2a`)** — sección al final del Tablero, a pedido, endpoint `/api/completitud` (solo lectura). Pendiente de confirmar con el proveedor: **las categorías del bloque "a confirmar" del ISP**. Hoy son las que no están bajo la raíz "Belleza y Cuidado Personal": Accesorios para Vehículos > Limpieza de Vehículos > Aromatizadores (Aer Power Pocket, 10 publicaciones, ~$8,2 M de ingreso en 90 días), Hogar y Muebles > Cuidado del Hogar y Lavandería (perfumes para ropa, aromatizantes de hogar, detergentes, suavizantes, lavalozas, cloros) y Bebés > Toallitas Húmedas; 42 publicaciones sin ISP en total (28 con ventas en 90 días). Mientras no se confirme, el Tablero no las da por "no aplica" ni por "faltante confirmado": solo las separa. Si el proveedor confirma que alguna categoría no requiere ISP, o que alguna del bloque "a confirmar" sí lo requiere y debe pasar al bloque "esperable", el cambio es la lista `RAICES_ISP_ESPERABLE` de `lib/completitud.ts` (la separación es por categoría raíz).
+**Completitud de publicaciones (J), pusheada el 2026-10-08 (`origin/master` = `09b9b2a`)** — sección al final del Tablero, a pedido, endpoint `/api/completitud` (solo lectura). Pendiente de confirmar con el proveedor: **las categorías del bloque "a confirmar" del ISP**. Hoy son las que no están bajo la raíz "Belleza y Cuidado Personal": Accesorios para Vehículos > Limpieza de Vehículos > Aromatizadores (los Aer Power Pocket), Hogar y Muebles > Cuidado del Hogar y Lavandería (perfumes para ropa, aromatizantes de hogar, detergentes, suavizantes, lavalozas, cloros) y Bebés > Toallitas Húmedas; las cantidades vigentes las muestra la sección de completitud. Mientras no se confirme, el Tablero no las da por "no aplica" ni por "faltante confirmado": solo las separa. Si el proveedor confirma que alguna categoría no requiere ISP, o que alguna del bloque "a confirmar" sí lo requiere y debe pasar al bloque "esperable", el cambio es la lista `RAICES_ISP_ESPERABLE` de `lib/completitud.ts` (la separación es por categoría raíz).
 
-**Riesgo a vigilar:** `/api/tablero` llegó a 34 s en 4 llamadas seguidas (ML frena las ráfagas de visitas; ~15 s en frío). Si en producción pasa de ~45 s, partirlo por dominios. Límite de Vercel: 60 s.
+**Riesgo a vigilar:** `/api/tablero` llegó a 34 s en 4 llamadas seguidas el 2026-10-08 (ML frena las ráfagas de visitas; ~15 s en frío). Si en producción pasa de ~45 s, partirlo por dominios. Límite de Vercel: 60 s.
 
 ### Bug latente — `variantesCodigoAer` no genera la variante del cero (diagnosticado 2026-10-07, SIN corregir)
 
