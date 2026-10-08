@@ -2,7 +2,7 @@
 // y de las ventas ya cargadas. La comparten /api/tablero y /api/publicidad
 // para que ambos calculen el margen exactamente igual (ver lib/tablero-margen.ts).
 import { armarContextoEnvio } from "@/lib/envio-medido";
-import type { TarifaEnvioFila } from "@/lib/envio-medido";
+import type { ContextoEnvio, TarifaEnvioFila } from "@/lib/envio-medido";
 import { analizarMargen } from "@/lib/tablero-margen";
 import type { LineaVenta } from "@/lib/tablero-datos";
 
@@ -26,7 +26,13 @@ export type EntradaMargenDatos = {
   fueraDeAlcance?: Set<string>; // closed/inactive (ver lib/tablero-margen.ts)
 };
 
-export function margenDesdeDatos(e: EntradaMargenDatos) {
+// Contexto de envío (tarifas medidas + muestras para estimar por SKU gemelo o por
+// tramo de precio) y SKU por publicación. Lo usa margenDesdeDatos y también quien
+// necesite estimar el envío a OTRO precio (lib/precio-para-ganar.ts).
+export function contextoEnvioDesdeDatos(e: Pick<EntradaMargenDatos, "filasPub" | "fullPorItem" | "tarifas">): {
+  ctxEnvio: ContextoEnvio;
+  skuPorItem: Map<string, string>;
+} {
   const precioPorItem = new Map<string, number>();
   for (const r of e.filasPub) {
     const p = Number(String(r[6] ?? "").trim());
@@ -36,7 +42,11 @@ export function margenDesdeDatos(e: EntradaMargenDatos) {
   for (const [id, esFull] of e.fullPorItem) logisticoPorItem.set(id, esFull ? "fulfillment" : "otro");
   const skuPorItem = new Map<string, string>();
   for (const [id, t] of e.tarifas) if (t.sku) skuPorItem.set(id, t.sku);
-  const ctxEnvio = armarContextoEnvio(e.tarifas, precioPorItem, skuPorItem, logisticoPorItem);
+  return { ctxEnvio: armarContextoEnvio(e.tarifas, precioPorItem, skuPorItem, logisticoPorItem), skuPorItem };
+}
+
+export function margenDesdeDatos(e: EntradaMargenDatos) {
+  const { ctxEnvio, skuPorItem } = contextoEnvioDesdeDatos(e);
   return analizarMargen({
     lineas: e.lineas,
     costoPorItem: e.costoPorItem,
