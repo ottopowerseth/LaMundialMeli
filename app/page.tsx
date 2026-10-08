@@ -5,6 +5,7 @@ import Image from "next/image";
 import * as XLSX from "xlsx";
 import RevisionPublicaciones from "./RevisionPublicaciones";
 import Tablero from "./Tablero";
+import { abortoSinBorrar, errorPublicaciones, guardarUltimoSyncPublicaciones, leerUltimoSyncPublicaciones } from "@/lib/sync-estado";
 
 type MLStatus = { ok: boolean; nickname?: string } | null;
 
@@ -22,7 +23,7 @@ type CoberturaCosto = {
 };
 type SyncResult = {
   ok: boolean;
-  publicaciones?: number;
+  publicaciones?: number | null;
   ventas?: number;
   productosNuevos?: ProductoNuevo[];
   cambiosStock?: StockChange[];
@@ -350,6 +351,8 @@ export default function Home() {
   const [syncing, setSyncing] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult>(null);
+  // Último sync con Publicaciones correcto visto desde este navegador (solo para el banner de error).
+  const [ultimoSyncPubOk, setUltimoSyncPubOk] = useState<string | null>(null);
   const [deletedResult, setDeletedResult] = useState<DeletedResult>(null);
   const [borrandoFilas, setBorrandoFilas] = useState<number[]>([]);
   const [seleccionados, setSeleccionados] = useState<number[]>([]);
@@ -641,6 +644,8 @@ export default function Home() {
     try {
       const res = await fetch("/api/ml-sync", { method: "POST" });
       const json = await res.json();
+      setUltimoSyncPubOk(leerUltimoSyncPublicaciones());
+      if (typeof json.publicaciones === "number") guardarUltimoSyncPublicaciones(json.timestamp ?? new Date().toISOString());
       setSyncResult(json);
       if (json.ok) loadVentasSemana();
     } catch {
@@ -923,13 +928,24 @@ export default function Home() {
             {syncResult && (
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
                 <h2 className="font-bold text-gray-900 text-lg">Log de sincronización</h2>
+                {errorPublicaciones(syncResult) !== null && (
+                  <div className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 space-y-1" role="alert">
+                    <p className="font-bold">✗ Publicaciones NO se sincronizó{abortoSinBorrar(errorPublicaciones(syncResult)!) ? "; no se borró nada. Reintenta." : ". Revisa la hoja Publicaciones antes de reintentar: el error pudo ocurrir después de limpiarla."}</p>
+                    <p>{errorPublicaciones(syncResult)}</p>
+                    {ultimoSyncPubOk && (
+                      <p className="text-xs text-red-700">Último sync de Publicaciones correcto visto desde este navegador: {new Date(ultimoSyncPubOk).toLocaleString("es-CL")}</p>
+                    )}
+                  </div>
+                )}
                 {!syncResult.ok ? (
-                  <p className="text-red-600 text-sm">✗ Error: {syncResult.error}</p>
+                  <p className="text-red-600 text-sm">✗ Error: {syncResult.error ?? "ver el detalle de arriba"}</p>
                 ) : (
                   <>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                       <div className="bg-gray-50 rounded-xl p-3 text-center">
-                        <p className="text-2xl font-bold text-gray-900">{syncResult.publicaciones}</p>
+                        {syncResult.publicaciones === null
+                          ? <p className="text-lg font-bold text-red-600 leading-8">no sincronizó</p>
+                          : <p className="text-2xl font-bold text-gray-900">{syncResult.publicaciones}</p>}
                         <p className="text-xs text-gray-500 mt-1">Publicaciones</p>
                       </div>
                       <div className="bg-gray-50 rounded-xl p-3 text-center">
