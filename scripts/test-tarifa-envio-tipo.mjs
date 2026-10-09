@@ -183,4 +183,19 @@ console.log("una sola muestra");
   eq([f[2], f[4], f[8]], ["830", "1", "ok"], "con un solo despacho candidato la fila queda ok con Muestras = 1");
   eq(r.porMuestras, { 1: 1 }, "porMuestras refleja el 1");
 }
+console.log("modo anterior (sin tipo por orden): se comporta como antes");
+{
+  const ventasLegacy = () => new Map([["A", { ingreso: 1, precio: 9000, comision: 0, ingresoConComision: 0, despachos: desp(2, 3) }]]);
+  const lega = (h, extra = {}) => ({ mlGet, ...h, ventas: ventasLegacy(), skuPorItem: new Map(), logisticoPorItem: new Map([["A", X]]), ahora, dryRun: false, forzar: false, limite: null, tiempoMaximoMs: 30000, ...extra });
+  const h1 = hoja([fila("A", 410, F)]);
+  const r1 = await T.procesarTarifas(lega(h1));
+  eq([r1.pendientesAntes, r1.vigentes, h1.escritas.append.length], [0, 1, 0], "una fila vigente de la publicación basta (la clave es la publicación), aunque su tipo no sea el vigente");
+  const h2 = hoja([fila("A", 410, F, "ok", "2026-08-20T00:00:00.000Z")]);
+  const r2 = await T.procesarTarifas(lega(h2));
+  eq([r2.escritas, h2.escritas.batch[0][0].range], [{ nuevas: 0, actualizadas: 1 }, "TarifaEnvio!A2:L2"], "fila vencida: se actualiza en su lugar, sin agregar filas");
+  eq(h2.escritas.batch[0][0].values[0][3], X, "la primera muestra limpia fija el tipo de la fila (sin tipo objetivo)");
+  let error = null;
+  try { await T.procesarTarifas(lega(hoja([fila("A", 410, F), fila("A", 810, X)]))); } catch (e) { error = e; }
+  check(error && /usar porTipo/.test(error.message), "dos filas de la misma publicación (filas por tipo) abortan en el modo anterior y piden usar porTipo");
+}
 console.log(`\n${ok} comprobaciones OK`);

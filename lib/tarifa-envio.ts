@@ -333,23 +333,29 @@ export function estimarFaltantes(
   }
 }
 
-type ParTarifa = { itemId: string; grupo: TipoObjetivo; clave: string; ingreso: number; despachos: DespachoCandidato[]; tipoCrudo: string };
+// objetivo: tipo que debe tener el despacho de la muestra (modo por tipo); undefined = modo anterior, donde la primera
+// muestra limpia fija el tipo.
+type ParTarifa = { itemId: string; grupo: TipoObjetivo; objetivo?: TipoObjetivo; clave: string; ingreso: number; despachos: DespachoCandidato[]; tipoCrudo: string };
 
-// Pares (publicación, tipo) con ventas. Con el tipo por orden, un par por cada tipo en que vendió; sin él, un
-// par por publicación con el tipo vigente (comportamiento anterior).
+// Pares con ventas. MODO POR TIPO (si las ventas traen el tipo por orden): un par (publicación, tipo) por cada tipo en
+// que vendió la publicación. MODO ANTERIOR (sin tipo por orden): un par por publicación, con su tipo vigente.
 export function paresConVenta(ventas: Map<string, VentaItem>, logisticoPorItem?: Map<string, string>): ParTarifa[] {
   const pares: ParTarifa[] = [];
+  const porTipo = [...ventas.values()].some((v) => v.despachosPorTipo !== undefined);
   for (const [itemId, v] of ventas) {
     const ing = v.ingresoPorTipo;
     if (v.despachosPorTipo && ing && ing.fulfillment + ing.otro > 0) {
       for (const g of ["fulfillment", "otro"] as TipoObjetivo[]) {
         if (ing[g] <= 0) continue; // sin ventas tipadas de este grupo: no hay par
-        pares.push({ itemId, grupo: g, clave: clavePar(itemId, g), ingreso: ing[g], despachos: v.despachosPorTipo[g], tipoCrudo: v.tipoCrudo?.[g] ?? (g === "fulfillment" ? "fulfillment" : "xd_drop_off") });
+        pares.push({ itemId, grupo: g, objetivo: g, clave: clavePar(itemId, g), ingreso: ing[g], despachos: v.despachosPorTipo[g], tipoCrudo: v.tipoCrudo?.[g] ?? (g === "fulfillment" ? "fulfillment" : "xd_drop_off") });
       }
-    } else {
-      // Sin tipo por orden: un par por publicación con el tipo vigente (comportamiento anterior).
+    } else if (porTipo) {
+      // Modo por tipo, pero esta publicación no tiene ventas tipadas: un par con su tipo vigente (y ese tipo como objetivo).
       const g = grupoDeTipo(logisticoPorItem?.get(itemId) ?? "");
-      pares.push({ itemId, grupo: g, clave: clavePar(itemId, g), ingreso: v.ingreso, despachos: v.despachos, tipoCrudo: logisticoPorItem?.get(itemId) ?? "" });
+      pares.push({ itemId, grupo: g, objetivo: g, clave: clavePar(itemId, g), ingreso: v.ingreso, despachos: v.despachos, tipoCrudo: logisticoPorItem?.get(itemId) ?? (g === "fulfillment" ? "fulfillment" : "xd_drop_off") });
+    } else {
+      // Modo anterior: un par por publicación, sin tipo objetivo (la clave es la publicación sola).
+      pares.push({ itemId, grupo: grupoDeTipo(logisticoPorItem?.get(itemId) ?? ""), clave: itemId, ingreso: v.ingreso, despachos: v.despachos, tipoCrudo: "" });
     }
   }
   return pares;
@@ -358,21 +364,31 @@ export function paresConVenta(ventas: Map<string, VentaItem>, logisticoPorItem?:
 export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTarifas> {
   const inicio = Date.now();
   const hoja = HOJA_TARIFA_ENVIO;
+  // Modo por tipo solo si las ventas traen el tipo por orden (lo pide quien llama). Sin eso, todo funciona como antes:
+  // una fila por publicación.
+  const porTipo = [...op.ventas.values()].some((v) => v.despachosPorTipo !== undefined);
+  const claveFila = (id: string, tipoRaw: string) => (porTipo ? claveTarifa(id, tipoRaw) : id);
 
-  // Una entrada por (publicación, tipo). Dos filas con la MISMA clave son un error de la hoja (se actualizaría
-  // la fila equivocada): se detiene. Dos filas de la misma publicación con tipos distintos son lo normal.
+  // Modo por tipo: una entrada por (publicación, tipo); dos filas con la MISMA clave son un error de la hoja (se
+  // actualizaría la fila equivocada) y se detiene; dos filas de la misma publicación con tipos distintos son lo normal.
+  // Modo anterior: una entrada por publicación; cualquier id repetido se detiene (la hoja ya tiene filas por tipo y
+  // esta forma de correr no las soporta: usar porTipo).
   const existentes = new Map<string, { fila: number; estado: string; actualizado: number; sku: string; tarifa: number; tipo: string }>();
   let claveRepetida: string | undefined;
   try {
     const rows = await op.readSheet(`${hoja}!A2:L20000`);
     rows.forEach((r, i) => {
       if (!r[0]) return;
-      const clave = claveTarifa(String(r[0]), r[3] ?? "");
+      const clave = claveFila(String(r[0]), r[3] ?? "");
       if (existentes.has(clave)) claveRepetida ??= clave;
       existentes.set(clave, { fila: i + 2, estado: r[8] ?? "", actualizado: r[9] ? new Date(r[9]).getTime() : 0, sku: r[1] ?? "", tarifa: Number(r[2]), tipo: r[3] ?? "" });
     });
   } catch { /* hoja nueva o vacía */ }
-  if (claveRepetida) throw new Error(`TarifaEnvio tiene más de una fila para la misma publicación y tipo (${claveRepetida}): se detiene para no actualizar la fila equivocada.`);
+  if (claveRepetida) {
+    throw new Error(porTipo
+      ? `TarifaEnvio tiene más de una fila para la misma publicación y tipo (${claveRepetida}): se detiene para no actualizar la fila equivocada.`
+      : `TarifaEnvio tiene más de una fila para ${claveRepetida} (filas por tipo logístico): esta forma de correr no las soporta; usar porTipo.`);
+  }
 
   const vigente = (clave: string) => {
     const e = existentes.get(clave);
@@ -393,26 +409,31 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
     while (siguiente < lote.length) {
       if (Date.now() - inicio > op.tiempoMaximoMs) return;
       const par = lote[siguiente++];
-      const r = await calcularTarifaItem(par.itemId, par.despachos, op.mlGet, MUESTRAS_POR_ITEM, MAX_CANDIDATOS_POR_ITEM, par.grupo);
-      hechas.push({ itemId: par.itemId, sku: op.skuPorItem.get(par.itemId) ?? "", r, actualizado: op.ahora.toISOString(), tipo: par.grupo, par });
+      const r = await calcularTarifaItem(par.itemId, par.despachos, op.mlGet, MUESTRAS_POR_ITEM, MAX_CANDIDATOS_POR_ITEM, par.objetivo);
+      hechas.push({ itemId: par.itemId, sku: op.skuPorItem.get(par.itemId) ?? "", r, actualizado: op.ahora.toISOString(), tipo: par.objetivo, par });
     }
   }));
 
   // Respaldo estimado para lo que quedó sin muestra limpia. Las muestras son las tarifas "ok": las ya guardadas en
-  // la hoja (vigentes) más las medidas en esta corrida, cada una con su tipo. Cada publicación entra con el precio
-  // de su última venta.
+  // la hoja (vigentes) más las medidas en esta corrida. Cada publicación entra con el precio de su última venta.
+  // Modo por tipo: cada muestra con el tipo de su fila. Modo anterior: con el tipo vigente de la publicación.
+  const grupoMuestra = (itemId: string, tipoFila: string): TipoObjetivo => grupoDeTipo(porTipo ? tipoFila : (op.logisticoPorItem?.get(itemId) ?? tipoFila));
   const muestrasOk: MuestraOk[] = [];
   const clavesEnCorrida = new Set(hechas.map((h) => h.par.clave));
   for (const [clave, e] of existentes) {
-    const itemId = clave.slice(0, clave.lastIndexOf("|"));
+    const itemId = porTipo ? clave.slice(0, clave.lastIndexOf("|")) : clave;
     const precio = op.ventas.get(itemId)?.precio;
-    if (e.estado === "ok" && Number.isFinite(e.tarifa) && e.tarifa > 0 && precio && !clavesEnCorrida.has(clave)) muestrasOk.push({ itemId, sku: e.sku, precio, tarifa: e.tarifa, tipo: grupoDeTipo(e.tipo) });
+    if (e.estado === "ok" && Number.isFinite(e.tarifa) && e.tarifa > 0 && precio && !clavesEnCorrida.has(clave)) muestrasOk.push({ itemId, sku: e.sku, precio, tarifa: e.tarifa, tipo: grupoMuestra(itemId, e.tipo) });
   }
   for (const h of hechas) {
     const precio = op.ventas.get(h.itemId)?.precio;
-    if (h.r.estado === "ok" && h.r.tarifaPorUnidad !== null && precio) muestrasOk.push({ itemId: h.itemId, sku: h.sku, precio, tarifa: h.r.tarifaPorUnidad, tipo: h.par.grupo });
+    if (h.r.estado === "ok" && h.r.tarifaPorUnidad !== null && precio) muestrasOk.push({ itemId: h.itemId, sku: h.sku, precio, tarifa: h.r.tarifaPorUnidad, tipo: grupoMuestra(h.itemId, h.r.tipoLogistico) });
   }
-  estimarFaltantes(hechas, muestrasOk, op.ventas, (h) => (h as typeof hechas[number]).par.grupo);
+  estimarFaltantes(hechas, muestrasOk, op.ventas, (h) => (porTipo ? (h as typeof hechas[number]).par.grupo : grupoDeTipo(op.logisticoPorItem?.get(h.itemId) ?? "")));
+  if (!porTipo) {
+    // Modo anterior: la fila estimada lleva el tipo vigente de la publicación (o "fulfillment" si es Full).
+    for (const h of hechas) if (h.r.estado === "estimado" && h.r.tipoLogistico === "") h.r = { ...h.r, tipoLogistico: op.logisticoPorItem?.get(h.itemId) ?? "" };
+  }
 
   const porEstado: Record<string, number> = {};
   const porMuestras: Record<string, number> = {};

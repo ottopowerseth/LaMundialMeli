@@ -17,13 +17,14 @@ import { parsearLogisticoPorOrden } from "@/lib/logistica";
 // entre invocaciones — la hoja es el checkpoint, así que se llama repetido
 // hasta que "pendientesDespues" llegue a 0.
 //
-// UNA FILA POR (PUBLICACIÓN, TIPO LOGÍSTICO): el costo de envío depende del tipo
-// (ver lib/tarifa-envio.ts). El tipo de cada orden sale de la hoja ShippingCache.
+// MODO POR TIPO (opt-in, `porTipo: true`): una fila por (publicación, tipo logístico), porque el
+// costo de envío depende del tipo (ver lib/tarifa-envio.ts). El tipo de cada orden sale de la hoja
+// ShippingCache. Sin `porTipo` todo funciona como antes: una fila por publicación.
 //
 // Body (todo opcional): { confirmar, dias (ventana de ventas, 1-120, default
-// 45), limite (máx. pares por invocación), forzar (ignora la vigencia de la
-// caché), soloSinFilaDelTipo (solo los pares sin ninguna fila de su tipo: el
-// piloto del segundo tipo) }.
+// 45), limite (máx. publicaciones — o pares con porTipo — por invocación), forzar
+// (ignora la vigencia de la caché), porTipo, soloSinFilaDelTipo (implica porTipo:
+// solo los pares sin ninguna fila de su tipo, el piloto del segundo tipo) }.
 export const maxDuration = 60;
 
 // Tiempo para el cálculo de tarifas, descontado lo que tardan la lectura de
@@ -39,6 +40,7 @@ export async function POST(request: Request) {
     const limite = Number.isInteger(body?.limite) && body.limite > 0 ? body.limite : null;
     const forzar = body?.forzar === true;
     const soloSinFilaDelTipo = body?.soloSinFilaDelTipo === true;
+    const porTipo = body?.porTipo === true || soloSinFilaDelTipo;
 
     const token = await getValidAccessToken();
     const client = axios.create({
@@ -63,7 +65,7 @@ export async function POST(request: Request) {
 
     const { data: user } = await mlGet<{ id: number }>("/users/me");
     // Tipo logístico crudo de cada orden (ShippingCache): permite elegir los despachos de cada tipo sin llamar a /shipments.
-    const tipoPorOrden = parsearLogisticoPorOrden(await readSheet("ShippingCache!A2:C100000").catch(() => [] as string[][]));
+    const tipoPorOrden = porTipo ? parsearLogisticoPorOrden(await readSheet("ShippingCache!A2:C100000").catch(() => [] as string[][])) : undefined;
     const ventas = await obtenerVentasPorItem(mlGet, user.id, dias, new Date(), tipoPorOrden);
 
     // SELLER_SKU (legible en la hoja; la clave de la caché es el id de
