@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { sugeridoPara } from "@/lib/reposicion-full";
+import { aplicarTope, FACTOR_PICO_RECIENTE, sugeridoPara } from "@/lib/reposicion-full";
 import type { ResultadoReposicion } from "@/lib/reposicion-full";
 
 // Panel de reposición de Full: publicaciones pausadas por falta de stock que vendían en Full y
@@ -20,17 +20,26 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
   const [objetivo, setObjetivo] = useState<number>(reposicion.supuestos.coberturaObjetivoDias);
   const [tipo, setTipo] = useState<"todas" | "pausada" | "por_agotarse">("todas");
   const [visibles, setVisibles] = useState(30);
+  const [tope, setTope] = useState<string>(""); // vacío = sin tope
+  const topeNum = tope.trim() === "" ? null : Number(tope);
   const dias = Number.isFinite(objetivo) && objetivo > 0 ? Math.min(objetivo, 180) : reposicion.supuestos.coberturaObjetivoDias;
 
   const filas = useMemo(
     () => reposicion.filas
       .filter((f) => tipo === "todas" || f.tipo === tipo)
-      .map((f) => ({ ...f, sugeridoUi: f.revisar ? null : sugeridoPara(f.velocidad, f.disponible, dias) })),
-    [reposicion, tipo, dias]
+      .map((f) => {
+        const base = f.revisar ? null : sugeridoPara(f.velocidad, f.disponible, dias);
+        const conTope = base === null ? null : aplicarTope(base, topeNum);
+        return { ...f, sugeridoBase: base, sugeridoUi: conTope, limitado: base !== null && conTope !== null && conTope < base };
+      }),
+    [reposicion, tipo, dias, topeNum]
   );
   const r = reposicion.resumen;
   const sugeridoTotal = filas.reduce((s, f) => s + (f.sugeridoUi ?? 0), 0);
-  const hora = generadoEn ? new Date(generadoEn).toLocaleString("es-CL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : null;
+  const hora = generadoEn ? new Date(generadoEn).toLocaleString("es-CL", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : null;
+  const antiguedadMin = generadoEn ? Math.max(0, Math.round((Date.now() - Date.parse(generadoEn)) / 60000)) : null;
+  const limitadas = filas.filter((f) => f.limitado).length;
+  const picos = filas.filter((f) => f.picoReciente).length;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
@@ -38,8 +47,12 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
         <h2 className="font-bold text-gray-900 text-lg">Reposición de Full</h2>
         <p className="text-sm text-gray-500 mt-0.5">
           Pausadas por falta de stock que vendían en Full y activas por agotarse, ordenadas por margen perdido (o en riesgo) por día.
-          {hora && ` Estado y stock de las publicaciones al ${hora}.`}
         </p>
+        {hora && (
+          <p className="text-sm text-gray-700 mt-1">
+            <b>Último refresco:</b> {hora}{antiguedadMin !== null ? ` (hace ${antiguedadMin} min)` : ""} — estado y stock de las publicaciones al cargar el Tablero; para refrescar usa «Actualizar» arriba.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -55,12 +68,24 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
           <input type="number" min={1} max={180} value={objetivo} onChange={(e) => setObjetivo(Number(e.target.value))}
             className="w-20 border border-gray-200 rounded-lg py-1 px-2 text-gray-900" />
         </label>
+        <label className="flex items-center gap-2 text-gray-600" title="Opcional: limita el sugerido de cada publicación a este máximo. Vacío = sin tope.">
+          Tope por publicación (u)
+          <input type="number" min={1} placeholder="sin tope" value={tope} onChange={(e) => setTope(e.target.value)}
+            className="w-24 border border-gray-200 rounded-lg py-1 px-2 text-gray-900" />
+        </label>
         <select value={tipo} onChange={(e) => { setTipo(e.target.value as typeof tipo); setVisibles(30); }} className="border border-gray-200 rounded-lg py-1.5 px-2">
           <option value="todas">Todas</option>
           <option value="pausada">Pausadas sin stock</option>
           <option value="por_agotarse">Por agotarse</option>
         </select>
       </div>
+
+      {(picos > 0 || limitadas > 0) && (
+        <p className="text-xs text-gray-500">
+          {picos > 0 && <>{picos} con posible pico reciente (velocidad de 30 días mayor que {FACTOR_PICO_RECIENTE}× la de 90 días): revisa antes de pedir. </>}
+          {limitadas > 0 && <>{limitadas} con el sugerido limitado por el tope.</>}
+        </p>
+      )}
 
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -70,7 +95,8 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
               <th className="font-medium pb-1 pr-3">Estado</th>
               <th className="font-medium pb-1 pr-3 text-right">Disp.</th>
               <th className="font-medium pb-1 pr-3 text-right" title="Unidades vendidas por Full en 30 / 60 / 90 días">Full 30/60/90 d</th>
-              <th className="font-medium pb-1 pr-3 text-right" title="Unidades por día de la publicación (ventana de 30 días del Tablero, corregida por días sin stock, con piso en el promedio Full de 90 días)">Vel. u/día</th>
+              <th className="font-medium pb-1 pr-3 text-right" title="Unidades por día de la publicación en la ventana de 30 días del Tablero, corregida por los días sin stock">Vel. 30 d</th>
+              <th className="font-medium pb-1 pr-3 text-right" title="Unidades Full de los últimos 90 días ÷ los días que lleva en Full (máximo 90, mínimo 7). No se corrige por los días sin stock, así que puede subestimar el ritmo cuando estuvo agotada">Vel. 90 d</th>
               <th className="font-medium pb-1 pr-3 text-right" title="Margen neto por unidad de los últimos 120 días. Mezcla ventas por Full y por Normal y no incluye costos de Full.">Margen/u*</th>
               <th className="font-medium pb-1 pr-3 text-right" title="Disponible ÷ velocidad">Cobertura</th>
               <th className="font-medium pb-1 pr-3 text-right" title="Velocidad × margen unitario">Margen perdido/día</th>
@@ -83,6 +109,7 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
                 <td className="py-1.5 pr-3 max-w-[260px]">
                   <a href={link(f.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate" title={f.titulo}>{f.titulo}</a>
                   <span className="font-mono text-gray-400">{f.id}</span>
+                  {f.picoReciente && <span className="ml-2 rounded bg-amber-50 text-amber-800 px-1.5 py-0.5" title={`Velocidad de 30 días (${dec(f.velocidad30)}) mayor que ${FACTOR_PICO_RECIENTE}× la de 90 días (${dec(f.velocidad90)}). Puede ser un pico o días sin stock en los 90 días (el promedio de 90 días no se corrige por eso).`}>posible pico reciente, revisa antes de pedir</span>}
                   {f.n90 > 0 && <span className="ml-2 text-gray-400" title="Unidades vendidas por otro canal en 90 días: la velocidad y el margen incluyen canales mezclados">+{f.n90} u por otro canal</span>}
                 </td>
                 <td className="py-1.5 pr-3 whitespace-nowrap">
@@ -90,16 +117,17 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
                 </td>
                 <td className="py-1.5 pr-3 text-right">{f.disponible ?? "—"}</td>
                 <td className="py-1.5 pr-3 text-right whitespace-nowrap">{f.f30} / {f.f60} / {f.f90}</td>
-                <td className="py-1.5 pr-3 text-right">{dec(f.velocidad)}{f.velocidadConfiable ? "" : "*"}</td>
+                <td className="py-1.5 pr-3 text-right">{dec(f.velocidad30)}{f.velocidadConfiable ? "" : "*"}</td>
+                <td className="py-1.5 pr-3 text-right" title={`${f.f90} u Full ÷ ${f.diasEnFull} días`}>{dec(f.velocidad90)}</td>
                 <td className="py-1.5 pr-3 text-right">{f.margenUnitario === null ? "—" : clpSigno(f.margenUnitario)}</td>
                 <td className="py-1.5 pr-3 text-right">{f.tipo === "pausada" ? "agotada" : f.cobertura === null ? "—" : `${dec(f.cobertura)} d`}</td>
                 <td className="py-1.5 pr-3 text-right font-semibold">{f.margenPerdidoDia === null ? "—" : clp(f.margenPerdidoDia)}</td>
                 <td className="py-1.5 text-right">
-                  {f.revisar ? <span className="text-amber-700">{MOTIVO[f.revisar]}</span> : <span className="font-semibold">{num(f.sugeridoUi ?? 0)}</span>}
+                  {f.revisar ? <span className="text-amber-700">{MOTIVO[f.revisar]}</span> : <span className="font-semibold">{f.limitado ? <span title={`Sugerido sin tope: ${num(f.sugeridoBase ?? 0)}`}>{num(f.sugeridoUi ?? 0)} <span className="font-normal text-gray-400">(tope; sin tope {num(f.sugeridoBase ?? 0)})</span></span> : num(f.sugeridoUi ?? 0)}</span>}
                 </td>
               </tr>
             ))}
-            {filas.length === 0 && <tr><td colSpan={9} className="py-3 text-gray-500">Sin publicaciones en este grupo.</td></tr>}
+            {filas.length === 0 && <tr><td colSpan={10} className="py-3 text-gray-500">Sin publicaciones en este grupo.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -108,8 +136,8 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
       )}
 
       <div className="text-xs text-gray-500 space-y-1">
-        <p><b>Supuesto del sugerido:</b> velocidad × {dias} días de cobertura − disponible, redondeado hacia arriba. No se sugiere en las de margen unitario negativo o sin Costo: quedan marcadas para revisar antes de reponer.</p>
-        <p>* El margen unitario mezcla lo vendido por Full y por Normal en los últimos 120 días (neto, sin IVA, antes de publicidad) y no incluye costos propios de Full. La velocidad es de la publicación completa; si vendió por otro canal antes de pasar a Full, puede sobrestimar el ritmo de Full.</p>
+        <p><b>Supuesto del sugerido:</b> max(vel. 30 d, vel. 90 d) × {dias} días de cobertura − disponible, redondeado hacia arriba{topeNum !== null && topeNum > 0 ? `, con tope de ${Math.floor(topeNum)} u por publicación` : ""}. No se sugiere en las de margen unitario negativo o sin Costo: quedan marcadas para revisar antes de reponer.</p>
+        <p>* El margen unitario mezcla lo vendido por Full y por Normal en los últimos 120 días (neto, sin IVA, antes de publicidad) y no incluye costos propios de Full. La velocidad de 30 días es de la publicación completa; si vendió por otro canal antes de pasar a Full, puede sobrestimar el ritmo de Full. La de 90 días es solo Full y se divide por los días que lleva en Full (si entró hace menos de 90).</p>
         <p>Una velocidad con asterisco tiene pocos días con stock en la ventana y es menos confiable. El stock disponible viene de las publicaciones (/items), no del inventario Full por publicación.</p>
       </div>
     </div>
