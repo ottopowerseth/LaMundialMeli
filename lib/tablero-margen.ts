@@ -21,10 +21,19 @@
 //  - precio: promedio realmente vendido en la ventana (Métricas usa el precio
 //    vigente de la hoja; coinciden cuando no hubo cambios de precio).
 // Sin Costo (o sin envío / comisión) la fila NO tiene margen: no se asume 0.
+//
+// Full vs estándar: cada línea de venta usa el tipo logístico REAL de su orden
+// (LineaVenta.logistic, de ShippingCache); si la orden no tiene entrada, el tipo
+// ACTUAL de la publicación (fullPorItem) como respaldo. Una publicación que
+// vendió en los dos tipos dentro de la ventana calcula su envío por tipo (cada
+// tipo con su tarifa) y su margen es la suma; su fila muestra el tipo
+// predominante y el envío promedio ponderado por unidades. Con un solo tipo, y
+// siendo el mismo que el actual, el resultado es idéntico al criterio anterior.
 import { calcularMargen, IVA } from "@/lib/rentabilidad";
 import { resolverEnvio } from "@/lib/envio-medido";
 import type { ContextoEnvio } from "@/lib/envio-medido";
 import type { LineaVenta } from "@/lib/tablero-datos";
+import { grupoLogistico } from "@/lib/logistica";
 
 export const MARGEN_BAJO_PCT = 10;
 
@@ -68,34 +77,68 @@ export type EntradaMargen = {
 const redondear1 = (x: number) => Math.round(x * 10) / 10;
 
 export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen: ResumenMargen } {
-  const acc = new Map<string, { titulo: string; u: number; ing: number; ingFee: number; fee: number }>();
+  type PorTipo = { u: number; ing: number };
+  const acc = new Map<string, { titulo: string; u: number; ing: number; ingFee: number; fee: number; tipos: Map<boolean, PorTipo> }>();
   for (const l of e.lineas) {
-    const a = acc.get(l.item) ?? { titulo: l.titulo, u: 0, ing: 0, ingFee: 0, fee: 0 };
+    const a = acc.get(l.item) ?? { titulo: l.titulo, u: 0, ing: 0, ingFee: 0, fee: 0, tipos: new Map<boolean, PorTipo>() };
     a.u += l.cantidad;
     a.ing += l.cantidad * l.precio;
     if (l.fee !== null) { a.ingFee += l.cantidad * l.precio; a.fee += l.cantidad * l.fee; }
+    const esFullLinea = l.logistic ? grupoLogistico(l.logistic) === "Full" : (e.fullPorItem.get(l.item) ?? false);
+    const t = a.tipos.get(esFullLinea) ?? { u: 0, ing: 0 };
+    t.u += l.cantidad; t.ing += l.cantidad * l.precio;
+    a.tipos.set(esFullLinea, t);
     acc.set(l.item, a);
   }
 
   // margenNeto total en pesos (neto, de todas las unidades de la ventana): pondera el % y sale como margenPesos.
-  const interno = new Map<string, { margenNeto: number; ingresoNeto: number }>();
+  // porTipo guarda lo mismo repartido entre Full (true) y estándar (false), con el ingreso bruto de cada tipo.
+  const interno = new Map<string, { margenNeto: number; ingresoNeto: number; porTipo: Map<boolean, { margenNeto: number; ingresoNeto: number; ingreso: number }> }>();
   const filas: FilaMargen[] = [];
   for (const [id, a] of acc) {
     const precioProm = a.u > 0 ? a.ing / a.u : 0;
-    const full = e.fullPorItem.get(id) ?? false;
+    // Tipo predominante (por ingreso) de la publicación en la ventana: lo que muestra la fila.
+    let full = false, mayorIng = -1;
+    for (const [esF, t] of a.tipos) if (t.ing > mayorIng) { full = esF; mayorIng = t.ing; }
     const costoRaw = e.costoPorItem.get(id) ?? null;
     const costo = costoRaw !== null && costoRaw > 0 ? costoRaw : null;
     const comisionPct = a.ingFee > 0 ? a.fee / a.ingFee : null;
-    const envio = resolverEnvio(id, precioProm, full, e.skuPorItem.get(id) ?? null, e.ctxEnvio);
+    // Envío por tipo logístico; la fila muestra el promedio ponderado por unidades.
+    const envioPorTipo = new Map<boolean, ReturnType<typeof resolverEnvio>>();
+    for (const esF of a.tipos.keys()) envioPorTipo.set(esF, resolverEnvio(id, precioProm, esF, e.skuPorItem.get(id) ?? null, e.ctxEnvio));
+    const envios = [...envioPorTipo.values()];
+    const envio: ReturnType<typeof resolverEnvio> = envios.some((x) => x.envio === null)
+      ? { envio: null, fuente: null }
+      : envios.length === 1
+        ? envios[0]
+        : {
+            // Promedio ponderado por unidades; si todos los tipos tienen la misma tarifa, esa misma (sin ruido de coma flotante).
+            envio: envios.every((x) => x.envio === envios[0].envio)
+              ? envios[0].envio
+              : Math.round(([...a.tipos].reduce((s, [esF, t]) => s + (envioPorTipo.get(esF)!.envio as number) * t.u, 0) / a.u) * 100) / 100,
+            fuente: envios.some((x) => x.fuente === "estimado") ? "estimado" : "medido",
+          };
     let estado: EstadoMargen = "ok";
     if (costo === null) estado = "sin_costo";
     else if (comisionPct === null) estado = "sin_comision";
     else if (envio.envio === null) estado = "sin_envio";
     let margenPct: number | null = null;
     if (estado === "ok" && costo !== null && comisionPct !== null && envio.envio !== null) {
-      const m = calcularMargen(precioProm, costo, precioProm * comisionPct, envio.envio, 0);
-      margenPct = m.margenPct;
-      if (m.margenNeto !== null) interno.set(id, { margenNeto: m.margenNeto * a.u, ingresoNeto: (precioProm / (1 + IVA)) * a.u });
+      const porTipoMargen = new Map<boolean, { margenNeto: number; ingresoNeto: number; ingreso: number }>();
+      let mNetoTotal = 0, completo = true;
+      for (const [esF, t] of a.tipos) {
+        const mt = calcularMargen(precioProm, costo, precioProm * comisionPct, envioPorTipo.get(esF)!.envio as number, 0);
+        if (mt.margenNeto === null) { completo = false; continue; }
+        porTipoMargen.set(esF, { margenNeto: mt.margenNeto * t.u, ingresoNeto: (precioProm / (1 + IVA)) * t.u, ingreso: t.ing });
+        mNetoTotal += mt.margenNeto * t.u;
+      }
+      const ingNetoTotal = (precioProm / (1 + IVA)) * a.u;
+      if (a.tipos.size === 1) {
+        margenPct = calcularMargen(precioProm, costo, precioProm * comisionPct, envio.envio, 0).margenPct;
+      } else if (completo && ingNetoTotal > 0) {
+        margenPct = Math.round((mNetoTotal / ingNetoTotal) * 1000) / 10;
+      }
+      if (completo) interno.set(id, { margenNeto: mNetoTotal, ingresoNeto: ingNetoTotal, porTipo: porTipoMargen });
     }
     filas.push({
       id, titulo: a.titulo, full, unidades: a.u, ingreso: a.ing, precioProm: Math.round(precioProm),
@@ -114,6 +157,17 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
     const ing = sel.reduce((s, x) => s + (interno.get(x.id)?.ingresoNeto ?? 0), 0);
     return { ingreso: Math.round(sel.reduce((s, x) => s + x.ingreso, 0)), margenPct: ing > 0 ? redondear1((mn / ing) * 100) : null, margenPesos: Math.round(mn), publicaciones: sel.length };
   };
+  // Subtotal por tipo logístico de la VENTA (no de la publicación): una publicación que vendió en los
+  // dos tipos aporta a ambos; "publicaciones" la cuenta en cada uno.
+  const subTipo = (esFull: boolean): SubtotalMargen => {
+    let mn = 0, ing = 0, ingBruto = 0, n = 0;
+    for (const x of filas) {
+      const t = x.margenPct !== null ? interno.get(x.id)?.porTipo.get(esFull) : undefined;
+      if (!t) continue;
+      mn += t.margenNeto; ing += t.ingresoNeto; ingBruto += t.ingreso; n++;
+    }
+    return { ingreso: Math.round(ingBruto), margenPct: ing > 0 ? redondear1((mn / ing) * 100) : null, margenPesos: Math.round(mn), publicaciones: n };
+  };
   const enAlcance = filas.filter((x) => !x.fueraDeAlcance);
   const ingresoVentana = enAlcance.reduce((s, x) => s + x.ingreso, 0);
   const conMargen = sub(() => true);
@@ -124,7 +178,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
     filas,
     resumen: {
       total: { ...conMargen, coberturaPct: pct(conMargen.ingreso, ingresoVentana), ingresoVentana: Math.round(ingresoVentana) },
-      porTipo: { full: sub((x) => x.full), estandar: sub((x) => !x.full) },
+      porTipo: { full: subTipo(true), estandar: subTipo(false) },
       menosFiable: {
         pctIngreso: pct(sub((x) => x.menosFiable).ingreso, conMargen.ingreso),
         fullEstimado: filas.filter((x) => x.margenPct !== null && x.menosFiable && x.full).length,

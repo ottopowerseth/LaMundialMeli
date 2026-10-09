@@ -10,6 +10,7 @@ import { cargarItemsStock, cargarVentas, cargarVisitas, ventanaPorDias } from "@
 import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
 import type { ItemStock } from "@/lib/tablero-stock";
 import { calcularConfianza, resumirVentas, variacion } from "@/lib/tablero-resumen";
+import { asignarLogistico, coberturaLogistica, parsearLogisticoPorOrden } from "@/lib/logistica";
 
 // Tablero "desde arriba": un solo endpoint, calculado en vivo y sin hojas
 // nuevas. Todas las secciones comparten los mismos datos — 120 días de órdenes
@@ -51,12 +52,15 @@ export async function GET(req: NextRequest) {
     const filasPub = await readSheet("Publicaciones!A2:S3000");
     const idsPublicaciones = filasPub.filter((r) => r[0] && ["active", "paused"].includes(r[10])).map((r) => String(r[0]));
     const yoP = mlGet<{ id: number }>("/users/me").then((r) => r.data);
-    const [ventas, filasTarifa, filasOrigen, itemsMl] = await Promise.all([
+    const [ventas, filasTarifa, filasOrigen, itemsMl, filasEnvios] = await Promise.all([
       yoP.then((user) => cargarVentas(mlGet, user.id, historiaDesde, hastaMs)),
       readSheet("TarifaEnvio!A2:L5000").catch(() => [] as string[][]),
       readSheet("CostoOrigen!A2:J5000").catch(() => [] as string[][]),
       cargarItemsStock(mlGet, idsPublicaciones),
+      // Tipo logístico real por orden (ShippingCache, ~5.200 filas): una lectura más, en paralelo.
+      readSheet("ShippingCache!A2:C100000").catch(() => [] as string[][]),
     ]);
+    asignarLogistico(ventas.lineas, parsearLogisticoPorOrden(filasEnvios));
 
     const costoPorItem = costoPorItemDesdeHoja(filasPub);
     const origenPorItem = new Map<string, string>();
@@ -86,10 +90,11 @@ export async function GET(req: NextRequest) {
     // ---- Margen de contribución (ver lib/tablero-margen.ts) ----
     const fullPorItem = new Map<string, boolean>();
     for (const it of itemsMl.values()) fullPorItem.set(it.id, it.full);
-    const margen = margenDesdeDatos({
-      filasPub, fullPorItem, tarifas, costoPorItem, fueraDeAlcance,
-      lineas: ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs),
-    });
+    const lineasVentana = ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs);
+    const margen = margenDesdeDatos({ filasPub, fullPorItem, tarifas, costoPorItem, fueraDeAlcance, lineas: lineasVentana });
+    // Cobertura del tipo real por orden: % del ingreso con entrada en ShippingCache, % en respaldo
+    // (tipo actual de la publicación) y desglose por grupo.
+    const logistica = coberturaLogistica(lineasVentana, fullPorItem);
 
     // ---- Pareto y series (ver lib/tablero-series.ts) ----
     // Las series terminan hoy aunque la ventana pedida llegue más allá (p. ej.
@@ -135,6 +140,7 @@ export async function GET(req: NextRequest) {
         },
       },
       confianza,
+      logistica,
       margen: { resumen: margen.resumen, filas: margen.filas },
       tendencias,
       stock: {

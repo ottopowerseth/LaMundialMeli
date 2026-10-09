@@ -84,6 +84,14 @@ type VentasMetrics = {
   ticketPromedio?: number;
   ranking?: ProductoRanking[];
   comparacion?: ComparacionPeriodo | null;
+  porLogistica?: {
+    ingresoVentana: number;
+    real: { ingreso: number; pct: number };
+    respaldo: { ingreso: number; pct: number };
+    sinDato: { ingreso: number; pct: number };
+    porGrupo: Record<string, { ingreso: number; pct: number; ordenes: number }>;
+    respaldoPorTipo: { full: number; noFull: number };
+  };
   error?: string;
 };
 type ReputacionMetrics = {
@@ -1793,6 +1801,22 @@ export default function Home() {
                         <p className="text-xl font-bold text-gray-900">${(metricsResult.ventas.ticketPromedio ?? 0).toLocaleString("es-CL")}</p>
                         <VariacionBadge variacion={metricsResult.ventas.comparacion?.ticketPromedio} />
                       </div>
+                      {metricsResult.ventas.porLogistica && (
+                        <div className="col-span-2 sm:col-span-4 border-t border-gray-100 pt-3 text-sm text-gray-600 space-y-1">
+                          <p className="font-medium text-gray-700">Ingreso por tipo logístico (tipo real de cada orden)</p>
+                          <p>
+                            {Object.entries(metricsResult.ventas.porLogistica.porGrupo)
+                              .filter(([, g]) => g.ingreso > 0)
+                              .map(([nombre, g]) => `${nombre}: ${formatCLP(g.ingreso)} (${g.pct}%)`)
+                              .join(" · ") || "Sin ventas con tipo real"}
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            {metricsResult.ventas.porLogistica.real.pct}% del ingreso con tipo real
+                            {metricsResult.ventas.porLogistica.respaldo.pct > 0 ? ` · ${metricsResult.ventas.porLogistica.respaldo.pct}% en respaldo (tipo actual de la publicación: Full ${formatCLP(metricsResult.ventas.porLogistica.respaldoPorTipo.full)}, no Full ${formatCLP(metricsResult.ventas.porLogistica.respaldoPorTipo.noFull)})` : ""}
+                            {metricsResult.ventas.porLogistica.sinDato.pct > 0 ? ` · ${metricsResult.ventas.porLogistica.sinDato.pct}% sin dato` : ""}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.ventas?.error ? ` (${metricsResult.ventas.error})` : ""}.</p>

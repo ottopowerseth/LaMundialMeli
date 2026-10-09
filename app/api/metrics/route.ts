@@ -3,6 +3,9 @@ import axios from "axios";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { listarOrdenesRango } from "@/lib/backfill-shipping";
+import { cargarItemsStock } from "@/lib/tablero-datos";
+import { coberturaLogistica, parsearLogisticoPorOrden } from "@/lib/logistica";
+import type { CoberturaLogistica } from "@/lib/logistica";
 import { readSheet } from "@/lib/sheets";
 import { calcularMargen, IVA } from "@/lib/rentabilidad";
 import { obtenerAdsPorItem, ROAS_METRICS_FIELDS } from "@/lib/ml-ads";
@@ -29,6 +32,8 @@ type VentasMetrics = {
   comisionPorItem?: Record<string, AcumuladoComision>;
   ranking?: ProductoRanking[];
   comparacion?: ComparacionPeriodo | null;
+  // Ingreso por tipo logístico REAL de cada orden (ShippingCache), con el % real y el % en respaldo.
+  porLogistica?: CoberturaLogistica;
   error?: string;
 };
 
@@ -227,6 +232,8 @@ export async function GET(req: NextRequest) {
     const mlGet = <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) =>
       withMlRetry(() => mlClient.get<T>(url, { params, headers }), { budget });
 
+    // Tipo logístico real por orden (ShippingCache): se lee en paralelo con /users/me.
+    const logisticoP = readSheet("ShippingCache!A2:C100000").catch(() => [] as string[][]).then(parsearLogisticoPorOrden);
     const { data: user } = await mlGet<{ id: string; seller_reputation?: Record<string, unknown> }>("/users/me");
     const userId = user.id;
     let { desde, hasta } = rangoFechas(periodo);
@@ -236,7 +243,7 @@ export async function GET(req: NextRequest) {
 
     // Ventas primero (no en paralelo con Visitas): el top de publicaciones
     // por ventas del período define qué items consultar en Visitas.
-    const ventas = await calcularVentas(mlGet, userId, desde, hasta);
+    const ventas = await calcularVentas(mlGet, userId, desde, hasta, await logisticoP);
     const { desde: desdeAnterior, hasta: hastaAnterior } = rangoAnterior(periodo, desde, hasta);
     const [reputacion, visitas, preguntas, reclamos, roasResultado, ventasAnterior] = await Promise.all([
       Promise.resolve(calcularReputacion(user)),
@@ -319,7 +326,8 @@ async function calcularVentas(
   mlGet: <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) => Promise<{ data: T }>,
   userId: string,
   desde: Date,
-  hasta: Date
+  hasta: Date,
+  logisticoPorOrden?: Map<string, string>
 ): Promise<VentasMetrics> {
   try {
     let totalVendido = 0;
@@ -355,6 +363,28 @@ async function calcularVentas(
         acumularComision(comisionAcc, itemId, qty, precio, it.sale_fee);
       }
     }
+    // Desglose por tipo logístico real. Las órdenes sin entrada en ShippingCache usan el tipo ACTUAL
+    // de su publicación (respaldo, se consulta solo para esas); si tampoco hay dato quedan "sin dato".
+    let porLogistica: CoberturaLogistica | undefined;
+    if (logisticoPorOrden) {
+      const itemDe = (o: Record<string, unknown>) =>
+        String(((o.order_items as Record<string, unknown>[] | undefined)?.[0]?.item as Record<string, unknown> | undefined)?.id ?? "");
+      const sinEntrada = ordenes.filter((o) => !logisticoPorOrden.has(String(o.id)));
+      const fullActual = new Map<string, boolean>();
+      const idsRespaldo = [...new Set(sinEntrada.map(itemDe).filter(Boolean))];
+      if (idsRespaldo.length > 0) {
+        try {
+          for (const [itemId, it] of await cargarItemsStock((u) => mlGet(u), idsRespaldo)) fullActual.set(itemId, it.full);
+        } catch { /* sin respaldo: esas órdenes quedan "sin dato" */ }
+      }
+      porLogistica = coberturaLogistica(
+        ordenes.map((o) => ({
+          orden: String(o.id), ms: 0, item: itemDe(o), titulo: "", cantidad: 1, precio: Number(o.total_amount) || 0, fee: null,
+          logistic: logisticoPorOrden.get(String(o.id)) ?? null,
+        })),
+        fullActual
+      );
+    }
     return {
       ok: true,
       totalVendido,
@@ -363,6 +393,7 @@ async function calcularVentas(
       ticketPromedio: cantidadOrdenes > 0 ? Math.round(totalVendido / cantidadOrdenes) : 0,
       ventasPorItem,
       comisionPorItem: Object.fromEntries(comisionAcc),
+      porLogistica,
     };
   } catch (err) {
     return { ok: false, error: String(err) };

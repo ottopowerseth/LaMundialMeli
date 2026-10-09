@@ -65,6 +65,14 @@ type PuntoSerie = Resumen & {
   variacion: { ingresos: number | null; unidades: number | null; ordenes: number | null; ticket: number | null };
   comparadoCon: { desde: string; hasta: string } | null;
 };
+type Logistica = {
+  ingresoVentana: number;
+  real: { ingreso: number; pct: number };
+  respaldo: { ingreso: number; pct: number };
+  sinDato: { ingreso: number; pct: number };
+  porGrupo: Record<string, { ingreso: number; pct: number; ordenes: number }>;
+  respaldoPorTipo: { full: number; noFull: number };
+};
 type TendenciasApi = { pareto: { ventana: Pareto; noventa: Pareto }; semanas: PuntoSerie[]; meses: PuntoSerie[]; datosDesde: string };
 type TableroApi = {
   ok: boolean;
@@ -73,6 +81,7 @@ type TableroApi = {
   ventana?: { desde: string; hasta: string; dias: number };
   resumen?: { actual: Resumen; anterior: Resumen; variaciones: { ingresos: Variacion; unidades: Variacion; ordenes: Variacion; ticket: Variacion } };
   confianza?: Confianza;
+  logistica?: Logistica;
   stock?: StockApi;
   margen?: MargenApi;
   tendencias?: TendenciasApi;
@@ -291,7 +300,7 @@ function SeccionMargen({ margen, dias }: { margen: MargenApi; dias?: number }) {
           )}
         </div>
         <div className="bg-gray-50 rounded-xl p-3">
-          <p className="text-xs text-gray-500">Full / Estándar</p>
+          <p className="text-xs text-gray-500" title="Por el tipo logístico real de cada venta; las ventas sin dato usan el tipo actual de la publicación.">Full / Estándar (por tipo de la venta)</p>
           <p className="text-sm font-semibold text-gray-800 mt-1">{pctTxt(r.porTipo.full.margenPct)} <span className="text-gray-400 font-normal">· {pctTxt(r.porTipo.estandar.margenPct)}</span></p>
           <p className="text-xs text-gray-400">{clpSigno(r.porTipo.full.margenPesos)} · {clpSigno(r.porTipo.estandar.margenPesos)} neto (est.) · {r.porTipo.full.publicaciones} Full · {r.porTipo.estandar.publicaciones} estándar con margen</p>
         </div>
@@ -534,6 +543,15 @@ export default function Tablero() {
               <Chip etiqueta="Comisión real" pct={c.comisionReal.pct}
                 detalle="Comisión cobrada (sale_fee) en las órdenes de la ventana." />
             </div>
+            {datos?.logistica && (
+              <p className="text-xs text-gray-500" title="Tipo logístico (logistic_type de /shipments) guardado por orden en la hoja ShippingCache. Las órdenes sin entrada usan el tipo ACTUAL de su publicación (respaldo).">
+                Tipo logístico por orden: <b>{datos.logistica.real.pct}%</b> del ingreso con tipo real
+                {datos.logistica.respaldo.pct > 0 ? <> · <b>{datos.logistica.respaldo.pct}%</b> en respaldo (tipo actual de la publicación)</> : null}
+                {datos.logistica.sinDato.pct > 0 ? <> · {datos.logistica.sinDato.pct}% sin dato</> : null}
+                {" — "}
+                {Object.entries(datos.logistica.porGrupo).filter(([, g]) => g.ingreso > 0).map(([n, g]) => n + " " + clp(g.ingreso) + " (" + g.pct + "%)").join(" · ")}
+              </p>
+            )}
             {c.costo.enRevision > 0 && (
               <p className="text-xs text-gray-500">{c.costo.enRevision}% del ingreso está en SKUs con Costo propuesto pero en revisión (no escrito).</p>
             )}

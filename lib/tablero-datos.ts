@@ -23,6 +23,9 @@ export type LineaVenta = {
   cantidad: number;
   precio: number; // unit_price bruto
   fee: number | null; // sale_fee POR UNIDAD (null si la línea no lo trae)
+  // logistic_type REAL de la orden (ShippingCache, ver lib/logistica.ts), crudo.
+  // null = sin entrada; undefined = no se cargó. Solo lo lee el margen.
+  logistic?: string | null;
 };
 export type OrdenVenta = { id: string; ms: number; total: number };
 export type VentasCargadas = { lineas: LineaVenta[]; ordenes: OrdenVenta[]; desdeMs: number; hastaMs: number };
