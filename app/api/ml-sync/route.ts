@@ -4,16 +4,22 @@ import { ensureSheets, clearSheet, readSheet, writeSheet, appendSheet } from "@/
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { getComisionPct, IVA } from "@/lib/rentabilidad";
+import { agregarSinDuplicar, resolverEnviosPendientes, seleccionarEnviosPendientes } from "@/lib/backfill-shipping";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
 
-// Tope de shipments NUEVOS (no vistos en ShippingCache) a resolver por sync.
-// Las órdenes que no lleguen a procesarse por este tope (no por error) quedan
-// sin "Logístico" y se resuelven solas en el próximo sync — al no estar en
-// el cache, vuelven a intentarse. Con ~1450 órdenes de backlog y 150/sync,
-// hacen falta ~10 syncs para cubrir el histórico completo.
+// Tope de shipments NUEVOS (no vistos en ShippingCache) a resolver por sync, y
+// solo de los últimos DIAS_ENVIOS_NUEVOS días: lo más viejo lo cubre el
+// backfill del tab Sync (/api/backfill-shipping, ventanas de un día), así el
+// sync no gasta su tope en histórico. Las órdenes recientes que no lleguen a
+// procesarse por el tope (no por error) quedan sin "Logístico" y se resuelven
+// en el próximo sync — al no estar en el cache, vuelven a intentarse.
 const MAX_SHIPMENTS_NUEVOS_POR_SYNC = 150;
+const DIAS_ENVIOS_NUEVOS = 7;
+// Se escribe a ShippingCache cada tantas filas acumuladas (y al terminar o
+// cortar por budget): menos escrituras que una por lote de 8.
+const FILAS_POR_ESCRITURA_CACHE = 48;
 const SHIPMENT_BATCH_SIZE = 8;
 
 // Precio de Venta (G) es el precio publicado en ML (bruto, con IVA) y
@@ -337,44 +343,27 @@ export async function POST() {
       // Órdenes en `orders` ya vienen date_desc (más recientes primero) desde
       // la paginación de arriba, así que iterar en ese orden natural ya
       // prioriza lo más reciente sin lógica extra.
-      const ordenesSinCache = orders.filter((o) => !cacheLogisticoPorOrden.has(String(o.id)));
-      const ordenesAProcesar = ordenesSinCache.slice(0, MAX_SHIPMENTS_NUEVOS_POR_SYNC);
+      const ordenesAProcesar = seleccionarEnviosPendientes(
+        orders,
+        cacheLogisticoPorOrden, Date.now(), DIAS_ENVIOS_NUEVOS, MAX_SHIPMENTS_NUEVOS_POR_SYNC
+      );
 
-      for (let i = 0; i < ordenesAProcesar.length; i += SHIPMENT_BATCH_SIZE) {
-        const lote = ordenesAProcesar.slice(i, i + SHIPMENT_BATCH_SIZE);
-        const resultados = await Promise.all(
-          lote.map(async (order) => {
-            const shippingId = (order.shipping as Record<string, unknown>)?.id;
-            if (!shippingId) return { orderId: String(order.id), logisticType: null };
-            try {
-              const { data } = await mlGet<{ logistic_type?: string }>(`/shipments/${shippingId}`);
-              return { orderId: String(order.id), shippingId, logisticType: data.logistic_type ?? "" };
-            } catch (err) {
-              if (err instanceof SyncRetryBudgetExceededError) throw err;
-              erroresValidacion.push(`Orden ${order.id}: no se pudo obtener el tipo de envío (${String(err)})`);
-              return { orderId: String(order.id), shippingId, logisticType: null };
-            }
-          })
-        );
-
-        // Se guarda al final de cada batch, no al final de todos: si el
-        // budget corta la ejecución (o cualquier excepción escapa del loop)
-        // a mitad de camino, los shipments de batches anteriores ya quedaron
-        // persistidos y no se pierden.
-        const nuevasEntradasBatch: string[][] = [];
-        for (const r of resultados) {
-          if (r.logisticType !== null) {
-            cacheLogisticoPorOrden.set(r.orderId, r.logisticType);
-            // Prefijo "'" fuerza texto literal en Sheets (USER_ENTERED
-            // autoformatea IDs numéricos largos a notación científica, lo
-            // que rompería el matching por ID Orden en el próximo sync).
-            nuevasEntradasBatch.push([`'${r.orderId}`, `'${String(r.shippingId ?? "")}`, r.logisticType, new Date().toISOString()]);
-          }
-        }
-        if (nuevasEntradasBatch.length > 0) {
-          await appendSheet("ShippingCache!A:D", nuevasEntradasBatch);
-        }
-      }
+      // Se escribe a ShippingCache cada FILAS_POR_ESCRITURA_CACHE filas y, vía el
+      // finally de resolverEnviosPendientes, también si el budget corta la
+      // ejecución a mitad de camino. agregarSinDuplicar relee la columna A justo
+      // antes de agregar y descarta ids que ya existan (otra corrida o el
+      // backfill): no genera duplicados nuevos.
+      await resolverEnviosPendientes(
+        ordenesAProcesar,
+        {
+          getEnvio: async (shippingId) => (await mlGet<{ logistic_type?: string }>(`/shipments/${shippingId}`)).data,
+          persistir: (filas) => agregarSinDuplicar((r) => readSheet(r), (f) => appendSheet("ShippingCache!A:D", f), filas),
+          esFatal: (err) => err instanceof SyncRetryBudgetExceededError,
+          alResolver: (orderId, tipo) => cacheLogisticoPorOrden.set(orderId, tipo),
+          alFallar: (orderId, err) => erroresValidacion.push(`Orden ${orderId}: no se pudo obtener el tipo de envío (${String(err)})`),
+        },
+        { tamLote: SHIPMENT_BATCH_SIZE, filasPorEscritura: FILAS_POR_ESCRITURA_CACHE }
+      );
 
       // Columnas J (ID Item) y K (Logístico) se agregan al final, no en medio,
       // para no correr los índices que ya leen esta hoja por posición

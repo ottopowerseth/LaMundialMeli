@@ -205,3 +205,106 @@ export async function ejecutarBackfill(deps: DepsBackfill, opts: OpcionesBackfil
   }
   return r;
 }
+
+// ---------------------------------------------------------------------
+// Compartido con ml-sync (Fase C).
+// ---------------------------------------------------------------------
+
+// Órdenes cuyo envío hay que consultar en un sync: sin tipo en la caché, no
+// canceladas (igual que el backfill) y creadas en los últimos `diasMax` días,
+// las más recientes primero, hasta `tope`. Lo más viejo lo cubre el backfill.
+export function seleccionarEnviosPendientes<T extends Record<string, unknown>>(
+  ordenes: T[],
+  conTipo: { has(id: string): boolean },
+  ahoraMs: number,
+  diasMax: number,
+  tope: number
+): T[] {
+  const desde = ahoraMs - diasMax * DIA_MS;
+  return ordenes
+    .filter((o) => o.status !== "cancelled" && !conTipo.has(String(o.id)) && new Date(String(o.date_created)).getTime() >= desde)
+    .sort((a, b) => new Date(String(b.date_created)).getTime() - new Date(String(a.date_created)).getTime())
+    .slice(0, tope);
+}
+
+// Agrega a la hoja solo las filas cuyo id (columna A) todavía no está:
+// relee la columna justo antes de escribir, así otra corrida (backfill, otra
+// pestaña) no produce duplicados nuevos.
+export async function agregarSinDuplicar(
+  leerHoja: (rango: string) => Promise<unknown[][]>,
+  agregarFilas: (filas: string[][]) => Promise<void>,
+  filas: string[][]
+): Promise<{ escritas: number; descartadas: number }> {
+  if (filas.length === 0) return { escritas: 0, descartadas: 0 };
+  const enHoja = new Set((await leerHoja("ShippingCache!A2:A100000")).map((f) => idPlano(f[0])));
+  const vistas = new Set<string>();
+  const nuevas = filas.filter((f) => {
+    const id = idPlano(f[0]);
+    if (enHoja.has(id) || vistas.has(id)) return false;
+    vistas.add(id);
+    return true;
+  });
+  if (nuevas.length > 0) await agregarFilas(nuevas);
+  return { escritas: nuevas.length, descartadas: filas.length - nuevas.length };
+}
+
+// Consulta /shipments de las órdenes dadas, de a lotes, y escribe las filas
+// nuevas de ShippingCache cada `filasPorEscritura`. El finally escribe lo
+// pendiente cuando la ejecución se corta antes de terminar: por el
+// presupuesto de reintentos/tiempo de ml-sync (esFatal) o por cualquier otra
+// excepción. `persistir` debe ser tolerante a duplicados (agregarSinDuplicar).
+export async function resolverEnviosPendientes(
+  ordenes: Record<string, unknown>[],
+  deps: {
+    getEnvio: (shippingId: string) => Promise<{ logistic_type?: string }>;
+    persistir: (filas: string[][]) => Promise<unknown>;
+    esFatal: (err: unknown) => boolean; // p. ej. SyncRetryBudgetExceededError: se relanza
+    alResolver?: (orderId: string, logisticType: string) => void;
+    alFallar?: (orderId: string, err: unknown) => void;
+    ahora?: () => number;
+  },
+  opts: { tamLote?: number; filasPorEscritura?: number } = {}
+): Promise<{ resueltas: number; escritasEnLlamadas: number }> {
+  const tamLote = opts.tamLote ?? SHIPMENT_BATCH_SIZE;
+  const filasPorEscritura = opts.filasPorEscritura ?? 48;
+  const ahora = deps.ahora ?? Date.now;
+  let pendientes: string[][] = [];
+  let resueltas = 0, escritasEnLlamadas = 0;
+  const vaciar = async () => {
+    if (pendientes.length === 0) return;
+    const filas = pendientes;
+    pendientes = [];
+    escritasEnLlamadas++;
+    await deps.persistir(filas);
+  };
+  try {
+    for (let i = 0; i < ordenes.length; i += tamLote) {
+      const lote = ordenes.slice(i, i + tamLote);
+      const resultados = await Promise.all(lote.map(async (o) => {
+        const orderId = String(o.id);
+        const shippingId = (o.shipping as Record<string, unknown> | null | undefined)?.id;
+        if (!shippingId) return null;
+        try {
+          const { logistic_type } = await deps.getEnvio(String(shippingId));
+          return { orderId, shippingId: String(shippingId), tipo: logistic_type ?? "" };
+        } catch (err) {
+          if (deps.esFatal(err)) throw err;
+          deps.alFallar?.(orderId, err);
+          return null;
+        }
+      }));
+      for (const r of resultados) {
+        if (!r) continue;
+        resueltas++;
+        deps.alResolver?.(r.orderId, r.tipo);
+        // Prefijo "'" fuerza texto literal en Sheets (USER_ENTERED autoformatea
+        // IDs numéricos largos a notación científica y rompería el matching).
+        pendientes.push([`'${r.orderId}`, `'${r.shippingId}`, r.tipo, new Date(ahora()).toISOString()]);
+      }
+      if (pendientes.length >= filasPorEscritura) await vaciar();
+    }
+  } finally {
+    await vaciar();
+  }
+  return { resueltas, escritasEnLlamadas };
+}
