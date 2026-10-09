@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
+import { listarOrdenesRango } from "@/lib/backfill-shipping";
 import { readSheet } from "@/lib/sheets";
 import { calcularMargen, IVA } from "@/lib/rentabilidad";
 import { obtenerAdsPorItem, ROAS_METRICS_FIELDS } from "@/lib/ml-ads";
@@ -228,7 +229,10 @@ export async function GET(req: NextRequest) {
 
     const { data: user } = await mlGet<{ id: string; seller_reputation?: Record<string, unknown> }>("/users/me");
     const userId = user.id;
-    const { desde, hasta } = rangoFechas(periodo);
+    let { desde, hasta } = rangoFechas(periodo);
+    // Opcional (verificación y rangos largos): desde/hasta ISO fijan la ventana exacta, igual que /api/tablero.
+    const desdeQ = Date.parse(searchParams.get("desde") ?? ""), hastaQ = Date.parse(searchParams.get("hasta") ?? "");
+    if (!Number.isNaN(desdeQ) && !Number.isNaN(hastaQ) && hastaQ > desdeQ) { desde = new Date(desdeQ); hasta = new Date(hastaQ); }
 
     // Ventas primero (no en paralelo con Visitas): el top de publicaciones
     // por ventas del período define qué items consultar en Visitas.
@@ -323,42 +327,33 @@ async function calcularVentas(
     let cantidadOrdenes = 0;
     const ventasPorItem: Record<string, { titulo: string; unidades: number; monto: number }> = {};
     const comisionAcc = new Map<string, AcumuladoComision>();
-    let offset = 0;
-    while (offset <= 1000) {
-      const { data } = await mlGet<{ results: Record<string, unknown>[]; paging: { total: number } }>(
-        "/orders/search",
-        {
-          seller: userId,
-          "order.status": "paid",
-          "order.date_created.from": desde.toISOString(),
-          "order.date_created.to": hasta.toISOString(),
-          sort: "date_desc",
-          limit: 50,
-          offset,
+    // Ventanas de un día (lib/backfill-shipping.ts, la misma lógica del backfill)
+    // en vez de paginar por offset: antes se cortaba en offset <= 1000 (~1.100
+    // órdenes), que un período largo (un mes con más de ~1.100 ventas) supera.
+    // ML se pasa hasta ~1 h en el borde "to" de cada ventana: se descartan las órdenes fuera
+    // del rango por su fecha real y las repetidas (así queda igual que el Tablero).
+    const { ordenes } = await listarOrdenesRango<Record<string, unknown> & { id: number | string; date_created?: unknown }>(
+      (u) => mlGet(u), userId, desde.getTime(), hastaEfectivo(hasta).getTime(), { extraQuery: "&order.status=paid" }
+    );
+    for (const order of ordenes) {
+      totalVendido += Number(order.total_amount) || 0;
+      cantidadOrdenes++;
+      const items = (order.order_items as Record<string, unknown>[]) ?? [];
+      for (const it of items) {
+        const qty = Number(it.quantity) || 0;
+        unidades += qty;
+        const itemInfo = it.item as Record<string, unknown> | undefined;
+        const itemId = itemInfo?.id as string | undefined;
+        if (!itemId) continue;
+        const precio = Number(it.unit_price) || 0;
+        if (!ventasPorItem[itemId]) {
+          ventasPorItem[itemId] = { titulo: (itemInfo?.title as string) ?? itemId, unidades: 0, monto: 0 };
         }
-      );
-      for (const order of data.results ?? []) {
-        totalVendido += Number(order.total_amount) || 0;
-        cantidadOrdenes++;
-        const items = (order.order_items as Record<string, unknown>[]) ?? [];
-        for (const it of items) {
-          const qty = Number(it.quantity) || 0;
-          unidades += qty;
-          const itemInfo = it.item as Record<string, unknown> | undefined;
-          const itemId = itemInfo?.id as string | undefined;
-          if (!itemId) continue;
-          const precio = Number(it.unit_price) || 0;
-          if (!ventasPorItem[itemId]) {
-            ventasPorItem[itemId] = { titulo: (itemInfo?.title as string) ?? itemId, unidades: 0, monto: 0 };
-          }
-          ventasPorItem[itemId].unidades += qty;
-          ventasPorItem[itemId].monto += qty * precio;
-          // sale_fee es POR UNIDAD (comisión real cobrada, bruta).
-          acumularComision(comisionAcc, itemId, qty, precio, it.sale_fee);
-        }
+        ventasPorItem[itemId].unidades += qty;
+        ventasPorItem[itemId].monto += qty * precio;
+        // sale_fee es POR UNIDAD (comisión real cobrada, bruta).
+        acumularComision(comisionAcc, itemId, qty, precio, it.sale_fee);
       }
-      if (data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
-      offset += 50;
     }
     return {
       ok: true,

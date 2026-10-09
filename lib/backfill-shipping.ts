@@ -128,18 +128,7 @@ export async function ejecutarBackfill(deps: DepsBackfill, opts: OpcionesBackfil
     buffer = [];
   }
 
-  async function listarDia(desdeMs: number, hastaMs: number): Promise<OrdenApi[]> {
-    const base =
-      `/orders/search?seller=${deps.userId}&order.date_created.from=${new Date(desdeMs).toISOString()}` +
-      `&order.date_created.to=${new Date(hastaMs - 1).toISOString()}&sort=date_desc&limit=50`;
-    const porId = new Map<string, OrdenApi>(); // deduplica: ML a veces repite una orden en el borde de página
-    for (let offset = 0; offset < 9950; offset += 50) {
-      const { data } = await mlGet<{ results: OrdenApi[]; paging: { total: number } }>(`${base}&offset=${offset}`);
-      for (const o of data.results) porId.set(String(o.id), o);
-      if (data.results.length < 50 || offset + 50 >= data.paging.total) break;
-    }
-    return [...porId.values()];
-  }
+  const listarDia = (desdeMs: number, hastaMs: number) => listarOrdenesDia<OrdenApi>(mlGet, deps.userId, desdeMs, hastaMs);
 
   const finDeHoy = (() => { const d = new Date(ahora()); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1); })();
   const limite = finDeHoy - dias * DIA_MS;
@@ -204,6 +193,67 @@ export async function ejecutarBackfill(deps: DepsBackfill, opts: OpcionesBackfil
     r.duracionMs = ahora() - t0;
   }
   return r;
+}
+
+// ---------------------------------------------------------------------
+// Listado de órdenes por ventanas de fecha (compartido con Métricas).
+// ---------------------------------------------------------------------
+
+// Órdenes del vendedor creadas en [desdeMs, hastaMs) — una ventana, normalmente
+// de un día, así que queda muy por debajo del tope de offset (10.000) de ML.
+// `extraQuery` agrega filtros ("&order.status=paid"). Deduplica por id: ML a
+// veces repite una orden en el borde de página.
+export async function listarOrdenesDia<T extends { id: number | string }>(
+  get: GetFn, userId: string | number, desdeMs: number, hastaMs: number, extraQuery = ""
+): Promise<T[]> {
+  const base =
+    `/orders/search?seller=${userId}&order.date_created.from=${new Date(desdeMs).toISOString()}` +
+    `&order.date_created.to=${new Date(hastaMs - 1).toISOString()}&sort=date_desc&limit=50${extraQuery}`;
+  const porId = new Map<string, T>();
+  for (let offset = 0; offset < 9950; offset += 50) {
+    const { data } = await get<{ results: T[]; paging: { total: number } }>(`${base}&offset=${offset}`);
+    for (const o of data.results) porId.set(String(o.id), o);
+    if (data.results.length < 50 || offset + 50 >= data.paging.total) break;
+  }
+  return [...porId.values()];
+}
+
+// Órdenes de un rango cualquiera, partido en ventanas de un día (la última
+// puede ser más corta), listadas de a `concurrencia` a la vez.
+// OJO con el filtro de ML: `order.date_created.to` se pasa de la hora indicada
+// hasta casi una hora (medido 2026-10-09: con to=03:00Z devolvió órdenes hasta
+// las 03:56Z). Por eso (1) cada ventana se solapa con la siguiente (~6% de
+// órdenes repetidas) y (2) la última se pasa del rango pedido. Acá se descartan
+// las órdenes cuya date_created real cae fuera de [desdeMs, hastaMs) y las
+// repetidas, igual que hace el Tablero: el resultado es el rango exacto.
+export async function listarOrdenesRango<T extends { id: number | string; date_created?: unknown }>(
+  get: GetFn, userId: string | number, desdeMs: number, hastaMs: number,
+  opts: { extraQuery?: string; concurrencia?: number } = {}
+): Promise<{ ordenes: T[]; ventanas: number; repetidas: number; fueraDeRango: number }> {
+  const ventanas: { d: number; h: number }[] = [];
+  for (let h = hastaMs; h > desdeMs; h -= DIA_MS) ventanas.push({ d: Math.max(desdeMs, h - DIA_MS), h });
+  const porVentana: T[][] = new Array(ventanas.length);
+  let siguiente = 0;
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(opts.concurrencia ?? 4, ventanas.length)) }, async () => {
+    while (siguiente < ventanas.length) {
+      const i = siguiente++;
+      porVentana[i] = await listarOrdenesDia<T>(get, userId, ventanas[i].d, ventanas[i].h, opts.extraQuery ?? "");
+    }
+  }));
+  const vistas = new Set<string>();
+  const ordenes: T[] = [];
+  let repetidas = 0, fueraDeRango = 0;
+  for (const lista of porVentana) {
+    for (const o of lista) {
+      const id = String(o.id);
+      const ms = Date.parse(String(o.date_created));
+      if (!Number.isNaN(ms) && (ms < desdeMs || ms >= hastaMs)) { fueraDeRango++; continue; }
+      if (vistas.has(id)) { repetidas++; continue; }
+      vistas.add(id);
+      ordenes.push(o);
+    }
+  }
+  return { ordenes, ventanas: ventanas.length, repetidas, fueraDeRango };
 }
 
 // ---------------------------------------------------------------------
