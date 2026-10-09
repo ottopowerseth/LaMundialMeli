@@ -77,7 +77,7 @@ export type VentaItem = {
   tipoCrudo?: Partial<Record<TipoObjetivo, string>>;
 };
 
-type Shipment = { logistic_type?: string; shipping_items?: { id?: string; quantity?: number }[] };
+type Shipment = { logistic_type?: string; status?: string; shipping_items?: { id?: string; quantity?: number }[] };
 type ShipmentCosts = { senders?: { cost?: number }[] };
 
 export type ResultadoTarifa = {
@@ -88,6 +88,7 @@ export type ResultadoTarifa = {
   despachoMuestra: string;
   unidadesDespacho: number | null;
   estado: EstadoTarifa;
+  noEntregadas?: number; // muestras limpias cuyo despacho todavía no figura "delivered" (el costo es el de lista al crear el envío)
   fuenteEstimacion?: string; // solo estado "estimado": "sku" o "tramo <rango> <logística> (n=…)"
   motivo?: EstadoTarifa; // solo estado "estimado": por qué no hubo muestra propia
 };
@@ -105,7 +106,7 @@ export async function calcularTarifaItem(
   maxCandidatos = MAX_CANDIDATOS_POR_ITEM,
   tipoObjetivo?: TipoObjetivo // si se pasa, solo cuentan los despachos de ese grupo de tipo
 ): Promise<ResultadoTarifa> {
-  const limpias: { tarifa: number; unidades: number; shippingId: number }[] = [];
+  const limpias: { tarifa: number; unidades: number; shippingId: number; entregado: boolean }[] = [];
   let logistico = "";
   let mixtas = 0;
   let sinCosto = 0;
@@ -141,7 +142,7 @@ export async function calcularTarifaItem(
       if (costo === undefined || costo <= 0) { sinCosto++; continue; }
 
       if (limpias.length === 0) logistico = tipo;
-      limpias.push({ tarifa: costo / unidades, unidades, shippingId: d.shippingId });
+      limpias.push({ tarifa: costo / unidades, unidades, shippingId: d.shippingId, entregado: envio.status === "delivered" });
     } catch {
       errores++;
     }
@@ -169,6 +170,7 @@ export async function calcularTarifaItem(
     despachoMuestra: String(ref.shippingId),
     unidadesDespacho: ref.unidades,
     estado: dispersion > DISPERSION_ALERTA_PCT ? "dispersa" : "ok",
+    noEntregadas: limpias.filter((l) => !l.entregado).length,
   };
 }
 
@@ -252,6 +254,7 @@ export type OpcionesTarifas = {
   ahora: Date;
   dryRun: boolean;
   forzar: boolean;
+  soloEntregados?: boolean; // con soloMuestraReal o sin él: no escribe filas cuyas muestras vengan de despachos aún no entregados (se reintentan después)
   soloMuestraReal?: boolean; // solo escribe las filas medidas con muestra limpia (ok/dispersa); no escribe estimadas ni fallidas
   soloSinFilaDelTipo?: boolean; // solo los pares (publicación, tipo) que NO tienen ninguna fila de ese tipo (piloto del segundo tipo)
   limite: number | null;
@@ -272,7 +275,7 @@ export type ResultadoTarifas = {
   porEstado: Record<string, number>;
   porMuestras: Record<string, number>; // cuántas filas se calcularon con 0, 1, 2... muestras limpias
   escritas: { nuevas: number; actualizadas: number };
-  omitidas: number; // filas calculadas que NO se escribieron por soloMuestraReal
+  omitidas: number; // filas calculadas que NO se escribieron por soloMuestraReal / soloEntregados
   filas: FilaTarifa[];
 };
 
@@ -445,7 +448,8 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
   }
 
   // soloMuestraReal: se escriben únicamente las filas medidas con muestra limpia.
-  const aEscribir = op.soloMuestraReal ? hechas.filter((h) => h.r.estado === "ok" || h.r.estado === "dispersa") : hechas;
+  const esMedida = (h: FilaTarifa) => h.r.estado === "ok" || h.r.estado === "dispersa";
+  const aEscribir = hechas.filter((h) => (!op.soloMuestraReal || esMedida(h)) && (!op.soloEntregados || !esMedida(h) || (h.r.noEntregadas ?? 0) === 0));
   const omitidas = hechas.length - aEscribir.length;
   let nuevas = 0;
   let actualizadas = 0;

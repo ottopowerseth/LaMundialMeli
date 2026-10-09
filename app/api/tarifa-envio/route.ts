@@ -26,7 +26,9 @@ import { parsearLogisticoPorOrden } from "@/lib/logistica";
 // (ignora la vigencia de la caché), porTipo, soloSinFilaDelTipo (implica porTipo:
 // solo los pares sin ninguna fila de su tipo, el piloto del segundo tipo),
 // soloMuestraReal (solo escribe las filas medidas con muestra limpia; las
-// estimadas o sin muestra se calculan y se informan pero NO se escriben) }.
+// estimadas o sin muestra se calculan y se informan pero NO se escriben),
+// soloEntregados (no escribe filas medidas cuyas muestras salgan de despachos
+// aún no entregados: se reintentan cuando lo estén) }.
 export const maxDuration = 60;
 
 // Tiempo para el cálculo de tarifas, descontado lo que tardan la lectura de
@@ -44,6 +46,7 @@ export async function POST(request: Request) {
     const soloSinFilaDelTipo = body?.soloSinFilaDelTipo === true;
     const porTipo = body?.porTipo === true || soloSinFilaDelTipo;
     const soloMuestraReal = body?.soloMuestraReal === true;
+    const soloEntregados = body?.soloEntregados === true;
 
     const token = await getValidAccessToken();
     const client = axios.create({
@@ -93,7 +96,7 @@ export async function POST(request: Request) {
     const resultado = await procesarTarifas({
       mlGet, readSheet, writeSheet, appendSheet, batchWriteSheet,
       ventas, skuPorItem, logisticoPorItem, ahora: new Date(),
-      dryRun: !confirmar, forzar, soloSinFilaDelTipo, soloMuestraReal, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
+      dryRun: !confirmar, forzar, soloSinFilaDelTipo, soloMuestraReal, soloEntregados, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
     });
 
     return NextResponse.json({

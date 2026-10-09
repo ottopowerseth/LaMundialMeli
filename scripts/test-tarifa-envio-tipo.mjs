@@ -33,6 +33,9 @@ const DESP = {
   8: { t: F, items: [["E", 1]], cost: 410 },
   9: { t: X, items: [["E", 1]], cost: 830 },
   10: { t: X, items: [["D", 1]], cost: 0 },              // costo 0 de D
+  11: { t: X, items: [["G", 1]], cost: 850, s: "ready_to_ship" }, // despacho aún no entregado
+  12: { t: X, items: [["H", 1]], cost: 900, s: "delivered" },
+  13: { t: X, items: [["H", 1]], cost: 900, s: "ready_to_ship" },
 };
 const llamadas = [];
 const mlGet = async (url) => {
@@ -40,7 +43,7 @@ const mlGet = async (url) => {
   let m = url.match(/^\/shipments\/(\d+)\/costs$/);
   if (m) { const d = DESP[m[1]]; return { data: { senders: [{ cost: d.cost }] } }; }
   m = url.match(/^\/shipments\/(\d+)$/);
-  if (m) { const d = DESP[m[1]]; return { data: { logistic_type: d.t, shipping_items: d.items.map(([id, quantity]) => ({ id, quantity })) } }; }
+  if (m) { const d = DESP[m[1]]; return { data: { logistic_type: d.t, status: d.s ?? "delivered", shipping_items: d.items.map(([id, quantity]) => ({ id, quantity })) } }; }
   throw new Error("url inesperada " + url);
 };
 const desp = (...ids) => ids.map((shippingId) => ({ shippingId, fecha: "2026-10-01" }));
@@ -212,5 +215,23 @@ console.log("soloMuestraReal: solo se escriben las filas medidas");
   const hs = hoja([]);
   const rs = await T.procesarTarifas(base(hs, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, dryRun: true }));
   eq([rs.omitidas, hs.escritas.append.length], [1, 0], "en simulación informa lo que omitiría y no escribe nada");
+}
+console.log("soloEntregados: no se escriben filas apoyadas en despachos sin entregar");
+{
+  const mk = (desps, ing) => ({ ingreso: 1, precio: 9000, comision: 0, ingresoConComision: 0, despachos: [], despachosPorTipo: { fulfillment: [], otro: desps }, ingresoPorTipo: { fulfillment: 0, otro: ing }, tipoCrudo: { otro: X } });
+  // A: 2 despachos entregados; G: 1 despacho listo para despachar; H: 1 entregado + 1 sin entregar (muestra mixta de estados)
+  const ventas = new Map([["A", mk(desp(2, 3), 18000)], ["G", mk(desp(11), 9000)], ["H", mk(desp(12, 13), 9000)]]);
+  const r0 = await T.calcularTarifaItem("G", desp(11), mlGet, 2, 6, "otro");
+  eq([r0.estado, r0.muestras, r0.noEntregadas], ["ok", 1, 1], "calcularTarifaItem informa cuántas muestras vienen de despachos sin entregar");
+  const h = hoja([]);
+  const r = await T.procesarTarifas(base(h, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, soloEntregados: true }));
+  eq([r.procesadas, r.escritas, r.omitidas], [3, { nuevas: 1, actualizadas: 0 }, 2], "se calculan 3 pares; se escribe solo A (todas sus muestras entregadas) y se omiten G y H");
+  eq(h.escritas.append[0][1].map((x) => [x[0], x[4]]), [["A", "2"]], "la fila escrita es A con Muestras = 2");
+  const h2 = hoja([]);
+  const r2 = await T.procesarTarifas(base(h2, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true }));
+  eq(r2.escritas.nuevas, 3, "sin soloEntregados se escribirían las 3 (G y H con muestras sin entregar)");
+  const h3 = hoja([]);
+  const r3 = await T.procesarTarifas(base(h3, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloEntregados: true }));
+  check(r3.escritas.nuevas >= 1 && h3.escritas.append[0][1].every((x) => x[0] === "A" || x[8] !== "ok"), "soloEntregados solo retiene filas medidas sin entregar; las estimadas siguen el flujo normal");
 }
 console.log(`\n${ok} comprobaciones OK`);
