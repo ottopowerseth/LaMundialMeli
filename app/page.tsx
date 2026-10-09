@@ -5,6 +5,7 @@ import Image from "next/image";
 import * as XLSX from "xlsx";
 import RevisionPublicaciones from "./RevisionPublicaciones";
 import Tablero from "./Tablero";
+import ReclamosPorTipo from "./ReclamosPorTipo";
 import { abortoSinBorrar, errorPublicaciones, guardarUltimoSyncPublicaciones, leerUltimoSyncPublicaciones } from "@/lib/sync-estado";
 
 type MLStatus = { ok: boolean; nickname?: string } | null;
@@ -196,6 +197,8 @@ type TablaProductosMetrics = {
 type MetricsApiResult = {
   ok: boolean;
   periodo?: Periodo;
+  desde?: string;
+  hasta?: string;
   ventas?: VentasMetrics;
   reputacion?: ReputacionMetrics;
   visitas?: VisitasMetrics;
@@ -1902,6 +1905,11 @@ export default function Home() {
                     <p className="text-sm text-gray-400">No disponible por ahora{metricsResult.reputacion?.error ? ` (${metricsResult.reputacion.error})` : ""}.</p>
                   )}
                 </div>
+
+                {/* A pedido: reclamos por tipo logístico, con la misma ventana del período */}
+                {metricsResult.desde && metricsResult.hasta && (
+                  <ReclamosPorTipo key={`${metricsResult.desde}|${metricsResult.hasta}`} desde={metricsResult.desde} hasta={metricsResult.hasta} titulo="Reclamos por tipo logístico (período seleccionado)" />
+                )}
 
                 {/* Visitas y conversión */}
                 <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">

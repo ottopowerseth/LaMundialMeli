@@ -12,6 +12,9 @@
 //  - Cruce reclamo → orden: resource "order" (resource_id = id de orden), "shipment"
 //    (resource_id = id de envío → orden) o "payment" (resource_id = id de pago → orden).
 //    Sin cruce → "sin tipo": NO se reparte entre tipos.
+//  - Reclamos sobre un pago (resource "payment") que no coincide con ningún pago de las
+//    órdenes listadas se cuentan aparte ("pagos sin orden de ML"): no entran a "sin tipo"
+//    ni a la cota inferior ni a la cobertura. El módulo no afirma su origen.
 //  - Cota inferior: mientras haya eventos sin tipo (o el listado de reclamos esté
 //    incompleto), la tasa de cada tipo es un MÍNIMO.
 //  - Mínimo de eventos: con menos de `minEventos` (20) en un tipo/serie no se da
@@ -70,7 +73,8 @@ export type ResultadoReclamos = {
   eventos: {
     enVentana: number;
     conTipo: number;
-    sinTipo: number; // sin cruce con una orden, o con orden sin tipo
+    sinTipo: number; // sin cruce con una orden, o con orden sin tipo (sin contar los pagos sin orden de ML)
+    pagosSinOrden: number; // reclamos de pago sin ninguna orden listada con ese pago: conteo aparte
     fechaInvalida: number; // date_created ausente o sin offset
     duplicados: number; // mismo id de reclamo repetido en el listado
     porRecurso: Record<string, { total: number; conTipo: number }>;
@@ -125,7 +129,7 @@ export function calcularReclamosPorTipo(e: EntradaReclamos): ResultadoReclamos {
     if (t === "full") den.full++; else if (t === "otro") den.otro++; else den.sinTipo++;
   }
 
-  const ev = { enVentana: 0, conTipo: 0, sinTipo: 0, fechaInvalida: 0, duplicados: 0, porRecurso: {} as Record<string, { total: number; conTipo: number }> };
+  const ev = { enVentana: 0, conTipo: 0, sinTipo: 0, pagosSinOrden: 0, fechaInvalida: 0, duplicados: 0, porRecurso: {} as Record<string, { total: number; conTipo: number }> };
   const cuenta: Record<SerieReclamo, { full: number; otro: number; sinTipo: number }> = {
     cancelaciones: { full: 0, otro: 0, sinTipo: 0 },
     mediaciones: { full: 0, otro: 0, sinTipo: 0 },
@@ -148,6 +152,7 @@ export function calcularReclamosPorTipo(e: EntradaReclamos): ResultadoReclamos {
     const tipo = orden ? tipoDeLogistico(e.tipoPorOrden.get(orden)) : null;
     const porRec = (ev.porRecurso[recurso] ??= { total: 0, conTipo: 0 });
     porRec.total++;
+    if (recurso === "payment" && !orden) { ev.pagosSinOrden++; continue; }
     const serie = serieDe(r.type);
     if (tipo) { ev.conTipo++; porRec.conTipo++; cuenta[serie][tipo]++; }
     else { ev.sinTipo++; cuenta[serie].sinTipo++; }
@@ -174,7 +179,7 @@ export function calcularReclamosPorTipo(e: EntradaReclamos): ResultadoReclamos {
     ventana: { desdeMs: e.desdeMs, hastaMs: e.hastaMs },
     minEventos,
     denominador: den,
-    eventos: { ...ev, coberturaPct: ev.enVentana > 0 ? Math.round((ev.conTipo / ev.enVentana) * 1000) / 10 : 0 },
+    eventos: { ...ev, coberturaPct: ev.enVentana - ev.pagosSinOrden > 0 ? Math.round((ev.conTipo / (ev.enVentana - ev.pagosSinOrden)) * 1000) / 10 : 0 },
     series: { cancelaciones: serie("cancelaciones"), mediaciones: serie("mediaciones") },
     cotaInferior: motivosCota.length > 0,
     motivosCota,
@@ -204,4 +209,33 @@ export function resumirReclamosPeriodo(
     porTipo[tp] = (porTipo[tp] ?? 0) + 1;
   }
   return { total, porStatus, porTipo, duplicados, fechaInvalida };
+}
+
+// ---------------------------------------------------------------------
+// Armado de entradas desde las respuestas crudas (ML y ShippingCache).
+// ---------------------------------------------------------------------
+
+type OrdenCrudaApi = {
+  id: number | string; status?: string; date_created?: string;
+  shipping?: { id?: number | string | null } | null;
+  payments?: { id?: number | string | null }[] | null;
+};
+
+export function ordenesParaReclamos(ordenes: OrdenCrudaApi[]): OrdenReclamos[] {
+  return ordenes.map((o) => ({
+    id: o.id, status: o.status, date_created: o.date_created,
+    shippingId: o.shipping?.id ?? null,
+    pagos: (o.payments ?? []).map((p) => p.id).filter((x): x is number | string => x !== undefined && x !== null),
+  }));
+}
+
+// ShippingCache!A2:C → tipo crudo por orden y orden por envío (ids sin el apóstrofo de texto).
+export function mapasShippingCache(filas: unknown[][]): { tipoPorOrden: Map<string, string>; ordenPorEnvio: Map<string, string> } {
+  const tipoPorOrden = new Map<string, string>(), ordenPorEnvio = new Map<string, string>();
+  for (const f of filas) {
+    const orden = aId(f[0]), envio = aId(f[1]), tipo = String(f[2] ?? "").trim();
+    if (orden && tipo) tipoPorOrden.set(orden, tipo);
+    if (orden && envio) ordenPorEnvio.set(envio, orden);
+  }
+  return { tipoPorOrden, ordenPorEnvio };
 }

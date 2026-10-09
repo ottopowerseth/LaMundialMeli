@@ -5,6 +5,7 @@ import Completitud from "./Completitud";
 import Publicidad from "./Publicidad";
 import PrecioParaGanar from "./PrecioParaGanar";
 import Operacion from "./Operacion";
+import ReclamosPorTipo from "./ReclamosPorTipo";
 
 // Tablero "desde arriba". Un solo endpoint (/api/tablero) calculado en vivo.
 // El resultado se guarda en una variable de módulo para que al cambiar de
@@ -580,6 +581,8 @@ export default function Tablero() {
       <PrecioParaGanar />
       {/* A pedido (~15 s): despachos pendientes, reclamos, preguntas y reputación. */}
       <Operacion />
+      {/* A pedido (~12 s, caché de ~10 min): cancelaciones y mediaciones por tipo logístico. */}
+      <ReclamosPorTipo />
     </div>
   );
 }

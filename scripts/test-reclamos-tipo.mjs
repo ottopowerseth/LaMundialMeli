@@ -50,11 +50,17 @@ console.log("sin cruce");
 {
   const L = [orden(1, "paid", F), orden(2, "paid", null)];
   const r = calc(L, [rec(10, "mediations", "order", 999), rec(11, "mediations", "shipment", 12345), rec(12, "mediations", "payment", 1), rec(13, "cancel_purchase", "order", 2)]);
-  eq([r.series.mediaciones.sinTipo, r.series.cancelaciones.sinTipo], [3, 1], "orden inexistente, envío/pago desconocidos y orden sin tipo → sin tipo (no se reparten)");
-  eq([r.eventos.conTipo, r.eventos.sinTipo, r.eventos.coberturaPct], [0, 4, 0], "cobertura 0 %");
+  eq([r.series.mediaciones.sinTipo, r.series.cancelaciones.sinTipo], [2, 1], "orden inexistente, envío desconocido y orden sin tipo → sin tipo (no se reparten)");
+  eq([r.eventos.conTipo, r.eventos.sinTipo, r.eventos.pagosSinOrden, r.eventos.coberturaPct], [0, 3, 1, 0], "el pago desconocido va aparte (pagosSinOrden), fuera de sin tipo y de la cobertura");
   eq([r.denominador.full, r.denominador.otro, r.denominador.sinTipo], [1, 0, 1], "denominador: la orden sin tipo va aparte");
   eq(r.cotaInferior, true, "hay eventos sin tipo → cota inferior");
-  eq(r.motivosCota.length, 1, "un motivo de cota");
+  eq(r.motivosCota, ["3 reclamos sin tipo logístico (sin cruce con una orden clasificada)"], "la cota cuenta solo los 3 sin tipo, no el pago sin orden");
+  const soloPago = calc([orden(1, "paid", F)], [rec(50, "mediations", "payment", 424242)]);
+  eq([soloPago.eventos.pagosSinOrden, soloPago.eventos.sinTipo, soloPago.cotaInferior, soloPago.series.mediaciones.total], [1, 0, false, 0], "un reclamo de pago sin orden NO activa la cota inferior ni suma a la serie");
+  const pagoConOrden = calc([orden(1, "paid", F)], [rec(51, "mediations", "payment", 5001)]);
+  eq([pagoConOrden.eventos.pagosSinOrden, pagoConOrden.series.mediaciones.full.eventos], [0, 1], "un pago que sí está en una orden listada se asigna a su tipo");
+  const pagoOrdenSinTipo = calc([orden(2, "paid", null)], [rec(52, "mediations", "payment", 5002)]);
+  eq([pagoOrdenSinTipo.eventos.pagosSinOrden, pagoOrdenSinTipo.eventos.sinTipo], [0, 1], "pago de una orden listada pero sin tipo: sin tipo (no 'sin orden')");
   const r2 = calc([orden(1, "paid", F)], [], { listadoCompleto: false });
   eq([r2.cotaInferior, r2.motivosCota], [true, ["listado de reclamos incompleto"]], "listado incompleto → cota inferior aunque no haya eventos sin tipo");
   const r3 = calc([orden(1, "paid", F)], [rec(1, "mediations", "order", 1, "2026-08-10T10:00:00")]);
@@ -108,7 +114,7 @@ console.log("cota inferior");
   eq([R.tipoDeLogistico(""), R.tipoDeLogistico(null)], [null, null], "vacío = sin tipo");
 }
 
-console.log(`\n${ok} comprobaciones OK`);console.log("resumirReclamosPeriodo: cada reclamo cuenta una vez");
+console.log("resumirReclamosPeriodo: cada reclamo cuenta una vez");
 {
   const base = [{ id: 1, status: "closed", type: "mediations", date_created: "2026-08-10T10:00:00.000-04:00" }, { id: 2, status: "opened", type: "cancel_purchase", date_created: "2026-08-11T10:00:00.000-04:00" }];
   const repetido = [...base, { ...base[0] }, { ...base[1] }, { id: 3, status: "closed", type: "mediations", date_created: "2025-01-01T10:00:00.000-04:00" }];
@@ -119,4 +125,14 @@ console.log(`\n${ok} comprobaciones OK`);console.log("resumirReclamosPeriodo: ca
   eq(R.resumirReclamosPeriodo(base, DESDE, HASTA).total, 2, "sin repetidos el resultado no cambia");
 }
 
+console.log("armado de entradas desde ML y ShippingCache");
+{
+  const o = R.ordenesParaReclamos([{ id: 1, status: "paid", date_created: "2026-08-01T12:00:00.000-04:00", shipping: { id: 77 }, payments: [{ id: 5 }, { id: 6 }] }, { id: 2, status: "cancelled", shipping: null, payments: null }]);
+  eq([o[0].shippingId, o[0].pagos, o[1].shippingId, o[1].pagos], [77, [5, 6], null, []], "orden con envío y pagos; orden sin envío ni pagos");
+  const m = R.mapasShippingCache([["'123", "'456", "fulfillment"], ["789", "012", ""], ["", "3", "xd_drop_off"]]);
+  eq([[...m.tipoPorOrden], [...m.ordenPorEnvio]], [[["123", "fulfillment"]], [["456", "123"], ["012", "789"]]], "ids sin apóstrofo; sin tipo no entra a tipoPorOrden; el envío sin orden se ignora");
+  const r = R.calcularReclamosPorTipo({ reclamos: [{ id: 1, type: "mediations", resource: "shipment", resource_id: "456", date_created: "2026-08-10T10:00:00.000-04:00" }], ordenes: o, ...m, desdeMs: DESDE, hastaMs: HASTA });
+  eq(r.series.mediaciones.full.eventos, 1, "de punta a punta: reclamo por envío → orden 123 (Full) vía ShippingCache");
+}
 
+console.log(`\n${ok} comprobaciones OK`);
