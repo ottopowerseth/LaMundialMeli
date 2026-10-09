@@ -3,6 +3,7 @@ import axios from "axios";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { listarOrdenesRango } from "@/lib/backfill-shipping";
+import { resumirReclamosPeriodo } from "@/lib/reclamos-tipo";
 import { cargarItemsStock } from "@/lib/tablero-datos";
 import { coberturaLogistica, parsearLogisticoPorOrden } from "@/lib/logistica";
 import type { CoberturaLogistica } from "@/lib/logistica";
@@ -562,30 +563,24 @@ async function calcularReclamos(
   hasta: Date
 ): Promise<ReclamosMetrics> {
   try {
-    const porStatus: Record<string, number> = {};
-    const porTipo: Record<string, number> = {};
-    let total = 0;
+    const todos: { id: number | string; status: string; type: string; date_created: string }[] = [];
     let offset = 0;
     while (offset <= 1000) {
       const { data } = await mlGet<{
         paging: { total: number };
-        data: { status: string; type: string; date_created: string }[];
+        data: { id: number | string; status: string; type: string; date_created: string }[];
       }>("/post-purchase/v1/claims/search", {
         player_role: "respondent",
         player_user_id: userId,
         limit: 50,
         offset,
       });
-      for (const claim of data.data ?? []) {
-        const fecha = new Date(claim.date_created); // hora Chile (-04:00), Date la normaliza a UTC internamente
-        if (fecha < desde || fecha >= hasta) continue;
-        total++;
-        porStatus[claim.status] = (porStatus[claim.status] ?? 0) + 1;
-        porTipo[claim.type] = (porTipo[claim.type] ?? 0) + 1;
-      }
+      todos.push(...(data.data ?? []));
       if (!data.data || data.data.length === 0 || offset + data.data.length >= data.paging.total) break;
       offset += 50;
     }
+    // Cada reclamo cuenta una vez (ML repite ids entre páginas) y la fecha se parsea con su offset real.
+    const { total, porStatus, porTipo } = resumirReclamosPeriodo(todos, desde.getTime(), hasta.getTime());
 
     return { ok: true, total, porStatus, porTipo };
   } catch (err) {

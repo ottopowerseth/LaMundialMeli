@@ -180,3 +180,28 @@ export function calcularReclamosPorTipo(e: EntradaReclamos): ResultadoReclamos {
     motivosCota,
   };
 }
+
+// Conteo simple de reclamos del período para Métricas (total, por status y por type).
+// ML repite reclamos entre páginas contiguas de /claims/search (medido 2026-10-09:
+// 329 filas, 321 ids únicos), así que se cuenta cada id una sola vez.
+export function resumirReclamosPeriodo(
+  reclamos: (ReclamoApi & { status?: string })[], desdeMs: number, hastaMs: number
+): { total: number; porStatus: Record<string, number>; porTipo: Record<string, number>; duplicados: number; fechaInvalida: number } {
+  const porStatus: Record<string, number> = {};
+  const porTipo: Record<string, number> = {};
+  const vistos = new Set<string>();
+  let total = 0, duplicados = 0, fechaInvalida = 0;
+  for (const c of reclamos) {
+    const id = aId(c.id);
+    if (vistos.has(id)) { duplicados++; continue; }
+    vistos.add(id);
+    const ms = parsearFechaReclamo(c.date_created);
+    if (Number.isNaN(ms)) { fechaInvalida++; continue; }
+    if (ms < desdeMs || ms >= hastaMs) continue;
+    total++;
+    const st = String(c.status ?? "sin_estado"), tp = String(c.type ?? "sin_tipo");
+    porStatus[st] = (porStatus[st] ?? 0) + 1;
+    porTipo[tp] = (porTipo[tp] ?? 0) + 1;
+  }
+  return { total, porStatus, porTipo, duplicados, fechaInvalida };
+}

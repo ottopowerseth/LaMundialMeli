@@ -108,4 +108,15 @@ console.log("cota inferior");
   eq([R.tipoDeLogistico(""), R.tipoDeLogistico(null)], [null, null], "vacío = sin tipo");
 }
 
-console.log(`\n${ok} comprobaciones OK`);
+console.log(`\n${ok} comprobaciones OK`);console.log("resumirReclamosPeriodo: cada reclamo cuenta una vez");
+{
+  const base = [{ id: 1, status: "closed", type: "mediations", date_created: "2026-08-10T10:00:00.000-04:00" }, { id: 2, status: "opened", type: "cancel_purchase", date_created: "2026-08-11T10:00:00.000-04:00" }];
+  const repetido = [...base, { ...base[0] }, { ...base[1] }, { id: 3, status: "closed", type: "mediations", date_created: "2025-01-01T10:00:00.000-04:00" }];
+  const r = R.resumirReclamosPeriodo(repetido, DESDE, HASTA);
+  eq([r.total, r.duplicados], [2, 2], "ids repetidos entre páginas: 4 filas del período → 2 reclamos, 2 duplicados");
+  eq([r.porStatus, r.porTipo], [{ closed: 1, opened: 1 }, { mediations: 1, cancel_purchase: 1 }], "por status y por type sin doble conteo");
+  eq(R.resumirReclamosPeriodo([{ id: 9, date_created: "2026-08-10T10:00:00" }], DESDE, HASTA).fechaInvalida, 1, "fecha sin offset: se excluye y se informa");
+  eq(R.resumirReclamosPeriodo(base, DESDE, HASTA).total, 2, "sin repetidos el resultado no cambia");
+}
+
+
