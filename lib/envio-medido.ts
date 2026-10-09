@@ -32,7 +32,10 @@ export type TarifasEnvio = Map<string, TarifasItem>;
 // "estimado_otro_tipo": solo hay tarifa del OTRO tipo logístico; se usa tal cual
 // (sin factor de corrección) y se marca como estimación.
 export type FuenteEnvio = "medido" | "estimado" | "estimado_otro_tipo";
-export type EnvioResuelto = { envio: number | null; fuente: FuenteEnvio | null };
+// origen: de dónde sale la cifra (útil para el indicador de cobertura): "hoja" = fila de TarifaEnvio del
+// tipo de la venta; "estimador" = respaldo por SKU gemelo o tramo; "otro_tipo" = fila del otro tipo.
+export type OrigenEnvio = "hoja" | "estimador" | "otro_tipo";
+export type EnvioResuelto = { envio: number | null; fuente: FuenteEnvio | null; origen?: OrigenEnvio };
 
 export const esTarifaMedida = (f: TarifaEnvioFila | undefined): boolean => !!f && (f.estado === "ok" || f.estado === "dispersa");
 const esTarifaUsable = (f: TarifaEnvioFila | undefined): boolean => esTarifaMedida(f) || f?.estado === "estimado";
@@ -78,7 +81,25 @@ export function tarifaOtroTipo(tarifas: TarifasEnvio, itemId: string, esFull: bo
   return esFull ? i.noFull : i.full;
 }
 
-export type ContextoEnvio = { tarifas: TarifasEnvio; muestras: MuestrasEnvio };
+// Una tarifa medida usada como muestra del estimador. `tipo` es el del grupo de la fila.
+export type MuestraEnvio = { item: string; sid: string; sku: string; precio: number; tarifa: number; tipo: "fulfillment" | "otro" };
+// `crudas` guarda cada muestra con su publicación para poder rearmar los índices del estimador sin la propia
+// publicación (ver resolverEnvio); `muestras` son los índices con todas.
+export type ContextoEnvio = { tarifas: TarifasEnvio; muestras: MuestrasEnvio; crudas: MuestraEnvio[] };
+
+function indicesDe(crudas: MuestraEnvio[]): MuestrasEnvio {
+  const filas: string[][] = [];
+  const sku = new Map<string, string>();
+  const logistico = new Map<string, string>();
+  for (const m of crudas) {
+    const f: string[] = [];
+    f[2] = m.sid; f[4] = String(m.precio); f[14] = String(m.tarifa);
+    filas.push(f);
+    if (m.sku) sku.set(m.sid, m.sku);
+    logistico.set(m.sid, m.tipo);
+  }
+  return armarMuestrasEnvio(filas, sku, logistico);
+}
 
 // precioPorItem: precio bruto de cada publicación (Publicaciones!G), para
 // ubicar las tarifas medidas en su tramo de precio al armar el respaldo.
@@ -92,38 +113,40 @@ export function armarContextoEnvio(
   skuPorItem: Map<string, string>,
   logisticoPorItem: Map<string, string>
 ): ContextoEnvio {
-  const filas: string[][] = [];
-  const sku = new Map<string, string>();
-  const logistico = new Map<string, string>();
+  const crudas: MuestraEnvio[] = [];
   for (const [id, item] of tarifas) {
     const precio = precioPorItem.get(id);
     if (!precio) continue;
     const skuItem = skuPorItem.get(id) ?? item.sku;
     for (const [grupo, t] of [["F", item.full], ["N", item.noFull], ["S", item.sinTipo]] as const) {
       if (!t || t.estado !== "ok") continue; // solo tarifas medidas alimentan al estimador
-      const sid = `${id}|${grupo}`;
-      const f: string[] = [];
-      f[2] = sid; f[4] = String(precio); f[14] = String(t.tarifa);
-      filas.push(f);
-      if (skuItem) sku.set(sid, skuItem);
       // Tipo de la muestra: el de su fila; si la fila no lo trae, el vigente de la publicación.
-      const tipo = grupo === "F" ? "fulfillment" : grupo === "N" ? "otro" : (logisticoPorItem.get(id) ?? t.tipo);
-      logistico.set(sid, tipo);
+      const tipoFila = grupo === "F" ? "fulfillment" : grupo === "N" ? "otro" : (logisticoPorItem.get(id) ?? t.tipo);
+      crudas.push({ item: id, sid: `${id}|${grupo}`, sku: skuItem ?? "", precio, tarifa: t.tarifa, tipo: tipoFila === "fulfillment" ? "fulfillment" : "otro" });
     }
   }
-  return { tarifas, muestras: armarMuestrasEnvio(filas, sku, logistico) };
+  return { tarifas, muestras: indicesDe(crudas), crudas };
+}
+
+// Índices del estimador SIN las muestras de `itemId`: si la publicación ya aporta una tarifa medida (p. ej. la
+// del otro tipo), el SKU gemelo o el tramo no pueden incluirla, porque entonces "estimar" sería devolver esa
+// misma tarifa. Si no aporta nada, se usan los índices ya armados.
+function muestrasSinItem(ctx: ContextoEnvio, itemId: string): MuestrasEnvio {
+  if (!ctx.crudas.some((m) => m.item === itemId)) return ctx.muestras;
+  return indicesDe(ctx.crudas.filter((m) => m.item !== itemId));
 }
 
 // Orden de búsqueda para la venta de `itemId` con tipo `esFull`:
-//   1. tarifa MEDIDA del mismo tipo                     → "medido"
-//   2. tarifa ESTIMADA del mismo tipo (hoja)             → "estimado"
-//   3. tarifa del OTRO tipo (medida o estimada), tal cual → "estimado_otro_tipo"
-//   4. respaldo por SKU gemelo o tramo × tipo            → "estimado"
+//   1. tarifa MEDIDA del mismo tipo                                  → "medido"
+//   2. tarifa ESTIMADA del mismo tipo (hoja)                          → "estimado"
+//   3. estimador por SKU gemelo o tramo × tipo, SIN la propia
+//      publicación entre las muestras                                 → "estimado"
+//   4. tarifa del OTRO tipo (medida o estimada), solo si no hay
+//      estimador, tal cual                                            → "estimado_otro_tipo"
 // Nunca 0. Sin ninguna referencia devuelve { envio: null }.
-// Nota: el backtest 2026-10-09 (18 publicaciones comparables) mostró que el paso
-// 4 erra menos que el 3 (mediana de error 0% y -2% contra +98% y -49%); se deja
-// el 3 antes porque es el orden acordado y conserva los números de antes. Cambiar
-// el orden exige excluir la propia publicación de las muestras del estimador.
+// El estimador va antes que el otro tipo por el backtest del 2026-10-09 (18 publicaciones que vendieron en
+// ambos tipos, error contra la tarifa medida del mismo tipo): en ventas Full, otro tipo +98% (mediana) contra
+// 0% del estimador; en ventas por despacho, -49% contra -2%.
 export function resolverEnvio(
   itemId: string,
   precio: number,
@@ -132,13 +155,13 @@ export function resolverEnvio(
   ctx: ContextoEnvio
 ): EnvioResuelto {
   const propia = tarifaDe(ctx.tarifas, itemId, esFull);
-  if (esTarifaMedida(propia)) return { envio: propia!.tarifa, fuente: "medido" };
-  if (propia?.estado === "estimado") return { envio: propia.tarifa, fuente: "estimado" };
+  if (esTarifaMedida(propia)) return { envio: propia!.tarifa, fuente: "medido", origen: "hoja" };
+  if (propia?.estado === "estimado") return { envio: propia.tarifa, fuente: "estimado", origen: "hoja" };
+  // Sin fila del tipo (p. ej. publicación sin ventas recientes de este tipo): respaldo por SKU gemelo o
+  // tramo, marcado como estimado. Nunca 0.
+  const e = calcularEnvioEstimadoPorUnidad(itemId, precio, esFull, muestrasSinItem(ctx, itemId), sku);
+  if (e.muestras > 0 && e.envio > 0) return { envio: e.envio, fuente: "estimado", origen: "estimador" };
   const otra = tarifaOtroTipo(ctx.tarifas, itemId, esFull);
-  if (otra && esTarifaUsable(otra)) return { envio: otra.tarifa, fuente: "estimado_otro_tipo" };
-  // Sin fila en la caché (p. ej. publicación sin ventas recientes): respaldo
-  // por SKU gemelo o tramo, marcado como estimado. Nunca 0.
-  const e = calcularEnvioEstimadoPorUnidad(itemId, precio, esFull, ctx.muestras, sku);
-  if (e.muestras === 0 || e.envio <= 0) return { envio: null, fuente: null };
-  return { envio: e.envio, fuente: "estimado" };
+  if (otra && esTarifaUsable(otra)) return { envio: otra.tarifa, fuente: "estimado_otro_tipo", origen: "otro_tipo" };
+  return { envio: null, fuente: null };
 }

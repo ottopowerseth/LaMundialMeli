@@ -4,7 +4,7 @@ import { readSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { parsearTarifasEnvio } from "@/lib/envio-medido";
-import { costoPorItemDesdeHoja, margenDesdeDatos } from "@/lib/tablero-margen-datos";
+import { contextoEnvioDesdeDatos, costoPorItemDesdeHoja, margenDesdeDatos } from "@/lib/tablero-margen-datos";
 import { calcularPareto, calcularSerie } from "@/lib/tablero-series";
 import { cargarItemsStock, cargarVentas, cargarVisitas, ventanaPorDias } from "@/lib/tablero-datos";
 import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
@@ -84,11 +84,14 @@ export async function GET(req: NextRequest) {
     const fullPorItem = new Map<string, boolean>();
     for (const it of itemsMl.values()) fullPorItem.set(it.id, it.full);
 
+    // Contexto de envío (tarifas + muestras del estimador): lo comparten la cobertura y el margen.
+    const { ctxEnvio, skuPorItem } = contextoEnvioDesdeDatos({ filasPub, fullPorItem, tarifas });
+
     const actual = resumirVentas(ventas.ordenes, ventas.lineas, desdeMs, hastaMs);
     const previo = resumirVentas(ventas.ordenes, ventas.lineas, anterior.desdeMs, anterior.hastaMs);
     const confianza = calcularConfianza({
       lineas: ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs),
-      costoPorItem, origenPorItem, tarifas, fueraDeAlcance, fullPorItem,
+      costoPorItem, origenPorItem, ctxEnvio, skuPorItem, fueraDeAlcance, fullPorItem,
     });
 
     // ---- Margen de contribución (ver lib/tablero-margen.ts) ----

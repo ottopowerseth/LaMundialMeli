@@ -16,7 +16,7 @@ type Resumen = { ingresos: number; unidades: number; ordenes: number; ticket: nu
 type Confianza = {
   ingresoVentana: number;
   costo: { pct: number; conCosto: number; auto: number; manual: number; enRevision: number; sinCosto: number };
-  envioMedido: { pct: number; estimado: number; otroTipo: number; sinDato: number };
+  envioMedido: { pct: number; estimado: number; estimador: number; otroTipo: number; sinDato: number };
   comisionReal: { pct: number };
   publicacionesConVenta: number;
   excluidas: { publicaciones: number; ingreso: number };
@@ -345,7 +345,7 @@ function SeccionMargen({ margen, dias }: { margen: MargenApi; dias?: number }) {
                 <td className="px-3 py-2 text-right">{clp(f.precioProm)}</td>
                 <td className="px-3 py-2 text-right">{f.costo !== null ? clp(f.costo) : f.fueraDeAlcance ? <span className="text-gray-400" title="Cerrada o inactiva: no cuenta como falta de Costo">cerrada/inactiva</span> : <span className="text-amber-600">sin Costo</span>}</td>
                 <td className="px-3 py-2 text-right">{f.comisionPct !== null ? `${(f.comisionPct * 100).toFixed(1).replace(".", ",")}%` : "—"}</td>
-                <td className="px-3 py-2 text-right" title={f.envioFuente === "estimado_otro_tipo" ? "Envío ESTIMADO POR OTRO TIPO: solo hay tarifa medida del otro tipo logístico (Full o despacho) y se usa tal cual. El despacho suele costar más que Full (mediana +$400 por unidad en 18 publicaciones medidas)." : f.envioFuente === "estimado" ? (f.full ? "Envío ESTIMADO en Full: la estimación más imprecisa (error mediano ~49%)." : "Envío estimado: menos fiable que el medido.") : "Envío medido"}>
+                <td className="px-3 py-2 text-right" title={f.envioFuente === "estimado_otro_tipo" ? "Envío ESTIMADO POR OTRO TIPO: no hay tarifa de este tipo ni muestras para estimarla, y se usa la del otro tipo logístico tal cual. El despacho suele costar más que Full (mediana +$400 por unidad en 18 publicaciones medidas)." : f.envioFuente === "estimado" ? (f.full ? "Envío ESTIMADO en Full: la estimación más imprecisa (error mediano ~49%)." : "Envío estimado: menos fiable que el medido.") : "Envío medido"}>
                   {f.envioUnidad !== null ? clp(f.envioUnidad) : "—"}
                   {f.menosFiable && <span className={`ml-1 ${f.full ? "text-red-500" : "text-amber-600"}`}>{f.envioFuente === "estimado_otro_tipo" ? "est. (otro tipo)" : f.full ? "⚠ est." : "est."}</span>}
                 </td>
@@ -539,7 +539,7 @@ export default function Tablero() {
               <Chip etiqueta="Con Costo" pct={c.costo.pct}
                 detalle={`Con Costo ${c.costo.pct}% (automático ${c.costo.auto}%, manual ${c.costo.manual}%). En revisión (sin escribir): ${c.costo.enRevision}%. Sin Costo ni propuesta: ${(c.costo.sinCosto - c.costo.enRevision).toFixed(1)}%.${c.excluidas.publicaciones > 0 ? ` No cuenta ${c.excluidas.publicaciones} publicaciones cerradas o inactivas sin Costo (${clp(c.excluidas.ingreso)}).` : ""}`} />
               <Chip etiqueta="Envío medido" pct={c.envioMedido.pct}
-                detalle={`Por tipo logístico de cada venta. Tarifa medida en /shipments/costs del tipo correcto: ${c.envioMedido.pct}%. Estimada del tipo correcto: ${c.envioMedido.estimado}%. Solo hay tarifa del OTRO tipo (se usa tal cual, marcada): ${c.envioMedido.otroTipo}%. Sin fila en la caché (respaldo por tramo): ${c.envioMedido.sinDato}%.`} />
+                detalle={`Por tipo logístico de cada venta. Tarifa medida en /shipments/costs del tipo correcto: ${c.envioMedido.pct}%. Estimada del tipo correcto (hoja): ${c.envioMedido.estimado}%. Sin fila del tipo, respaldo por SKU gemelo o tramo: ${c.envioMedido.estimador}%. Sin estimador, tarifa del OTRO tipo tal cual (marcada): ${c.envioMedido.otroTipo}%. Sin ninguna referencia: ${c.envioMedido.sinDato}%.`} />
               <Chip etiqueta="Comisión real" pct={c.comisionReal.pct}
                 detalle="Comisión cobrada (sale_fee) en las órdenes de la ventana." />
             </div>

@@ -94,7 +94,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
 
   // margenNeto total en pesos (neto, de todas las unidades de la ventana): pondera el % y sale como margenPesos.
   // porTipo guarda lo mismo repartido entre Full (true) y estándar (false), con el ingreso bruto de cada tipo.
-  const interno = new Map<string, { margenNeto: number; ingresoNeto: number; porTipo: Map<boolean, { margenNeto: number; ingresoNeto: number; ingreso: number }> }>();
+  const interno = new Map<string, { margenNeto: number; ingresoNeto: number; ingresoMenosFiable: number; porTipo: Map<boolean, { margenNeto: number; ingresoNeto: number; ingreso: number }> }>();
   const filas: FilaMargen[] = [];
   for (const [id, a] of acc) {
     const precioProm = a.u > 0 ? a.ing / a.u : 0;
@@ -140,7 +140,10 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
       } else if (completo && ingNetoTotal > 0) {
         margenPct = Math.round((mNetoTotal / ingNetoTotal) * 1000) / 10;
       }
-      if (completo) interno.set(id, { margenNeto: mNetoTotal, ingresoNeto: ingNetoTotal, porTipo: porTipoMargen });
+      // Ingreso (bruto) de las ventas cuyo envío no es medido: se cuenta por tipo de venta, no por fila, para que una
+      // publicación mixta no marque como estimado todo su ingreso.
+      const ingresoMenosFiable = [...a.tipos].reduce((acc, [esF, t]) => acc + (envioPorTipo.get(esF)!.fuente !== "medido" ? t.ing : 0), 0);
+      if (completo) interno.set(id, { margenNeto: mNetoTotal, ingresoNeto: ingNetoTotal, ingresoMenosFiable, porTipo: porTipoMargen });
     }
     filas.push({
       id, titulo: a.titulo, full, unidades: a.u, ingreso: a.ing, precioProm: Math.round(precioProm),
@@ -182,7 +185,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
       total: { ...conMargen, coberturaPct: pct(conMargen.ingreso, ingresoVentana), ingresoVentana: Math.round(ingresoVentana) },
       porTipo: { full: subTipo(true), estandar: subTipo(false) },
       menosFiable: {
-        pctIngreso: pct(sub((x) => x.menosFiable).ingreso, conMargen.ingreso),
+        pctIngreso: pct(filas.filter((x) => x.margenPct !== null).reduce((acc, x) => acc + (interno.get(x.id)?.ingresoMenosFiable ?? 0), 0), conMargen.ingreso),
         fullEstimado: filas.filter((x) => x.margenPct !== null && x.menosFiable && x.full).length,
       },
       pierden: { publicaciones: pierden.length, pctIngreso: pct(pierden.reduce((s, x) => s + x.ingreso, 0), ingresoVentana) },
