@@ -4,6 +4,7 @@ import { ensureSheets, readSheet, writeSheet, appendSheet, batchWriteSheet } fro
 import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { HOJA_TARIFA_ENVIO, obtenerVentasPorItem, procesarTarifas } from "@/lib/tarifa-envio";
+import { parsearLogisticoPorOrden } from "@/lib/logistica";
 
 // Cachea en la hoja "TarifaEnvio" la tarifa de envío por unidad de cada
 // publicación con ventas recientes (ver lib/tarifa-envio.ts para el método,
@@ -16,9 +17,13 @@ import { HOJA_TARIFA_ENVIO, obtenerVentasPorItem, procesarTarifas } from "@/lib/
 // entre invocaciones — la hoja es el checkpoint, así que se llama repetido
 // hasta que "pendientesDespues" llegue a 0.
 //
+// UNA FILA POR (PUBLICACIÓN, TIPO LOGÍSTICO): el costo de envío depende del tipo
+// (ver lib/tarifa-envio.ts). El tipo de cada orden sale de la hoja ShippingCache.
+//
 // Body (todo opcional): { confirmar, dias (ventana de ventas, 1-120, default
-// 45), limite (máx. publicaciones por invocación), forzar (ignora la
-// vigencia de la caché) }.
+// 45), limite (máx. pares por invocación), forzar (ignora la vigencia de la
+// caché), soloSinFilaDelTipo (solo los pares sin ninguna fila de su tipo: el
+// piloto del segundo tipo) }.
 export const maxDuration = 60;
 
 // Tiempo para el cálculo de tarifas, descontado lo que tardan la lectura de
@@ -33,6 +38,7 @@ export async function POST(request: Request) {
     const dias = Number.isInteger(body?.dias) && body.dias >= 1 && body.dias <= 120 ? body.dias : DIAS_DEFAULT;
     const limite = Number.isInteger(body?.limite) && body.limite > 0 ? body.limite : null;
     const forzar = body?.forzar === true;
+    const soloSinFilaDelTipo = body?.soloSinFilaDelTipo === true;
 
     const token = await getValidAccessToken();
     const client = axios.create({
@@ -42,10 +48,23 @@ export async function POST(request: Request) {
     });
     // Sin budget a propósito (ver revision-publicaciones): un 404 puntual de
     // un despacho viejo no debe cortar la corrida. 3 intentos cubren 429.
-    const mlGet = <T = unknown>(url: string) => withMlRetry(() => client.get<T>(url), { maxAttempts: 3 });
+    // Contadores de la corrida (cada intento fallido cuenta): para reportar llamadas, 429 y 404.
+    const ml = { llamadas: 0, http429: 0, http404: 0, otros: 0 };
+    const mlGet = <T = unknown>(url: string) => withMlRetry(async () => {
+      ml.llamadas++;
+      try { return await client.get<T>(url); }
+      catch (err) {
+        const status = (err as { response?: { status?: number } }).response?.status;
+        if (status === 429) ml.http429++; else if (status === 404) ml.http404++; else ml.otros++;
+        throw err;
+      }
+    }, { maxAttempts: 3 });
+    const inicio = Date.now();
 
     const { data: user } = await mlGet<{ id: number }>("/users/me");
-    const ventas = await obtenerVentasPorItem(mlGet, user.id, dias);
+    // Tipo logístico crudo de cada orden (ShippingCache): permite elegir los despachos de cada tipo sin llamar a /shipments.
+    const tipoPorOrden = parsearLogisticoPorOrden(await readSheet("ShippingCache!A2:C100000").catch(() => [] as string[][]));
+    const ventas = await obtenerVentasPorItem(mlGet, user.id, dias, new Date(), tipoPorOrden);
 
     // SELLER_SKU (legible en la hoja; la clave de la caché es el id de
     // publicación) y tipo logístico vigente (para el respaldo estimado).
@@ -69,15 +88,16 @@ export async function POST(request: Request) {
     const resultado = await procesarTarifas({
       mlGet, readSheet, writeSheet, appendSheet, batchWriteSheet,
       ventas, skuPorItem, logisticoPorItem, ahora: new Date(),
-      dryRun: !confirmar, forzar, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
+      dryRun: !confirmar, forzar, soloSinFilaDelTipo, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
     });
 
     return NextResponse.json({
       ok: true,
       ...resultado,
+      ml, duracionMs: Date.now() - inicio,
       // En simulación se devuelve el detalle para revisarlo; en escritura,
       // solo una muestra (el detalle ya quedó en la hoja).
-      filas: resultado.filas.slice(0, confirmar ? 5 : 40).map((f) => ({ itemId: f.itemId, sku: f.sku, ...f.r })),
+      filas: resultado.filas.slice(0, confirmar ? 25 : 40).map((f) => ({ itemId: f.itemId, tipo: f.tipo, sku: f.sku, ...f.r })),
     });
   } catch (error) {
     console.error("[tarifa-envio]", error);
