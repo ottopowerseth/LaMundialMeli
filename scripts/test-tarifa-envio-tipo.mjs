@@ -250,4 +250,20 @@ console.log("publicacionesEsperadas: no escribe si el conjunto no coincide");
   await T.procesarTarifas(base(h3, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, dryRun: true, publicacionesEsperadas: ["A"] }));
   eq(h3.escritas.append.length, 0, "en simulación la guarda no aplica ni escribe");
 }
+console.log("minMuestras: solo filas con suficientes muestras limpias");
+{
+  const mk = (desps, ing) => ({ ingreso: 1, precio: 9000, comision: 0, ingresoConComision: 0, despachos: [], despachosPorTipo: { fulfillment: [], otro: desps }, ingresoPorTipo: { fulfillment: 0, otro: ing }, tipoCrudo: { otro: X } });
+  // A: 2 despachos limpios (2 muestras). E: 1 despacho limpio (1 muestra)
+  const ventas = new Map([["A", mk(desp(2, 3), 18000)], ["E", mk(desp(9), 9000)]]);
+  const h = hoja([]);
+  const r = await T.procesarTarifas(base(h, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, minMuestras: 2 }));
+  eq([r.procesadas, r.escritas.nuevas, r.omitidas], [2, 1, 1], "con minMuestras:2 se escribe A (2 muestras) y se omite E (1 muestra)");
+  eq(h.escritas.append[0][1].map((x) => [x[0], x[4]]), [["A", "2"]], "la fila escrita es A con Muestras = 2");
+  const h2 = hoja([]);
+  const r2 = await T.procesarTarifas(base(h2, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true }));
+  eq([r2.escritas.nuevas, r2.omitidas], [2, 0], "sin minMuestras se escriben las dos (comportamiento por defecto)");
+  const h3 = hoja([]);
+  const r3 = await T.procesarTarifas(base(h3, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, minMuestras: 2, dryRun: true }));
+  eq([r3.omitidas, h3.escritas.append.length], [1, 0], "en simulación informa lo que omitiría y no escribe");
+}
 console.log(`\n${ok} comprobaciones OK`);

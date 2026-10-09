@@ -28,7 +28,8 @@ import { parsearLogisticoPorOrden } from "@/lib/logistica";
 // soloMuestraReal (solo escribe las filas medidas con muestra limpia; las
 // estimadas o sin muestra se calculan y se informan pero NO se escriben),
 // soloEntregados (no escribe filas medidas cuyas muestras salgan de despachos
-// aún no entregados: se reintentan cuando lo estén), publicacionesEsperadas
+// aún no entregados: se reintentan cuando lo estén), minMuestras (entero ≥ 1:
+// no escribe filas medidas con menos muestras limpias; p. ej. 2), publicacionesEsperadas
 // (lista de ids: solo escribe si las filas a escribir son exactamente de esas
 // publicaciones; si no, no escribe nada) }.
 export const maxDuration = 60;
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
     const porTipo = body?.porTipo === true || soloSinFilaDelTipo;
     const soloMuestraReal = body?.soloMuestraReal === true;
     const soloEntregados = body?.soloEntregados === true;
+    const minMuestras = Number.isInteger(body?.minMuestras) && body.minMuestras >= 1 ? body.minMuestras : undefined;
     const publicacionesEsperadas: string[] | undefined = Array.isArray(body?.publicacionesEsperadas) ? body.publicacionesEsperadas.map(String) : undefined;
 
     const token = await getValidAccessToken();
@@ -99,7 +101,7 @@ export async function POST(request: Request) {
     const resultado = await procesarTarifas({
       mlGet, readSheet, writeSheet, appendSheet, batchWriteSheet,
       ventas, skuPorItem, logisticoPorItem, ahora: new Date(),
-      dryRun: !confirmar, forzar, soloSinFilaDelTipo, soloMuestraReal, soloEntregados, publicacionesEsperadas, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
+      dryRun: !confirmar, forzar, soloSinFilaDelTipo, soloMuestraReal, soloEntregados, minMuestras, publicacionesEsperadas, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
     });
 
     return NextResponse.json({

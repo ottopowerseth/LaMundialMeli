@@ -255,6 +255,7 @@ export type OpcionesTarifas = {
   dryRun: boolean;
   forzar: boolean;
   publicacionesEsperadas?: string[]; // si se pasa, las filas a escribir deben ser de EXACTAMENTE estas publicaciones; si no, no se escribe nada y se lanza un error
+  minMuestras?: number; // no escribe filas medidas con menos muestras limpias que este mínimo (p. ej. 2); las demás se reintentan después
   soloEntregados?: boolean; // con soloMuestraReal o sin él: no escribe filas cuyas muestras vengan de despachos aún no entregados (se reintentan después)
   soloMuestraReal?: boolean; // solo escribe las filas medidas con muestra limpia (ok/dispersa); no escribe estimadas ni fallidas
   soloSinFilaDelTipo?: boolean; // solo los pares (publicación, tipo) que NO tienen ninguna fila de ese tipo (piloto del segundo tipo)
@@ -276,7 +277,7 @@ export type ResultadoTarifas = {
   porEstado: Record<string, number>;
   porMuestras: Record<string, number>; // cuántas filas se calcularon con 0, 1, 2... muestras limpias
   escritas: { nuevas: number; actualizadas: number };
-  omitidas: number; // filas calculadas que NO se escribieron por soloMuestraReal / soloEntregados
+  omitidas: number; // filas calculadas que NO se escribieron por soloMuestraReal / soloEntregados / minMuestras
   filas: FilaTarifa[];
 };
 
@@ -450,7 +451,7 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
 
   // soloMuestraReal: se escriben únicamente las filas medidas con muestra limpia.
   const esMedida = (h: FilaTarifa) => h.r.estado === "ok" || h.r.estado === "dispersa";
-  const aEscribir = hechas.filter((h) => (!op.soloMuestraReal || esMedida(h)) && (!op.soloEntregados || !esMedida(h) || (h.r.noEntregadas ?? 0) === 0));
+  const aEscribir = hechas.filter((h) => (!op.soloMuestraReal || esMedida(h)) && (!op.soloEntregados || !esMedida(h) || (h.r.noEntregadas ?? 0) === 0) && (!op.minMuestras || !esMedida(h) || h.r.muestras >= op.minMuestras));
   const omitidas = hechas.length - aEscribir.length;
   if (!op.dryRun && op.publicacionesEsperadas) {
     const quedan = [...new Set(aEscribir.map((h) => h.itemId))].sort(), esperadas = [...op.publicacionesEsperadas].sort();
