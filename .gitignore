@@ -16,3 +16,6 @@
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# grabaciones del arnes (respuestas reales de ML y Sheets, con datos de compradores): NO versionar
+/scripts/harness/grabaciones/
