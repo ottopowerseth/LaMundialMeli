@@ -361,6 +361,7 @@ export default function Home() {
   const [backfilling, setBackfilling] = useState(false);
   const [backfillProgreso, setBackfillProgreso] = useState({ procesadas: 0, nuevasEnCache: 0 });
   const [backfillError, setBackfillError] = useState<string | null>(null);
+  const [backfillTotales, setBackfillTotales] = useState<{ http429: number; http404: number; sinEnvio: number; errores: string[] }>({ http429: 0, http404: 0, sinEnvio: 0, errores: [] });
   const backfillCancelado = useRef(false);
 
   // --- Auditoría state ---
@@ -674,6 +675,7 @@ export default function Home() {
     setBackfilling(true);
     setBackfillError(null);
     setBackfillProgreso({ procesadas: 0, nuevasEnCache: 0 });
+    setBackfillTotales({ http429: 0, http404: 0, sinEnvio: 0, errores: [] });
     backfillCancelado.current = false;
     try {
       // Loop automático: cada llamada procesa un lote limitado por el
@@ -690,7 +692,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ dias: 120, cursorHastaMs }),
         });
-        const data: { ok: boolean; error?: string; procesadas: number; nuevasEnCache: number; completo: boolean; cursorHastaMs: number | null } = await res.json();
+        const data: { ok: boolean; error?: string; procesadas: number; nuevasEnCache: number; completo: boolean; cursorHastaMs: number | null; sinEnvio: number; errores: { http429: number; http404: number }; erroresValidacion: string[] } = await res.json();
         if (!data.ok) {
           setBackfillError(data.error ?? "Error de red");
           break;
@@ -698,6 +700,12 @@ export default function Home() {
         setBackfillProgreso(prev => ({
           procesadas: prev.procesadas + data.procesadas,
           nuevasEnCache: prev.nuevasEnCache + data.nuevasEnCache,
+        }));
+        setBackfillTotales(prev => ({
+          http429: prev.http429 + data.errores.http429,
+          http404: prev.http404 + data.errores.http404,
+          sinEnvio: prev.sinEnvio + data.sinEnvio,
+          errores: [...prev.errores, ...data.erroresValidacion].slice(0, 20),
         }));
         if (data.completo) break;
         if (data.cursorHastaMs === cursorHastaMs && data.nuevasEnCache === 0) {
@@ -929,6 +937,16 @@ export default function Home() {
                   </button>
                 )}
                 {backfillError && <p className="text-red-600 text-sm">✗ Error: {backfillError}</p>}
+                {(backfillProgreso.procesadas > 0 || backfillTotales.sinEnvio > 0 || backfillTotales.http429 > 0 || backfillTotales.http404 > 0) && (
+                  <div className="text-sm text-gray-500 space-y-1">
+                    <p>429: {backfillTotales.http429} · 404: {backfillTotales.http404} · Sin envío: {backfillTotales.sinEnvio}</p>
+                    {backfillTotales.errores.length > 0 && (
+                      <ul className="list-disc pl-5 text-red-600">
+                        {backfillTotales.errores.map((e, i) => <li key={i}>{e}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                )}
                 {!backfilling && backfillProgreso.procesadas > 0 && !backfillError && (
                   <p className="text-sm text-gray-500">
                     Última corrida: {backfillProgreso.procesadas} procesadas, {backfillProgreso.nuevasEnCache} nuevas en caché.

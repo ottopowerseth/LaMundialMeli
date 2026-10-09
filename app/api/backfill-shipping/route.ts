@@ -8,7 +8,7 @@ import { ejecutarBackfill } from "@/lib/backfill-shipping";
 // órdenes que ml-sync no cubre (tope de 150 nuevas por sync, ventana de 35
 // días). La lógica está en lib/backfill-shipping.ts: ventanas de un día
 // (sin depender del tope de offset), canceladas excluidas, escrituras
-// agrupadas, columna A releída antes de escribir y corte a los ~45 s.
+// agrupadas, columna A releída antes de escribir y corte a los 40 s.
 //
 // Body JSON (todo opcional): { dias (1-180, default 120), seco (true = no
 // consulta /shipments ni escribe), cursorHastaMs (lo devuelve la corrida
