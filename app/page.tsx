@@ -680,9 +680,17 @@ export default function Home() {
       // maxDuration del endpoint. Mientras "completo" venga false, todavía
       // queda backlog por resolver — seguimos llamando hasta terminar o
       // hasta que el usuario cancele.
+      // El endpoint recorre ventanas de un día (de hoy hacia atrás, 120 días) y
+      // devuelve cursorHastaMs para retomar donde quedó; sin progreso en una
+      // corrida se corta para no quedar en un loop infinito.
+      let cursorHastaMs: number | null = null;
       while (!backfillCancelado.current) {
-        const res = await fetch("/api/backfill-shipping", { method: "POST" });
-        const data = await res.json();
+        const res: Response = await fetch("/api/backfill-shipping", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dias: 120, cursorHastaMs }),
+        });
+        const data: { ok: boolean; error?: string; procesadas: number; nuevasEnCache: number; completo: boolean; cursorHastaMs: number | null } = await res.json();
         if (!data.ok) {
           setBackfillError(data.error ?? "Error de red");
           break;
@@ -692,6 +700,11 @@ export default function Home() {
           nuevasEnCache: prev.nuevasEnCache + data.nuevasEnCache,
         }));
         if (data.completo) break;
+        if (data.cursorHastaMs === cursorHastaMs && data.nuevasEnCache === 0) {
+          setBackfillError("Sin progreso: revisá los errores de /shipments y reintentá");
+          break;
+        }
+        cursorHastaMs = data.cursorHastaMs;
       }
     } catch {
       setBackfillError("Error de red");
@@ -897,7 +910,7 @@ export default function Home() {
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
                 <div>
                   <h2 className="font-bold text-gray-900 text-lg">Historial de envíos</h2>
-                  <p className="text-sm text-gray-500 mt-1">Completa el tipo de envío (Full u otro) de ventas antiguas, hasta cubrir todo el histórico.</p>
+                  <p className="text-sm text-gray-500 mt-1">Completa el tipo de envío (Full u otro) de las ventas de los últimos 120 días (sin canceladas).</p>
                 </div>
                 {backfilling ? (
                   <div className="space-y-2">
