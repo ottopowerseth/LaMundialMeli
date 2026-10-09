@@ -26,6 +26,7 @@ mkdirSync(outDir, { recursive: true });
 // Ventanas a consultar: editar según lo que se quiera comparar. El reloj queda congelado en el momento de grabar.
 const SOLICITUDES = [
   { nombre: "tablero_30d", ruta: "tablero", url: "http://x/api/tablero?dias=30" },
+  { nombre: "tablero_120d", ruta: "tablero", url: "http://x/api/tablero?dias=120" },
   { nombre: "tablero_sept", ruta: "tablero", url: "http://x/api/tablero?desde=2026-09-01T00:00:00.000Z&hasta=2026-10-01T00:00:00.000Z" },
   { nombre: "metrics_sept", ruta: "metrics", url: "http://x/api/metrics?periodo=semana&desde=2026-09-01T00:00:00.000Z&hasta=2026-10-01T00:00:00.000Z" },
   { nombre: "metrics_mes", ruta: "metrics", url: "http://x/api/metrics?periodo=mes" },

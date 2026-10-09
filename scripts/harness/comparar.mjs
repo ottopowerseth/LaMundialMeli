@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 const [, , dirA, dirB] = process.argv;
-const nombres = ["tablero_30d", "tablero_sept", "metrics_sept", "metrics_mes"];
+const nombres = (process.env.SOLICITUDES ?? "tablero_30d,tablero_120d,tablero_sept,metrics_sept,metrics_mes").split(",");
 function diff(a, b, ruta, out) {
   if (a === b) return;
   if (typeof a !== typeof b || a === null || b === null || typeof a !== "object") { out.push({ ruta, a, b }); return; }
