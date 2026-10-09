@@ -234,4 +234,20 @@ console.log("soloEntregados: no se escriben filas apoyadas en despachos sin entr
   const r3 = await T.procesarTarifas(base(h3, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloEntregados: true }));
   check(r3.escritas.nuevas >= 1 && h3.escritas.append[0][1].every((x) => x[0] === "A" || x[8] !== "ok"), "soloEntregados solo retiene filas medidas sin entregar; las estimadas siguen el flujo normal");
 }
+console.log("publicacionesEsperadas: no escribe si el conjunto no coincide");
+{
+  const mk = (desps, ing) => ({ ingreso: 1, precio: 9000, comision: 0, ingresoConComision: 0, despachos: [], despachosPorTipo: { fulfillment: [], otro: desps }, ingresoPorTipo: { fulfillment: 0, otro: ing }, tipoCrudo: { otro: X } });
+  const ventas = new Map([["A", mk(desp(2, 3), 18000)], ["H", mk(desp(12), 9000)]]);
+  const h = hoja([]);
+  let error = null;
+  try { await T.procesarTarifas(base(h, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, publicacionesEsperadas: ["A"] })); } catch (e) { error = e; }
+  check(error && /No se escribió nada/.test(error.message), "se iban a escribir A y H y se esperaba solo A: lanza error");
+  eq([h.escritas.append.length, h.escritas.batch.length, h.escritas.write.length], [0, 0, 0], "y no escribe nada en la hoja");
+  const h2 = hoja([]);
+  const r2 = await T.procesarTarifas(base(h2, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, publicacionesEsperadas: ["H", "A"] }));
+  eq([r2.escritas.nuevas, h2.escritas.append.length], [2, 1], "con el conjunto exacto (en cualquier orden) escribe");
+  const h3 = hoja([]);
+  await T.procesarTarifas(base(h3, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, dryRun: true, publicacionesEsperadas: ["A"] }));
+  eq(h3.escritas.append.length, 0, "en simulación la guarda no aplica ni escribe");
+}
 console.log(`\n${ok} comprobaciones OK`);

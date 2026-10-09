@@ -254,6 +254,7 @@ export type OpcionesTarifas = {
   ahora: Date;
   dryRun: boolean;
   forzar: boolean;
+  publicacionesEsperadas?: string[]; // si se pasa, las filas a escribir deben ser de EXACTAMENTE estas publicaciones; si no, no se escribe nada y se lanza un error
   soloEntregados?: boolean; // con soloMuestraReal o sin él: no escribe filas cuyas muestras vengan de despachos aún no entregados (se reintentan después)
   soloMuestraReal?: boolean; // solo escribe las filas medidas con muestra limpia (ok/dispersa); no escribe estimadas ni fallidas
   soloSinFilaDelTipo?: boolean; // solo los pares (publicación, tipo) que NO tienen ninguna fila de ese tipo (piloto del segundo tipo)
@@ -451,6 +452,12 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
   const esMedida = (h: FilaTarifa) => h.r.estado === "ok" || h.r.estado === "dispersa";
   const aEscribir = hechas.filter((h) => (!op.soloMuestraReal || esMedida(h)) && (!op.soloEntregados || !esMedida(h) || (h.r.noEntregadas ?? 0) === 0));
   const omitidas = hechas.length - aEscribir.length;
+  if (!op.dryRun && op.publicacionesEsperadas) {
+    const quedan = [...new Set(aEscribir.map((h) => h.itemId))].sort(), esperadas = [...op.publicacionesEsperadas].sort();
+    if (JSON.stringify(quedan) !== JSON.stringify(esperadas)) {
+      throw new Error(`No se escribió nada: se iban a escribir filas de [${quedan.join(", ")}] y se esperaban [${esperadas.join(", ")}].`);
+    }
+  }
   let nuevas = 0;
   let actualizadas = 0;
   if (!op.dryRun && aEscribir.length > 0) {
