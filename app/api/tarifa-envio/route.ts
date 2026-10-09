@@ -24,7 +24,9 @@ import { parsearLogisticoPorOrden } from "@/lib/logistica";
 // Body (todo opcional): { confirmar, dias (ventana de ventas, 1-120, default
 // 45), limite (máx. publicaciones — o pares con porTipo — por invocación), forzar
 // (ignora la vigencia de la caché), porTipo, soloSinFilaDelTipo (implica porTipo:
-// solo los pares sin ninguna fila de su tipo, el piloto del segundo tipo) }.
+// solo los pares sin ninguna fila de su tipo, el piloto del segundo tipo),
+// soloMuestraReal (solo escribe las filas medidas con muestra limpia; las
+// estimadas o sin muestra se calculan y se informan pero NO se escriben) }.
 export const maxDuration = 60;
 
 // Tiempo para el cálculo de tarifas, descontado lo que tardan la lectura de
@@ -41,6 +43,7 @@ export async function POST(request: Request) {
     const forzar = body?.forzar === true;
     const soloSinFilaDelTipo = body?.soloSinFilaDelTipo === true;
     const porTipo = body?.porTipo === true || soloSinFilaDelTipo;
+    const soloMuestraReal = body?.soloMuestraReal === true;
 
     const token = await getValidAccessToken();
     const client = axios.create({
@@ -90,7 +93,7 @@ export async function POST(request: Request) {
     const resultado = await procesarTarifas({
       mlGet, readSheet, writeSheet, appendSheet, batchWriteSheet,
       ventas, skuPorItem, logisticoPorItem, ahora: new Date(),
-      dryRun: !confirmar, forzar, soloSinFilaDelTipo, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
+      dryRun: !confirmar, forzar, soloSinFilaDelTipo, soloMuestraReal, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
     });
 
     return NextResponse.json({

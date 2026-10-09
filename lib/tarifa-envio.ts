@@ -252,6 +252,7 @@ export type OpcionesTarifas = {
   ahora: Date;
   dryRun: boolean;
   forzar: boolean;
+  soloMuestraReal?: boolean; // solo escribe las filas medidas con muestra limpia (ok/dispersa); no escribe estimadas ni fallidas
   soloSinFilaDelTipo?: boolean; // solo los pares (publicación, tipo) que NO tienen ninguna fila de ese tipo (piloto del segundo tipo)
   limite: number | null;
   tiempoMaximoMs: number;
@@ -271,6 +272,7 @@ export type ResultadoTarifas = {
   porEstado: Record<string, number>;
   porMuestras: Record<string, number>; // cuántas filas se calcularon con 0, 1, 2... muestras limpias
   escritas: { nuevas: number; actualizadas: number };
+  omitidas: number; // filas calculadas que NO se escribieron por soloMuestraReal
   filas: FilaTarifa[];
 };
 
@@ -429,8 +431,8 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
     const precio = op.ventas.get(h.itemId)?.precio;
     if (h.r.estado === "ok" && h.r.tarifaPorUnidad !== null && precio) muestrasOk.push({ itemId: h.itemId, sku: h.sku, precio, tarifa: h.r.tarifaPorUnidad, tipo: grupoMuestra(h.itemId, h.r.tipoLogistico) });
   }
-  estimarFaltantes(hechas, muestrasOk, op.ventas, (h) => (porTipo ? (h as typeof hechas[number]).par.grupo : grupoDeTipo(op.logisticoPorItem?.get(h.itemId) ?? "")));
-  if (!porTipo) {
+  if (!op.soloMuestraReal) estimarFaltantes(hechas, muestrasOk, op.ventas, (h) => (porTipo ? (h as typeof hechas[number]).par.grupo : grupoDeTipo(op.logisticoPorItem?.get(h.itemId) ?? "")));
+  if (!porTipo && !op.soloMuestraReal) {
     // Modo anterior: la fila estimada lleva el tipo vigente de la publicación (o "fulfillment" si es Full).
     for (const h of hechas) if (h.r.estado === "estimado" && h.r.tipoLogistico === "") h.r = { ...h.r, tipoLogistico: op.logisticoPorItem?.get(h.itemId) ?? "" };
   }
@@ -442,9 +444,12 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
     porMuestras[String(h.r.muestras)] = (porMuestras[String(h.r.muestras)] ?? 0) + 1;
   }
 
+  // soloMuestraReal: se escriben únicamente las filas medidas con muestra limpia.
+  const aEscribir = op.soloMuestraReal ? hechas.filter((h) => h.r.estado === "ok" || h.r.estado === "dispersa") : hechas;
+  const omitidas = hechas.length - aEscribir.length;
   let nuevas = 0;
   let actualizadas = 0;
-  if (!op.dryRun && hechas.length > 0) {
+  if (!op.dryRun && aEscribir.length > 0) {
     // Encabezado: se crea si falta y se amplía si la hoja es de una versión
     // anterior con menos columnas (la 1ª versión tenía 10: sin Fuente
     // Estimación ni Motivo).
@@ -453,7 +458,7 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
 
     const updates: { range: string; values: unknown[][] }[] = [];
     const filasNuevas: string[][] = [];
-    for (const h of hechas) {
+    for (const h of aEscribir) {
       const e = existentes.get(h.par.clave);
       const fila = filaDeSheet(h, h.par.tipoCrudo);
       if (e) { updates.push({ range: `${hoja}!A${e.fila}:L${e.fila}`, values: [fila] }); actualizadas++; }
@@ -476,6 +481,7 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
     porEstado,
     porMuestras,
     escritas: { nuevas, actualizadas },
+    omitidas,
     filas: hechas.map(({ par: _par, ...f }) => f),
   };
 }

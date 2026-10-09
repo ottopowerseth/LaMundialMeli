@@ -198,4 +198,19 @@ console.log("modo anterior (sin tipo por orden): se comporta como antes");
   try { await T.procesarTarifas(lega(hoja([fila("A", 410, F), fila("A", 810, X)]))); } catch (e) { error = e; }
   check(error && /usar porTipo/.test(error.message), "dos filas de la misma publicación (filas por tipo) abortan en el modo anterior y piden usar porTipo");
 }
+console.log("soloMuestraReal: solo se escriben las filas medidas");
+{
+  const mk = (desps, ing, crudo) => ({ ingreso: 1, precio: 9000, comision: 0, ingresoConComision: 0, despachos: [], despachosPorTipo: { fulfillment: [], otro: desps }, ingresoPorTipo: { fulfillment: 0, otro: ing }, tipoCrudo: crudo });
+  // A|despacho tiene muestra limpia (2 y 3); D|despacho solo tiene un despacho con costo 0 → quedaría estimada
+  const ventas = new Map([["A", mk(desp(2, 3), 18000, { otro: X })], ["D", mk(desp(10), 9000, { otro: X })]]);
+  const h = hoja([fila("P", 810, X), fila("Q", 830, X)]);
+  const r = await T.procesarTarifas(base(h, { ventas: new Map([...ventas, ["P", { ingreso: 1, precio: 8000, comision: 0, ingresoConComision: 0, despachos: [] }], ["Q", { ingreso: 1, precio: 9000, comision: 0, ingresoConComision: 0, despachos: [] }]]), skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true }));
+  eq([r.procesadas, r.escritas, r.omitidas], [2, { nuevas: 1, actualizadas: 0 }, 1], "se calculan 2 pares, se escribe 1 (la medida) y se omite 1 (la que quedaría estimada)");
+  const filas = h.escritas.append[0][1];
+  eq(filas.map((x) => [x[0], x[8], x[4]]), [["A", "ok", "2"]], "la única fila escrita es la medida, con Muestras = 2");
+  eq(r.filas.find((x) => x.itemId === "D").r.estado, "sin_costo", "la omitida figura en el informe con su estado real (sin estimar: no se calcula el respaldo)");
+  const hs = hoja([]);
+  const rs = await T.procesarTarifas(base(hs, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, dryRun: true }));
+  eq([rs.omitidas, hs.escritas.append.length], [1, 0], "en simulación informa lo que omitiría y no escribe nada");
+}
 console.log(`\n${ok} comprobaciones OK`);
