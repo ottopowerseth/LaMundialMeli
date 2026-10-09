@@ -6,6 +6,8 @@ import Publicidad from "./Publicidad";
 import PrecioParaGanar from "./PrecioParaGanar";
 import Operacion from "./Operacion";
 import ReclamosPorTipo from "./ReclamosPorTipo";
+import ReposicionFull from "./ReposicionFull";
+import type { ResultadoReposicion } from "@/lib/reposicion-full";
 
 // Tablero "desde arriba". Un solo endpoint (/api/tablero) calculado en vivo.
 // El resultado se guarda en una variable de módulo para que al cambiar de
@@ -85,6 +87,7 @@ type TableroApi = {
   logistica?: Logistica;
   stock?: StockApi;
   margen?: MargenApi;
+  reposicion?: ResultadoReposicion;
   tendencias?: TendenciasApi;
 };
 
@@ -573,6 +576,8 @@ export default function Tablero() {
       {datos?.margen && <SeccionMargen margen={datos.margen} dias={datos.ventana?.dias} />}
       {datos?.stock && <SeccionAlerta alerta={datos.stock.alerta} total={datos.stock.resumen.perdido.total} />}
       {datos?.stock && <SeccionStock stock={datos.stock} />}
+      {/* Reposición de Full: sin llamadas propias, usa el estado y stock que ya trajo el Tablero. */}
+      {datos?.reposicion && <ReposicionFull reposicion={datos.reposicion} generadoEn={datos.generadoEn} />}
       {/* A pedido: no se calcula al abrir el Tablero (~40 s, ~730 llamadas a ML). */}
       <Completitud />
       {/* A pedido (~10 s): ACoS, equilibrio y TACoS de Product Ads. */}

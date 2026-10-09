@@ -11,6 +11,7 @@ import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
 import type { ItemStock } from "@/lib/tablero-stock";
 import { calcularConfianza, resumirVentas, variacion } from "@/lib/tablero-resumen";
 import { asignarLogistico, coberturaLogistica, parsearLogisticoPorOrden } from "@/lib/logistica";
+import { armarReposicion } from "@/lib/reposicion-full";
 
 // Tablero "desde arriba": un solo endpoint, calculado en vivo y sin hojas
 // nuevas. Todas las secciones comparten los mismos datos — 120 días de órdenes
@@ -131,6 +132,22 @@ export async function GET(req: NextRequest) {
       desdeMs, hastaMs, ahoraMs: Math.min(ahoraMs, hastaMs), visitas,
     });
 
+    // ---- Panel de reposición de Full (ver lib/reposicion-full.ts) ----
+    // Sin llamadas nuevas: usa el estado y stock de /items que ya se cargaron arriba, las ventas con tipo
+    // logístico real, la velocidad del Tablero y el margen unitario de los últimos 120 días (mezcla canales).
+    const ahoraTopeMs = Math.min(ahoraMs, hastaMs);
+    const margen120 = margenDesdeDatos({
+      filasPub, fullPorItem, tarifas, costoPorItem, fueraDeAlcance,
+      lineas: ventas.lineas.filter((l) => l.ms >= ahoraTopeMs - 120 * DIA_MS && l.ms < ahoraTopeMs),
+    });
+    const margenUnitario = new Map<string, number | null>();
+    for (const f of margen120.filas) margenUnitario.set(f.id, f.estado === "ok" && f.unidades > 0 && f.margenPesos !== null ? f.margenPesos / f.unidades : null);
+    const reposicion = armarReposicion({
+      items: [...itemsMl.values()].map((it) => ({ id: it.id, titulo: it.titulo, estado: it.estado, subEstado: it.subEstado, stock: it.stock, full: it.full })),
+      velocidades: new Map(stock.filas.map((f) => [f.id, { velocidad: f.velocidad, diasSinStock: f.diasSinStock, velocidadConfiable: f.velocidadConfiable }])),
+      lineas: ventas.lineas, ahoraMs: ahoraTopeMs, margenUnitario,
+    });
+
     return NextResponse.json({
       ok: true,
       generadoEn: new Date().toISOString(),
@@ -147,6 +164,7 @@ export async function GET(req: NextRequest) {
       confianza,
       logistica,
       margen: { resumen: margen.resumen, filas: margen.filas },
+      reposicion,
       tendencias,
       stock: {
         resumen: stock.resumen,
