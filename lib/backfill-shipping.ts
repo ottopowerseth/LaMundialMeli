@@ -4,7 +4,8 @@
 // Recorre las órdenes en ventanas de UN día UTC (order.date_created.from/to),
 // de la más reciente a la más vieja, así que no depende del tope de offset de
 // /orders/search (una ventana de un día queda muy por debajo de 10.000).
-// Excluye las canceladas; incluye pagadas y reembolsadas. Las escrituras se
+// Excluye las canceladas; incluye pagadas y reembolsadas. Pase opt-in de
+// canceladas (incluirCanceladas): ver el final de ejecutarBackfill. Las escrituras se
 // agrupan (~100 filas por append) y, antes de cada una, se relee la columna A
 // para no generar duplicados nuevos. Idempotente: ShippingCache es el cursor
 // real; `cursorHastaMs` solo evita volver a listar los días ya resueltos.
@@ -24,6 +25,11 @@ export type OpcionesBackfill = {
   seco?: boolean;
   cursorHastaMs?: number | null;
   tiempoMaxMs?: number;
+  // Pase de canceladas (opt-in): resuelve SOLO las órdenes canceladas con envío que no están en la caché
+  // (las demás órdenes no se tocan). Para escribir exige `idsEsperados`: si el conjunto a resolver no
+  // coincide exactamente, no escribe nada. En seco informa el conjunto y si coincide.
+  incluirCanceladas?: boolean;
+  idsEsperados?: string[];
 };
 
 export const DIAS_DEFAULT = 120;
@@ -67,7 +73,8 @@ export type ResultadoBackfill = {
   faltantes: number; // órdenes sin tipo (en seco: las que se resolverían)
   faltantesPorEstado: Record<string, number>;
   faltantesPorDia: { dia: string; ordenes: number; faltantes: number }[];
-  faltantesIds?: string[]; // solo en seco
+  faltantesIds?: string[]; // solo en seco (y siempre en el pase de canceladas)
+  pase?: { canceladasEnVentana: number; guarda: "no_pedida" | "coincide" | "no_coincide"; sobran: string[]; faltan: string[]; abortado?: string };
 };
 
 export async function ejecutarBackfill(deps: DepsBackfill, opts: OpcionesBackfill = {}): Promise<ResultadoBackfill> {
@@ -97,7 +104,8 @@ export async function ejecutarBackfill(deps: DepsBackfill, opts: OpcionesBackfil
         if (status === 429) r.errores.http429++;
         else if (status === 404) r.errores.http404++;
         else r.errores.otros++;
-        const reintentable = status === undefined || status === 429 || status >= 500;
+        // En el pase de canceladas un 429 corta de inmediato, sin reintentar.
+        const reintentable = status === undefined || (status === 429 && !opts.incluirCanceladas) || (status !== undefined && status !== 429 && status >= 500);
         if (!reintentable || intento >= REINTENTOS) throw err;
         await new Promise((res) => setTimeout(res, intento * 1000));
       }
@@ -134,7 +142,62 @@ export async function ejecutarBackfill(deps: DepsBackfill, opts: OpcionesBackfil
   const limite = finDeHoy - dias * DIA_MS;
   let hasta = opts.cursorHastaMs && opts.cursorHastaMs > limite && opts.cursorHastaMs <= finDeHoy ? opts.cursorHastaMs : finDeHoy;
 
+  // Pase de canceladas: lista el rango completo (en paralelo, como Métricas), arma el conjunto de
+  // canceladas con envío y sin tipo, lo compara con `idsEsperados` y recién ahí consulta /shipments.
+  async function pasarCanceladas() {
+    const { ordenes } = await listarOrdenesRango<OrdenApi & { date_created?: string }>(mlGet, deps.userId, limite, finDeHoy, { concurrencia: 4 });
+    r.ventanasRecorridas = dias;
+    r.ordenesVistas = ordenes.length;
+    const canceladas = ordenes.filter((o) => o.status === "cancelled");
+    const sinTipo = canceladas.filter((o) => !conTipo.has(String(o.id)));
+    r.yaEnCache = canceladas.length - sinTipo.length;
+    r.sinEnvio = sinTipo.filter((o) => !o.shipping?.id).length;
+    const aResolver = sinTipo.filter((o) => o.shipping?.id);
+    r.faltantes = aResolver.length;
+    r.faltantesPorEstado = aResolver.length > 0 ? { cancelled: aResolver.length } : {};
+    r.faltantesIds = aResolver.map((o) => String(o.id));
+    const pase: NonNullable<ResultadoBackfill["pase"]> = { canceladasEnVentana: canceladas.length, guarda: "no_pedida", sobran: [], faltan: [] };
+    r.pase = pase;
+    if (opts.idsEsperados) {
+      const esperadas = new Set(opts.idsEsperados.map(idPlano));
+      const reales = new Set(r.faltantesIds);
+      pase.sobran = [...reales].filter((id) => !esperadas.has(id));
+      pase.faltan = [...esperadas].filter((id) => !reales.has(id));
+      pase.guarda = pase.sobran.length === 0 && pase.faltan.length === 0 ? "coincide" : "no_coincide";
+    }
+    if (seco) { r.completo = true; return; }
+    if (pase.guarda === "no_pedida") { pase.abortado = "El pase de canceladas exige idsEsperados para escribir: no se escribió nada."; return; }
+    if (pase.guarda === "no_coincide") { pase.abortado = "El conjunto a resolver no coincide con idsEsperados: no se escribió nada."; return; }
+    if (conTipo.size === 0) { pase.abortado = "ShippingCache se leyó vacía: no se escribió nada."; return; }
+    for (let i = 0; i < aResolver.length; i += SHIPMENT_BATCH_SIZE) {
+      if (agotado()) { pase.abortado = "Se agotó el tiempo: lo resuelto se escribe y el resto queda para otra corrida."; break; }
+      const lote = aResolver.slice(i, i + SHIPMENT_BATCH_SIZE);
+      let corta = false;
+      const resultados = await Promise.all(lote.map(async (o) => {
+        const shippingId = o.shipping!.id;
+        try {
+          const { data } = await mlGet<{ logistic_type?: string }>(`/shipments/${shippingId}`);
+          r.procesadas++;
+          return [`'${o.id}`, `'${shippingId}`, data.logistic_type ?? "", new Date(ahora()).toISOString()];
+        } catch (err) {
+          r.procesadas++;
+          const status = (err as { response?: { status?: number } }).response?.status;
+          if (status === 429 || status === 401) corta = true;
+          if (r.erroresValidacion.length < 20) r.erroresValidacion.push(`Orden ${o.id}: /shipments/${shippingId} falló (${status ?? "red"})`);
+          return null;
+        }
+      }));
+      for (const f of resultados) if (f) buffer.push(f);
+      if (corta) { pase.abortado = "HTTP 401/429: se corta sin reintentar."; break; }
+    }
+    r.completo = !pase.abortado;
+  }
+
   try {
+    if (opts.incluirCanceladas) {
+      await pasarCanceladas();
+      return r; // el finally escribe lo acumulado
+    }
     let diaIncompleto = false;
     while (hasta > limite) {
       if (agotado()) { diaIncompleto = true; break; }

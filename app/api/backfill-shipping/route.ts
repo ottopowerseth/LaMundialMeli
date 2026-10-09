@@ -12,7 +12,9 @@ import { ejecutarBackfill } from "@/lib/backfill-shipping";
 //
 // Body JSON (todo opcional): { dias (1-180, default 120), seco (true = no
 // consulta /shipments ni escribe), cursorHastaMs (lo devuelve la corrida
-// anterior) }. Idempotente: ShippingCache es el cursor real de progreso.
+// anterior), incluirCanceladas + idsEsperados (pase opt-in: resuelve solo las
+// canceladas con envío sin tipo; escribe únicamente si coinciden exactamente
+// con idsEsperados) }. Idempotente: ShippingCache es el cursor real de progreso.
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
@@ -45,6 +47,8 @@ export async function POST(req: NextRequest) {
         dias: body?.dias,
         seco,
         cursorHastaMs: typeof body?.cursorHastaMs === "number" ? body.cursorHastaMs : null,
+        incluirCanceladas: body?.incluirCanceladas === true,
+        idsEsperados: Array.isArray(body?.idsEsperados) ? body.idsEsperados.map(String) : undefined,
       }
     );
 
