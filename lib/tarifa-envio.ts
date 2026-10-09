@@ -299,13 +299,18 @@ export async function procesarTarifas(op: OpcionesTarifas): Promise<ResultadoTar
   const hoja = HOJA_TARIFA_ENVIO;
 
   const existentes = new Map<string, { fila: number; estado: string; actualizado: number; sku: string; tarifa: number; tipo: string }>();
+  let filaRepetida: string | undefined;
   try {
     const rows = await op.readSheet(`${hoja}!A2:L20000`);
     rows.forEach((r, i) => {
       if (!r[0]) return;
+      if (existentes.has(String(r[0]))) filaRepetida ??= String(r[0]);
       existentes.set(String(r[0]), { fila: i + 2, estado: r[8] ?? "", actualizado: r[9] ? new Date(r[9]).getTime() : 0, sku: r[1] ?? "", tarifa: Number(r[2]), tipo: r[3] ?? "" });
     });
   } catch { /* hoja nueva o vacía */ }
+  // Esta versión asume UNA fila por publicación. Si la hoja ya tiene filas por tipo logístico
+  // (lib/envio-medido.ts las lee), actualizaría la fila del tipo equivocado: se detiene.
+  if (filaRepetida) throw new Error(`TarifaEnvio tiene más de una fila para ${filaRepetida} (filas por tipo logístico): esta versión del muestreo no las soporta; usar la versión por tipo.`);
 
   const vigente = (id: string) => {
     const e = existentes.get(id);

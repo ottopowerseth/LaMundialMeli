@@ -149,7 +149,7 @@ export function analizarPrecioParaGanar(e: EntradaPrecio): { filas: FilaPrecio[]
       id: m.id, titulo: m.titulo, full: m.full, estado: p.status as FilaPrecio["estado"], visitShare: p.visitShare, competidoresCompartiendo: p.competidoresCompartiendo,
       precioActual: p.precioActual, precioParaGanar, precioGanador: ganador?.precio ?? null, ganadorCobra,
       ingreso30: m.ingreso, unidades30: m.unidades,
-      costo: m.costo, comisionPct: m.comisionPct, envioActual: m.envioUnidad, envioFuente: m.envioFuente, envioEstimado: m.menosFiable,
+      costo: m.costo, comisionPct: m.comisionPct, envioActual: m.envioUnidad, envioFuente: m.envioFuente === "estimado_otro_tipo" ? "estimado" : m.envioFuente, envioEstimado: m.menosFiable,
       equilibrio: eqA, brechaPct: eqA !== null ? redondear1(((eqA - precioParaGanar) / eqA) * 100) : null, posicion: posicion(precioParaGanar, eqA),
       equilibrioEnvioTramo: eqB, envioTramo, posicionEnvioTramo: posicion(precioParaGanar, eqB),
       equilibrioMayorNeto: eqNeto, posicionMayorNeto: posicion(precioParaGanar, eqNeto),

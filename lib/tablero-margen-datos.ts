@@ -2,7 +2,7 @@
 // y de las ventas ya cargadas. La comparten /api/tablero y /api/publicidad
 // para que ambos calculen el margen exactamente igual (ver lib/tablero-margen.ts).
 import { armarContextoEnvio } from "@/lib/envio-medido";
-import type { ContextoEnvio, TarifaEnvioFila } from "@/lib/envio-medido";
+import type { ContextoEnvio, TarifasEnvio } from "@/lib/envio-medido";
 import { analizarMargen } from "@/lib/tablero-margen";
 import type { LineaVenta } from "@/lib/tablero-datos";
 
@@ -20,7 +20,7 @@ export function costoPorItemDesdeHoja(filasPub: string[][]): Map<string, number 
 export type EntradaMargenDatos = {
   filasPub: string[][]; // Publicaciones!A2:S: precio vigente en G (índice 6)
   fullPorItem: Map<string, boolean>; // true = Full (fulfillment)
-  tarifas: Map<string, TarifaEnvioFila>; // hoja TarifaEnvio ya parseada
+  tarifas: TarifasEnvio; // hoja TarifaEnvio ya parseada (una o dos filas por publicación, ver lib/envio-medido.ts)
   lineas: LineaVenta[]; // solo las de la ventana
   costoPorItem: Map<string, number | null>;
   fueraDeAlcance?: Set<string>; // closed/inactive (ver lib/tablero-margen.ts)

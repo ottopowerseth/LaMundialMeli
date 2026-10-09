@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const PROJ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ts = require(path.join(PROJ, "node_modules", "typescript"));
 const out = fs.mkdtempSync(path.join(os.tmpdir(), "margen-pesos-test-"));
-for (const f of fs.readdirSync(`${PROJ}/lib`).filter((x) => x.endsWith(".ts") && ["tablero-margen.ts", "rentabilidad.ts", "envio-medido.ts", "envio-estimado.ts"].includes(x))) {
+for (const f of fs.readdirSync(`${PROJ}/lib`).filter((x) => x.endsWith(".ts") && ["tablero-margen.ts", "rentabilidad.ts", "envio-medido.ts", "envio-estimado.ts", "logistica.ts"].includes(x))) {
   const js = ts.transpileModule(fs.readFileSync(`${PROJ}/lib/${f}`, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText.replace(/require\("@\/lib\/([a-z-]+)"\)/g, 'require("./$1.js")');
   fs.writeFileSync(path.join(out, f.replace(/\.ts$/, ".js")), js);
 }
@@ -20,8 +20,10 @@ let ok = 0; const check = (c, m) => { assert.ok(c, m); ok++; console.log("  ✓"
 
 // Montos brutos (con IVA) como los de ML. margen neto por unidad = (precio − costo − comisión − envío) / 1,19.
 const linea = (item, cantidad, precio, fee) => ({ orden: "O" + item, ms: 0, item, titulo: item, cantidad, precio, fee });
-const tarifas = new Map([["A", { tarifa: 1190, estado: "ok", sku: "", tipo: "xd_drop_off" }], ["H", { tarifa: 1019.9, estado: "ok", sku: "", tipo: "xd_drop_off" }],
-  ["N", { tarifa: 1190, estado: "ok", sku: "", tipo: "xd_drop_off" }], ["F", { tarifa: 800, estado: "ok", sku: "", tipo: "fulfillment" }], ["E", { tarifa: 900, estado: "estimado", sku: "", tipo: "xd_drop_off" }]]);
+// TarifasEnvio (lib/envio-medido.ts): una entrada por publicación con su fila por grupo de tipo logístico.
+const T = (tarifa, estado, tipo) => ({ sku: "", [tipo === "fulfillment" ? "full" : "noFull"]: { tarifa, estado, sku: "", tipo, actualizado: 0 } });
+const tarifas = new Map([["A", T(1190, "ok", "xd_drop_off")], ["H", T(1019.9, "ok", "xd_drop_off")],
+  ["N", T(1190, "ok", "xd_drop_off")], ["F", T(800, "ok", "fulfillment")], ["E", T(900, "estimado", "xd_drop_off")]]);
 const ctx = armarContextoEnvio(tarifas, new Map(), new Map(), new Map());
 const lineas = [
   linea("A", 3, 11900, 1666), // fee 14%

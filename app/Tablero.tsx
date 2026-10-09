@@ -16,7 +16,7 @@ type Resumen = { ingresos: number; unidades: number; ordenes: number; ticket: nu
 type Confianza = {
   ingresoVentana: number;
   costo: { pct: number; conCosto: number; auto: number; manual: number; enRevision: number; sinCosto: number };
-  envioMedido: { pct: number; estimado: number; sinDato: number };
+  envioMedido: { pct: number; estimado: number; otroTipo: number; sinDato: number };
   comisionReal: { pct: number };
   publicacionesConVenta: number;
   excluidas: { publicaciones: number; ingreso: number };
@@ -44,7 +44,7 @@ type StockApi = {
 };
 type FilaMargen = {
   id: string; titulo: string; full: boolean; unidades: number; ingreso: number; precioProm: number;
-  costo: number | null; comisionPct: number | null; envioUnidad: number | null; envioFuente: "medido" | "estimado" | null;
+  costo: number | null; comisionPct: number | null; envioUnidad: number | null; envioFuente: "medido" | "estimado" | "estimado_otro_tipo" | null;
   margenPct: number | null; margenPesos: number | null; estado: "ok" | "sin_costo" | "sin_envio" | "sin_comision"; menosFiable: boolean; pierde: boolean; fueraDeAlcance: boolean;
 };
 type SubtotalMargen = { ingreso: number; margenPct: number | null; margenPesos: number; publicaciones: number };
@@ -345,9 +345,9 @@ function SeccionMargen({ margen, dias }: { margen: MargenApi; dias?: number }) {
                 <td className="px-3 py-2 text-right">{clp(f.precioProm)}</td>
                 <td className="px-3 py-2 text-right">{f.costo !== null ? clp(f.costo) : f.fueraDeAlcance ? <span className="text-gray-400" title="Cerrada o inactiva: no cuenta como falta de Costo">cerrada/inactiva</span> : <span className="text-amber-600">sin Costo</span>}</td>
                 <td className="px-3 py-2 text-right">{f.comisionPct !== null ? `${(f.comisionPct * 100).toFixed(1).replace(".", ",")}%` : "—"}</td>
-                <td className="px-3 py-2 text-right" title={f.envioFuente === "estimado" ? (f.full ? "Envío ESTIMADO en Full: la estimación más imprecisa (error mediano ~49%)." : "Envío estimado: menos fiable que el medido.") : "Envío medido"}>
+                <td className="px-3 py-2 text-right" title={f.envioFuente === "estimado_otro_tipo" ? "Envío ESTIMADO POR OTRO TIPO: solo hay tarifa medida del otro tipo logístico (Full o despacho) y se usa tal cual. El despacho suele costar más que Full (mediana +$400 por unidad en 18 publicaciones medidas)." : f.envioFuente === "estimado" ? (f.full ? "Envío ESTIMADO en Full: la estimación más imprecisa (error mediano ~49%)." : "Envío estimado: menos fiable que el medido.") : "Envío medido"}>
                   {f.envioUnidad !== null ? clp(f.envioUnidad) : "—"}
-                  {f.menosFiable && <span className={`ml-1 ${f.full ? "text-red-500" : "text-amber-600"}`}>{f.full ? "⚠ est." : "est."}</span>}
+                  {f.menosFiable && <span className={`ml-1 ${f.full ? "text-red-500" : "text-amber-600"}`}>{f.envioFuente === "estimado_otro_tipo" ? "est. (otro tipo)" : f.full ? "⚠ est." : "est."}</span>}
                 </td>
                 <td className={`px-3 py-2 text-right font-semibold ${f.pierde ? "text-red-700" : "text-gray-900"}`}>{f.margenPct !== null ? pctTxt(f.margenPct) : <span className="text-gray-400 font-normal">{f.fueraDeAlcance ? "—" : f.estado === "sin_costo" ? "sin Costo" : "sin dato"}</span>}</td>
                 <td className={`px-3 py-2 text-right ${f.pierde || (f.margenPesos ?? 0) < 0 ? "text-red-700" : "text-gray-900"}`} title="Estimado: neto, sin IVA, antes de publicidad. Supone que el Mayor trae IVA (pendiente de confirmar con factura de compra).">{f.margenPesos !== null ? clpSigno(f.margenPesos) : <span className="text-gray-400">—</span>}</td>
@@ -539,7 +539,7 @@ export default function Tablero() {
               <Chip etiqueta="Con Costo" pct={c.costo.pct}
                 detalle={`Con Costo ${c.costo.pct}% (automático ${c.costo.auto}%, manual ${c.costo.manual}%). En revisión (sin escribir): ${c.costo.enRevision}%. Sin Costo ni propuesta: ${(c.costo.sinCosto - c.costo.enRevision).toFixed(1)}%.${c.excluidas.publicaciones > 0 ? ` No cuenta ${c.excluidas.publicaciones} publicaciones cerradas o inactivas sin Costo (${clp(c.excluidas.ingreso)}).` : ""}`} />
               <Chip etiqueta="Envío medido" pct={c.envioMedido.pct}
-                detalle={`Tarifa medida en /shipments/costs: ${c.envioMedido.pct}%. Estimado (respaldo): ${c.envioMedido.estimado}%. Sin fila en la caché: ${c.envioMedido.sinDato}%.`} />
+                detalle={`Por tipo logístico de cada venta. Tarifa medida en /shipments/costs del tipo correcto: ${c.envioMedido.pct}%. Estimada del tipo correcto: ${c.envioMedido.estimado}%. Solo hay tarifa del OTRO tipo (se usa tal cual, marcada): ${c.envioMedido.otroTipo}%. Sin fila en la caché (respaldo por tramo): ${c.envioMedido.sinDato}%.`} />
               <Chip etiqueta="Comisión real" pct={c.comisionReal.pct}
                 detalle="Comisión cobrada (sale_fee) en las órdenes de la ventana." />
             </div>

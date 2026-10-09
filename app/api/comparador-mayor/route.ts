@@ -242,7 +242,7 @@ export async function GET(req: NextRequest) {
 
       const envio = resolverEnvio(id, precio, atributos?.full ?? false, atributos?.sku ?? null, ctxEnvio);
       const envioPorUnidad = envio.envio;
-      const envioFuente: "medido" | "estimado" | "sin_dato" = envio.fuente ?? "sin_dato";
+      const envioFuente: "medido" | "estimado" | "sin_dato" = envio.fuente === "estimado_otro_tipo" ? "estimado" : (envio.fuente ?? "sin_dato");
 
       // Neto ML por unidad = precio − comisión − envío por unidad (todo
       // bruto). Sin comisión o sin envío no se calcula (null), no se asume.

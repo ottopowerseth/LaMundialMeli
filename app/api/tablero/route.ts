@@ -80,16 +80,18 @@ export async function GET(req: NextRequest) {
     // Las de la hoja que no son activas/pausadas (p. ej. inactive) y ya traen su estado en la hoja.
     for (const r of filasPub) if (r[0] && ["closed", "inactive"].includes(r[10])) fueraDeAlcance.add(String(r[0]));
 
+    // Tipo ACTUAL de cada publicación (Full o no): respaldo para las ventas sin tipo real en ShippingCache.
+    const fullPorItem = new Map<string, boolean>();
+    for (const it of itemsMl.values()) fullPorItem.set(it.id, it.full);
+
     const actual = resumirVentas(ventas.ordenes, ventas.lineas, desdeMs, hastaMs);
     const previo = resumirVentas(ventas.ordenes, ventas.lineas, anterior.desdeMs, anterior.hastaMs);
     const confianza = calcularConfianza({
       lineas: ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs),
-      costoPorItem, origenPorItem, tarifas, fueraDeAlcance,
+      costoPorItem, origenPorItem, tarifas, fueraDeAlcance, fullPorItem,
     });
 
     // ---- Margen de contribución (ver lib/tablero-margen.ts) ----
-    const fullPorItem = new Map<string, boolean>();
-    for (const it of itemsMl.values()) fullPorItem.set(it.id, it.full);
     const lineasVentana = ventas.lineas.filter((l) => l.ms >= desdeMs && l.ms < hastaMs);
     const margen = margenDesdeDatos({ filasPub, fullPorItem, tarifas, costoPorItem, fueraDeAlcance, lineas: lineasVentana });
     // Cobertura del tipo real por orden: % del ingreso con entrada en ShippingCache, % en respaldo

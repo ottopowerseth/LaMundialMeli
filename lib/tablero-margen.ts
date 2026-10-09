@@ -14,8 +14,9 @@
 //    ventana). Si una publicación vendió sin sale_fee en alguna línea, esa
 //    línea no entra al % de comisión; sin ninguna línea con sale_fee, queda
 //    "sin comisión" (no se inventa una tasa).
-//  - envío: tarifa MEDIDA de TarifaEnvio (resolverEnvio); si es estimada o
-//    viene del respaldo por tramo, la fila queda marcada "menos fiable". En
+//  - envío: tarifa MEDIDA de TarifaEnvio del tipo logístico de la venta
+//    (resolverEnvio); si es estimada, es la del OTRO tipo o viene del respaldo
+//    por tramo, la fila queda marcada "menos fiable". En
 //    Full la estimación es la menos fiable (error mediano 49% medido
 //    2026-10-07, ver lib/envio-medido.ts).
 //  - precio: promedio realmente vendido en la ventana (Métricas usa el precio
@@ -31,7 +32,7 @@
 // siendo el mismo que el actual, el resultado es idéntico al criterio anterior.
 import { calcularMargen, IVA } from "@/lib/rentabilidad";
 import { resolverEnvio } from "@/lib/envio-medido";
-import type { ContextoEnvio } from "@/lib/envio-medido";
+import type { ContextoEnvio, FuenteEnvio } from "@/lib/envio-medido";
 import type { LineaVenta } from "@/lib/tablero-datos";
 import { grupoLogistico } from "@/lib/logistica";
 
@@ -42,11 +43,11 @@ export type FilaMargen = {
   id: string; titulo: string; full: boolean;
   unidades: number; ingreso: number; precioProm: number;
   costo: number | null; comisionPct: number | null;
-  envioUnidad: number | null; envioFuente: "medido" | "estimado" | null;
+  envioUnidad: number | null; envioFuente: FuenteEnvio | null;
   margenPct: number | null;
   margenPesos: number | null; // margen neto estimado de las unidades vendidas en la ventana (CLP, sin IVA, antes de publicidad)
   estado: EstadoMargen;
-  menosFiable: boolean; // envío estimado (más aún si es Full)
+  menosFiable: boolean; // envío estimado, incluido el de otro tipo logístico (más aún si es Full)
   pierde: boolean;
   fueraDeAlcance: boolean; // cerrada/inactiva sin Costo: no entra a los totales ni a "sin Costo"
 };
@@ -116,7 +117,8 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
             envio: envios.every((x) => x.envio === envios[0].envio)
               ? envios[0].envio
               : Math.round(([...a.tipos].reduce((s, [esF, t]) => s + (envioPorTipo.get(esF)!.envio as number) * t.u, 0) / a.u) * 100) / 100,
-            fuente: envios.some((x) => x.fuente === "estimado") ? "estimado" : "medido",
+            fuente: envios.some((x) => x.fuente === "estimado_otro_tipo") ? "estimado_otro_tipo"
+              : envios.some((x) => x.fuente === "estimado") ? "estimado" : "medido",
           };
     let estado: EstadoMargen = "ok";
     if (costo === null) estado = "sin_costo";
@@ -145,7 +147,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
       costo, comisionPct: comisionPct !== null ? Math.round(comisionPct * 1000) / 1000 : null,
       envioUnidad: envio.envio, envioFuente: envio.fuente, margenPct,
       margenPesos: interno.has(id) ? Math.round(interno.get(id)!.margenNeto) : null, estado,
-      menosFiable: envio.fuente === "estimado", pierde: margenPct !== null && margenPct < 0,
+      menosFiable: envio.fuente !== null && envio.fuente !== "medido", pierde: margenPct !== null && margenPct < 0,
       fueraDeAlcance: estado === "sin_costo" && (e.fueraDeAlcance?.has(id) ?? false),
     });
   }

@@ -948,7 +948,7 @@ async function calcularTablaProductos(
         if (comision.pct !== null && envio.envio !== null) {
           const envioNeto = envio.envio / (1 + IVA);
           costoMax = Math.round((precioNeto * (1 - comision.pct) - envioNeto) * 10) / 10;
-          costoMaxFuenteEnvio = envio.fuente;
+          costoMaxFuenteEnvio = envio.fuente === "estimado_otro_tipo" ? "estimado" : envio.fuente; // el contrato de esta tabla es medido | estimado
           // Precio de equilibrio y margen: solo con Costo cargado —
           //   precioNeto = (costoNeto + envioNeto) / (1 − comisión%)
           if (costoNeto !== null) {
