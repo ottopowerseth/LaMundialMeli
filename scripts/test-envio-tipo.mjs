@@ -91,14 +91,37 @@ console.log("resolverEnvio: el estimador excluye la propia publicación");
   const solo = ctxDe([fila("M2", 410, F, "ok", "S2")], { M2: 8000 }, { M2: "S2" }, { M2: F });
   eq(M.resolverEnvio("M2", 8000, false, "S2", solo), { envio: 410, fuente: "estimado_otro_tipo", origen: "otro_tipo" }, "sin más muestras que la propia: no hay estimador, recién ahí se usa el otro tipo");
   // una publicación SIN muestras propias usa los índices completos
-  // OJO: el nivel SKU gemelo del estimador NO distingue tipo logístico (usa las dos gemelas: mediana de 410 y 830).
-  eq(M.resolverEnvio("OTRA", 8000, false, "S1", ctx).envio, 620, "una publicación sin muestras propias usa los índices ya armados (el nivel SKU mezcla los dos tipos)");
+  // El nivel SKU gemelo solo usa muestras del MISMO tipo logístico que la venta (K es Full 410; L es despacho 830).
+  eq(M.resolverEnvio("OTRA", 8000, false, "S1", ctx).envio, 830, "una publicación sin muestras propias usa los índices ya armados: venta por despacho → solo la gemela de despacho (830)");
+  eq(M.resolverEnvio("OTRA", 8000, true, "S1", ctx).envio, 410, "venta Full → solo la gemela Full (410)");
 }
 console.log("resolverEnvio: nivel SKU gemelo antes que el tramo");
 {
   const ctx = ctxDe([fila("P1", 810, X), fila("P2", 830, X), fila("Q1", 1200, X, "ok", "S1")], { P1: 8000, P2: 9000, Q1: 15000 }, { Q1: "S1" }, { P1: X, P2: X, Q1: X });
   eq(sinOrigen(M.resolverEnvio("NUEVO", 8800, false, "S1", ctx)), { envio: 1200, fuente: "estimado" }, "SKU gemelo antes que el tramo");
   eq(sinOrigen(M.resolverEnvio("NUEVO", 8800, false, null, ctx)), { envio: 820, fuente: "estimado" }, "sin SKU: mediana del tramo <$10k de despacho");
+}
+console.log("SKU gemelo: solo del mismo tipo logístico (corrección del -49%)");
+{
+  // La gemela Full cuesta $410. Dos publicaciones de despacho en el tramo <$10k dan 820. Una venta por despacho de la
+  // misma familia (SKU S1) NO debe tomar los $410 de Full.
+  const ctx = ctxDe([fila("GF", 410, F, "ok", "S1"), fila("P1", 810, X), fila("P2", 830, X), fila("P3", 410, F)], { GF: 8000, P1: 8000, P2: 9000, P3: 8500 }, { GF: "S1" }, { GF: F, P1: X, P2: X, P3: F });
+  const r = M.resolverEnvio("NUEVO", 8800, false, "S1", ctx);
+  eq([r.envio, r.fuente], [820, "estimado"], "gemela Full $410 y venta por despacho: no usa los $410, pasa al tramo de despacho (820)");
+  eq(M.resolverEnvio("NUEVO", 8800, true, "S1", ctx).envio, 410, "la misma gemela sí sirve para una venta Full (410)");
+  // Si la gemela es la única referencia de todo el tramo y es de otro tipo, el tramo usa el otro tipo como último recurso (comportamiento previo del tramo)
+  const sola = ctxDe([fila("GF", 410, F, "ok", "S1")], { GF: 8000 }, { GF: "S1" }, { GF: F });
+  const rs = M.resolverEnvio("NUEVO", 8800, false, "S1", sola);
+  eq([rs.envio, rs.origen], [410, "estimador"], "sin gemela ni muestras de despacho en el tramo: el tramo cae a la muestra del otro tipo (último recurso del tramo, no del nivel SKU)");
+  // gemela del mismo tipo gana al tramo
+  const ctx2 = ctxDe([fila("GX", 1200, X, "ok", "S2"), fila("P1", 810, X), fila("P2", 830, X)], { GX: 15000, P1: 8000, P2: 9000 }, { GX: "S2" }, { GX: X, P1: X, P2: X });
+  eq(M.resolverEnvio("NUEVO", 8800, false, "S2", ctx2).envio, 1200, "gemela del mismo tipo (despacho 1.200) antes que el tramo (820)");
+  // armarMuestrasEnvio directo: el índice por SKU lleva el tipo en la clave
+  const E = require(path.join(out, "envio-estimado.js"));
+  const filas = [["", "", "A", "", "8000", "", "", "", "", "", "", "", "", "", "410"], ["", "", "B", "", "8000", "", "", "", "", "", "", "", "", "", "830"]];
+  const idx = E.armarMuestrasEnvio(filas, new Map([["A", "S"], ["B", "S"]]), new Map([["A", F], ["B", X]]));
+  eq([...idx.porSku.keys()].sort(), ["S|fulfillment", "S|otro"], "el índice porSku se separa por tipo logístico");
+  eq([E.calcularEnvioEstimadoPorUnidad("Z", 8000, false, idx, "S").envio, E.calcularEnvioEstimadoPorUnidad("Z", 8000, true, idx, "S").envio], [830, 410], "calcularEnvioEstimadoPorUnidad: despacho → 830, Full → 410");
 }
 console.log("armarContextoEnvio: una muestra por (publicación, tipo), con su propio tipo");
 {

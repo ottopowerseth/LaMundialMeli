@@ -42,6 +42,9 @@ export type MuestrasEnvio = {
   // datos (mediana ~$810-1.866, 3 muestras) es una referencia mucho más
   // cercana a la realidad que la mediana genérica del tramo <$10k
   // ($2.430, 358 muestras, mezcla de decenas de productos sin relación).
+  // CLAVE: `${sku}|${logistico}` ("fulfillment" | "otro"): el SKU gemelo solo aporta muestras del MISMO tipo
+  // logístico que la venta. Medido 2026-10-09: el despacho cuesta ~$400 más que Full, y mezclar los dos tipos en
+  // este nivel daba tarifas de Full ($410) a ventas por despacho (3 de 44 con error de -49%).
   porSku: Map<string, number[]>;
   // Por tramo de precio + logistic_type ("fulfillment" | otro) — separado
   // para que el fallback pueda preferir el envío típico de Full cuando el
@@ -79,19 +82,21 @@ export function armarMuestrasEnvio(
     if (!porItem.has(itemId)) porItem.set(itemId, []);
     porItem.get(itemId)!.push(envioPorUnidadBruto);
 
-    const sku = skuPorItem?.get(itemId);
-    if (sku) {
-      if (!porSku.has(sku)) porSku.set(sku, []);
-      porSku.get(sku)!.push(envioPorUnidadBruto);
-    }
-
-    const tramo = TRAMOS_PRECIO_ENVIO.find((t) => precioVentaBruto < t.hasta)!.nombre;
     // El logistic_type de ESTE ítem al momento de leer Publicaciones — no
     // hay forma de saber el logistic_type histórico de cada orden vieja,
     // así que se agrupa por el logistic_type ACTUAL del ítem que generó
     // la venta. Aproximación razonable: la mayoría de los ítems no cambian
     // de Full a estándar seguido.
     const logistico = logisticoPorItem?.get(itemId) === "fulfillment" ? "fulfillment" : "otro";
+
+    const sku = skuPorItem?.get(itemId);
+    if (sku) {
+      const claveSku = `${sku}|${logistico}`;
+      if (!porSku.has(claveSku)) porSku.set(claveSku, []);
+      porSku.get(claveSku)!.push(envioPorUnidadBruto);
+    }
+
+    const tramo = TRAMOS_PRECIO_ENVIO.find((t) => precioVentaBruto < t.hasta)!.nombre;
     const clave = `${tramo}|${logistico}`;
     if (!porTramoYLogistico.has(clave)) porTramoYLogistico.set(clave, []);
     porTramoYLogistico.get(clave)!.push(envioPorUnidadBruto);
@@ -128,7 +133,8 @@ export function calcularEnvioEstimadoPorUnidad(
   }
 
   if (sku) {
-    const enviosSku = muestras.porSku.get(sku);
+    // Solo gemelas del mismo tipo logístico que la venta; si no hay, pasa al tramo.
+    const enviosSku = muestras.porSku.get(`${sku}|${esFull ? "fulfillment" : "otro"}`);
     if (enviosSku && enviosSku.length > 0) {
       return { envio: mediana(enviosSku), fuente: "sku", muestras: enviosSku.length };
     }
