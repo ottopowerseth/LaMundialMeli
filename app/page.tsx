@@ -6,6 +6,7 @@ import * as XLSX from "xlsx";
 import RevisionPublicaciones from "./RevisionPublicaciones";
 import Tablero from "./Tablero";
 import { ListaRankingMovil, ListaVisitasMovil, TarjetasCampanas, TarjetasProductos } from "./MetricasMovil";
+import { TarjetasRentabilidad } from "./RentabilidadMovil";
 import ReclamosPorTipo from "./ReclamosPorTipo";
 import { abortoSinBorrar, errorPublicaciones, guardarUltimoSyncPublicaciones, leerUltimoSyncPublicaciones } from "@/lib/sync-estado";
 
@@ -2281,7 +2282,8 @@ export default function Home() {
                   {/* Tabla por orden */}
                   <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                     <h3 className="font-semibold text-gray-800">Detalle por orden</h3>
-                    <div className="overflow-x-auto">
+                    <TarjetasRentabilidad filas={rentabilidadRows} />
+                    <div className="hidden md:block overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead>
                           <tr className="text-left text-gray-500 border-b border-gray-200">
