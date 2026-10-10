@@ -66,6 +66,11 @@ export type ResumenMargen = {
   sinCosto: { publicaciones: number; pctIngreso: number };
 };
 
+// Detalle por tipo de VENTA de cada publicación (mismo cálculo que porTipo del resumen). Solo lo lee el comparativo
+// Full vs Normal; no se envía en la respuesta del Tablero.
+export type LadoTipoMargen = { unidades: number; ingreso: number; margenPesos: number | null; margenPct: number | null; estado: EstadoMargen; menosFiable: boolean };
+export type DetalleTipoMargen = { full?: LadoTipoMargen; estandar?: LadoTipoMargen };
+
 export type EntradaMargen = {
   lineas: LineaVenta[]; // solo las de la ventana
   costoPorItem: Map<string, number | null>;
@@ -77,7 +82,7 @@ export type EntradaMargen = {
 
 const redondear1 = (x: number) => Math.round(x * 10) / 10;
 
-export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen: ResumenMargen } {
+export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen: ResumenMargen; detalle: Map<string, DetalleTipoMargen> } {
   type PorTipo = { u: number; ing: number };
   const acc = new Map<string, { titulo: string; u: number; ing: number; ingFee: number; fee: number; tipos: Map<boolean, PorTipo> }>();
   for (const l of e.lineas) {
@@ -96,6 +101,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
   // porTipo guarda lo mismo repartido entre Full (true) y estándar (false), con el ingreso bruto de cada tipo.
   const interno = new Map<string, { margenNeto: number; ingresoNeto: number; ingresoMenosFiable: number; porTipo: Map<boolean, { margenNeto: number; ingresoNeto: number; ingreso: number }> }>();
   const filas: FilaMargen[] = [];
+  const detalle = new Map<string, DetalleTipoMargen>();
   for (const [id, a] of acc) {
     const precioProm = a.u > 0 ? a.ing / a.u : 0;
     // Tipo predominante (por ingreso) de la publicación en la ventana: lo que muestra la fila.
@@ -153,6 +159,17 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
       menosFiable: envio.fuente !== null && envio.fuente !== "medido", pierde: margenPct !== null && margenPct < 0,
       fueraDeAlcance: estado === "sin_costo" && (e.fueraDeAlcance?.has(id) ?? false),
     });
+    const det: DetalleTipoMargen = {};
+    for (const [esF, t] of a.tipos) {
+      const pm = interno.get(id)?.porTipo.get(esF);
+      const fuente = envioPorTipo.get(esF)!.fuente;
+      det[esF ? "full" : "estandar"] = {
+        unidades: t.u, ingreso: t.ing, margenPesos: pm ? pm.margenNeto : null,
+        margenPct: pm && pm.ingresoNeto > 0 ? redondear1((pm.margenNeto / pm.ingresoNeto) * 100) : null,
+        estado, menosFiable: fuente !== null && fuente !== "medido",
+      };
+    }
+    detalle.set(id, det);
   }
   filas.sort((x, y) => y.ingreso - x.ingreso);
 
@@ -181,6 +198,7 @@ export function analizarMargen(e: EntradaMargen): { filas: FilaMargen[]; resumen
   const pierden = filas.filter((x) => x.pierde);
   return {
     filas,
+    detalle,
     resumen: {
       total: { ...conMargen, coberturaPct: pct(conMargen.ingreso, ingresoVentana), ingresoVentana: Math.round(ingresoVentana) },
       porTipo: { full: subTipo(true), estandar: subTipo(false) },
