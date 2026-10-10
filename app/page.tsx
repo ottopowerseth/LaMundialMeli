@@ -5,6 +5,7 @@ import Image from "next/image";
 import * as XLSX from "xlsx";
 import RevisionPublicaciones from "./RevisionPublicaciones";
 import Tablero from "./Tablero";
+import { ListaRankingMovil, ListaVisitasMovil, TarjetasCampanas, TarjetasProductos } from "./MetricasMovil";
 import ReclamosPorTipo from "./ReclamosPorTipo";
 import { abortoSinBorrar, errorPublicaciones, guardarUltimoSyncPublicaciones, leerUltimoSyncPublicaciones } from "@/lib/sync-estado";
 
@@ -1831,7 +1832,9 @@ export default function Home() {
                   <h3 className="font-semibold text-gray-800">Ranking de productos</h3>
                   {metricsResult.ventas?.ok ? (
                     (metricsResult.ventas.ranking?.length ?? 0) > 0 ? (
-                      <div className="overflow-x-auto">
+                      <>
+                      <ListaRankingMovil ranking={metricsResult.ventas.ranking!} />
+                      <div className="hidden md:block overflow-x-auto">
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="text-left text-gray-500 border-b border-gray-200">
@@ -1853,6 +1856,7 @@ export default function Home() {
                           </tbody>
                         </table>
                       </div>
+                      </>
                     ) : (
                       <p className="text-sm text-gray-400">Sin ventas en el período.</p>
                     )
@@ -1918,7 +1922,9 @@ export default function Home() {
                     <>
                       <p className="text-sm text-gray-500">Total de visitas en el período: <span className="font-bold text-gray-900">{(metricsResult.visitas.totalVisitas ?? 0).toLocaleString("es-CL")}</span></p>
                       {(metricsResult.visitas.porPublicacion?.length ?? 0) > 0 && (
-                        <div className="overflow-x-auto">
+                        <>
+                        <ListaVisitasMovil filas={metricsResult.visitas.porPublicacion!} />
+                        <div className="hidden md:block overflow-x-auto">
                           <table className="w-full text-sm">
                             <thead>
                               <tr className="text-left text-gray-500 border-b border-gray-200">
@@ -1940,6 +1946,7 @@ export default function Home() {
                             </tbody>
                           </table>
                         </div>
+                        </>
                       )}
                     </>
                   ) : (
@@ -2028,7 +2035,9 @@ export default function Home() {
                         </div>
                       </div>
                       {(metricsResult.roas.campanas?.length ?? 0) > 0 && (
-                        <div className="overflow-x-auto">
+                        <>
+                        <TarjetasCampanas campanas={metricsResult.roas.campanas!} />
+                        <div className="hidden md:block overflow-x-auto">
                           <table className="w-full text-sm">
                             <thead>
                               <tr className="text-left text-gray-500 border-b border-gray-200">
@@ -2076,6 +2085,7 @@ export default function Home() {
                             </tbody>
                           </table>
                         </div>
+                        </>
                       )}
                     </>
                   ) : (
@@ -2088,7 +2098,9 @@ export default function Home() {
                   <h3 className="font-semibold text-gray-800">Tabla por producto</h3>
                   {metricsResult.tablaProductos?.ok ? (
                     (metricsResult.tablaProductos.filas?.length ?? 0) > 0 ? (
-                      <div className="overflow-x-auto">
+                      <>
+                      <TarjetasProductos filas={metricsResult.tablaProductos.filas!} />
+                      <div className="hidden md:block overflow-x-auto">
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="text-left text-gray-500 border-b border-gray-200">
@@ -2172,6 +2184,7 @@ export default function Home() {
                           </tbody>
                         </table>
                       </div>
+                      </>
                     ) : (
                       <p className="text-sm text-gray-400">Sin filas para el período.</p>
                     )

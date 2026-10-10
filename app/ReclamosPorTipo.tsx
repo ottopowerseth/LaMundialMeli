@@ -31,7 +31,7 @@ function Fila({ titulo, serie, min, cota }: { titulo: string; serie: Serie; min:
   );
   return (
     <tr className="border-t border-gray-100 align-top">
-      <td className="py-2 pr-3 font-medium text-gray-700">{titulo}</td>
+      <td className="py-2 pr-3 font-medium text-gray-700 max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]">{titulo}</td>
       {celda(serie.full)}
       {celda(serie.otro)}
       <td className="py-2 pr-3 text-right text-gray-600">{num(serie.sinTipo)}</td>
@@ -94,7 +94,7 @@ export default function ReclamosPorTipo({ desde, hasta, titulo = "Reclamos por t
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-gray-500">
-                  <th className="text-left font-medium pb-1 pr-3">Serie</th>
+                  <th className="text-left font-medium pb-1 pr-3 max-md:sticky max-md:left-0 max-md:bg-white">Serie</th>
                   <th className="text-right font-medium pb-1 pr-3">Full (por 100 órdenes)</th>
                   <th className="text-right font-medium pb-1 pr-3">Otro (por 100 órdenes)</th>
                   <th className="text-right font-medium pb-1 pr-3">Sin tipo (eventos)</th>
