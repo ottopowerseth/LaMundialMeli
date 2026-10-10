@@ -140,7 +140,7 @@ function SeccionAlerta({ alerta, total }: { alerta: FilaAlerta[]; total: number 
   const [visibles, setVisibles] = useState(15);
   if (alerta.length === 0) return null;
   return (
-    <div className="bg-white rounded-2xl border border-red-200 shadow-sm p-6 space-y-3">
+    <div className="bg-white rounded-2xl border border-red-200 shadow-sm p-4 sm:p-6 space-y-3">
       <div>
         <h3 className="font-bold text-gray-900">Pausadas por falta de stock con ventas</h3>
         <p className="text-sm text-gray-600">
@@ -207,7 +207,7 @@ function SeccionTendencias({ t }: { t: TendenciasApi }) {
     </div>
   );
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
       <div>
         <h3 className="font-bold text-gray-900">Concentración y tendencia</h3>
         <p className="text-xs text-gray-400 mt-1">
@@ -280,7 +280,7 @@ function SeccionMargen({ margen, dias }: { margen: MargenApi; dias?: number }) {
   const reset = () => setVisibles(30);
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
       <div>
         <h3 className="font-bold text-gray-900">Margen de contribución (estimado)</h3>
         <p className="text-xs text-gray-400 mt-1">
@@ -401,7 +401,7 @@ function SeccionStock({ stock }: { stock: StockApi }) {
 
   const reset = () => setVisibles(40);
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
       <div>
         <h3 className="font-bold text-gray-900">Stock: cobertura y capital inmovilizado</h3>
         <p className="text-xs text-gray-400 mt-1">
@@ -519,7 +519,7 @@ export default function Tablero() {
 
   return (
     <div className="space-y-5">
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="font-bold text-gray-900 text-lg">Tablero</h2>

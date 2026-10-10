@@ -65,7 +65,7 @@ export default function Operacion() {
 
   const desp = datos?.despachos;
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-bold text-gray-900">Operación: despachos pendientes, reclamos, preguntas y reputación</h3>

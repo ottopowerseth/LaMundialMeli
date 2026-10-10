@@ -270,7 +270,7 @@ export default function RevisionPublicaciones({ mlOk }: { mlOk: boolean }) {
   const hayFiltros = fFaltante !== "todos" || fEstado !== "todos" || fOrigen !== "todos" || busqueda !== "";
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
       <div>
         <h2 className="font-bold text-gray-900 text-lg">Revisar descripción e ISP</h2>
         <p className="text-sm text-gray-500 mt-1">

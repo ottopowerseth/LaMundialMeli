@@ -65,7 +65,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
   const f: CanalPeriodo = periodo.canales.full, n: CanalPeriodo = periodo.canales.normal;
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h2 className="font-bold text-gray-900 text-lg">Full vs Normal</h2>

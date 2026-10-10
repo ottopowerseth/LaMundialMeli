@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* Móvil (< md): áreas táctiles de al menos 44 px en botones, selects y campos de texto o número.
+   Desde md (tablet/escritorio) no se aplica y todo queda como antes. */
+@media (max-width: 767px) {
+  button,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]) {
+    min-height: 44px;
+  }
+}

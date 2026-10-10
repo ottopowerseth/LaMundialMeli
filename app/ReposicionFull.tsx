@@ -42,7 +42,7 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
   const picos = filas.filter((f) => f.picoReciente).length;
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
       <div>
         <h2 className="font-bold text-gray-900 text-lg">Reposición de Full</h2>
         <p className="text-sm text-gray-500 mt-0.5">

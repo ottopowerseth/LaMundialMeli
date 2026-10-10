@@ -129,7 +129,7 @@ export default function PrecioParaGanar() {
   const r = datos?.resumen;
   const c = r?.competencia;
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-bold text-gray-900">Precio para ganar (catálogo): precio actual, equilibrio y precio para ganar</h3>

@@ -834,18 +834,18 @@ export default function Home() {
     <main className="min-h-screen" style={{ backgroundColor: "#f5f5f5" }}>
 
       {/* Header */}
-      <div style={{ backgroundColor: "#C41230" }} className="px-8 py-5 shadow-md">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Image src="/logo.png" alt="La Mundial" width={80} height={80} className="object-contain rounded-lg bg-white p-1" />
-            <div>
-              <h1 className="text-xl font-bold text-white tracking-wide">ML Tracker</h1>
-              <p className="text-red-200 text-sm">Panel de Mercado Libre</p>
+      <div style={{ backgroundColor: "#C41230" }} className="px-4 py-3 sm:px-8 sm:py-5 shadow-md">
+        <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+            <Image src="/logo.png" alt="La Mundial" width={80} height={80} className="object-contain rounded-lg bg-white p-1 w-12 h-12 sm:w-20 sm:h-20 shrink-0" />
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-bold text-white tracking-wide whitespace-nowrap">ML Tracker</h1>
+              <p className="hidden sm:block text-red-200 text-sm">Panel de Mercado Libre</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <div className={`w-2.5 h-2.5 rounded-full ${mlStatus === null ? "bg-gray-300" : mlStatus.ok ? "bg-green-400" : "bg-red-300"}`} />
-            <span className="text-white text-sm">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${mlStatus === null ? "bg-gray-300" : mlStatus.ok ? "bg-green-400" : "bg-red-300"}`} />
+            <span className="text-white text-xs sm:text-sm truncate max-w-[9.5rem] sm:max-w-none">
               {mlStatus === null ? "Conectando..." : mlStatus.ok ? mlStatus.nickname : "Sin conexión"}
             </span>
           </div>
@@ -853,47 +853,47 @@ export default function Home() {
       </div>
 
       {/* Tabs */}
-      <div className="max-w-4xl mx-auto px-6 pt-6">
-        <div className="flex gap-1 bg-white rounded-2xl border border-gray-200 shadow-sm p-1 w-fit">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4 sm:pt-6">
+        <div className="flex gap-1 bg-white rounded-2xl border border-gray-200 shadow-sm p-1 w-full sm:w-fit max-w-full overflow-x-auto snap-x snap-mandatory [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <button onClick={() => setActiveTab("tablero")}
-            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "tablero" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap shrink-0 snap-start ${activeTab === "tablero" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "tablero" ? { backgroundColor: "#C41230" } : {}}>
             Tablero
           </button>
           <button onClick={() => setActiveTab("sync")}
-            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "sync" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap shrink-0 snap-start ${activeTab === "sync" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "sync" ? { backgroundColor: "#C41230" } : {}}>
             Publicaciones
           </button>
           <button onClick={() => setActiveTab("auditoria")}
-            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "auditoria" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap shrink-0 snap-start ${activeTab === "auditoria" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "auditoria" ? { backgroundColor: "#C41230" } : {}}>
             Auditoría
           </button>
           <button onClick={() => setActiveTab("forecast")}
-            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "forecast" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap shrink-0 snap-start ${activeTab === "forecast" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "forecast" ? { backgroundColor: "#C41230" } : {}}>
             Forecast
           </button>
           <button onClick={() => setActiveTab("metricas")}
-            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "metricas" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap shrink-0 snap-start ${activeTab === "metricas" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "metricas" ? { backgroundColor: "#C41230" } : {}}>
             Métricas
           </button>
           <button onClick={() => setActiveTab("rentabilidad")}
-            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "rentabilidad" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap shrink-0 snap-start ${activeTab === "rentabilidad" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "rentabilidad" ? { backgroundColor: "#C41230" } : {}}>
             Rentabilidad
           </button>
           <button onClick={() => setActiveTab("comparador")}
-            className={`px-5 py-2 rounded-xl font-semibold text-sm transition-colors ${activeTab === "comparador" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
+            className={`px-4 sm:px-5 py-2 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap shrink-0 snap-start ${activeTab === "comparador" ? "text-white" : "text-gray-500 hover:text-gray-700"}`}
             style={activeTab === "comparador" ? { backgroundColor: "#C41230" } : {}}>
             Comparador vs Mayor
           </button>
         </div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-6 space-y-5">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-5">
 
         {/* === TAB: TABLERO === */}
         {activeTab === "tablero" && <Tablero />}
@@ -903,7 +903,7 @@ export default function Home() {
           <>
             {/* Botones */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                 <div>
                   <h2 className="font-bold text-gray-900 text-lg">Actualizar publicaciones</h2>
                   <p className="text-sm text-gray-500 mt-1">Sincroniza stock, precios y ventas desde ML hacia Google Sheets.</p>
@@ -915,7 +915,7 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                 <div>
                   <h2 className="font-bold text-gray-900 text-lg">Detectar eliminados</h2>
                   <p className="text-sm text-gray-500 mt-1">Detecta productos que ya no existen en ML y los marca en el Sheet.</p>
@@ -926,7 +926,7 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                 <div>
                   <h2 className="font-bold text-gray-900 text-lg">Historial de envíos</h2>
                   <p className="text-sm text-gray-500 mt-1">Completa el tipo de envío (Full u otro) de las ventas de los últimos 120 días (sin canceladas).</p>
@@ -968,7 +968,7 @@ export default function Home() {
 
             {/* Log de sync */}
             {syncResult && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                 <h2 className="font-bold text-gray-900 text-lg">Log de sincronización</h2>
                 {errorPublicaciones(syncResult) !== null && (
                   <div className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 space-y-1" role="alert">
@@ -1106,7 +1106,7 @@ export default function Home() {
 
             {/* Log de eliminados */}
             {deletedResult && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                 <h2 className="font-bold text-gray-900 text-lg">Productos eliminados de ML</h2>
                 {!deletedResult.ok ? (
                   <p className="text-red-600 text-sm">✗ Error: {deletedResult.error}</p>
@@ -1156,7 +1156,7 @@ export default function Home() {
             )}
 
             {/* Ventas de la semana desde el Sheet */}
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-3">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="font-bold text-gray-900 text-lg">Ventas de los últimos 7 días</h2>
                 <button onClick={loadVentasSemana} disabled={loadingVentas}
@@ -1216,7 +1216,7 @@ export default function Home() {
         {/* === TAB: AUDITORÍA === */}
         {activeTab === "auditoria" && (
           <>
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
               <div>
                 <h2 className="font-bold text-gray-900 text-lg">Auditoría de comisiones</h2>
                 <p className="text-sm text-gray-500 mt-1">Sube los reportes del mes para calcular las comisiones cobradas por ML/MP.</p>
@@ -1300,7 +1300,7 @@ export default function Home() {
 
             {/* Resultado */}
             {auditResult && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
                 {!auditResult.ok ? (
                   <p className="text-red-600 text-sm">✗ Error: {auditResult.error}</p>
                 ) : auditResult.result?.error_cobertura ? (
@@ -1513,7 +1513,7 @@ export default function Home() {
 
             {/* Historial de auditorías */}
             {historial.length > 0 && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-3">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-3">
                 <h3 className="font-bold text-gray-900 text-lg">Historial por mes</h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -1603,7 +1603,7 @@ export default function Home() {
         {/* === TAB: FORECAST === */}
         {activeTab === "forecast" && (
           <>
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
               <div>
                 <h2 className="font-bold text-gray-900 text-lg">Reposición sugerida</h2>
                 <p className="text-sm text-gray-500 mt-1">Calcula qué productos pedir según la velocidad de venta de los últimos 30 días.</p>
@@ -1631,7 +1631,7 @@ export default function Home() {
             </div>
 
             {forecastResult && !forecastResult.ok && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6">
                 <p className="text-red-600 text-sm">✗ Error: {forecastResult.error}</p>
               </div>
             )}
@@ -1682,7 +1682,7 @@ export default function Home() {
                 </div>
 
                 {/* Filtro + tabla */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="font-semibold text-gray-800">Detalle por producto</h3>
                     <select value={filtroPrioridad} onChange={e => setFiltroPrioridad(e.target.value as Prioridad | "TODOS")}
@@ -1748,7 +1748,7 @@ export default function Home() {
         {/* === TAB: MÉTRICAS === */}
         {activeTab === "metricas" && (
           <>
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
               <div>
                 <h2 className="font-bold text-gray-900 text-lg">Métricas</h2>
                 <p className="text-sm text-gray-500 mt-1">Ventas, reputación y conversión, calculados en vivo contra Mercado Libre.</p>
@@ -1773,7 +1773,7 @@ export default function Home() {
             </div>
 
             {metricsResult && !metricsResult.ok && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6">
                 <p className="text-red-600 text-sm">✗ Error: {metricsResult.error}</p>
               </div>
             )}
@@ -1781,7 +1781,7 @@ export default function Home() {
             {metricsResult?.ok && (
               <>
                 {/* Ventas */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">Ventas</h3>
                   {metricsResult.ventas?.ok ? (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -1827,7 +1827,7 @@ export default function Home() {
                 </div>
 
                 {/* Ranking de productos */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">Ranking de productos</h3>
                   {metricsResult.ventas?.ok ? (
                     (metricsResult.ventas.ranking?.length ?? 0) > 0 ? (
@@ -1862,7 +1862,7 @@ export default function Home() {
                 </div>
 
                 {/* Reputación */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">Reputación</h3>
                   {metricsResult.reputacion?.ok ? (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -1912,7 +1912,7 @@ export default function Home() {
                 )}
 
                 {/* Visitas y conversión */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">Visitas y conversión</h3>
                   {metricsResult.visitas?.ok ? (
                     <>
@@ -1948,7 +1948,7 @@ export default function Home() {
                 </div>
 
                 {/* Preguntas */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">Preguntas</h3>
                   {metricsResult.preguntas?.ok ? (
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
@@ -1975,7 +1975,7 @@ export default function Home() {
                 </div>
 
                 {/* Reclamos */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">Reclamos</h3>
                   {metricsResult.reclamos?.ok ? (
                     <>
@@ -2005,7 +2005,7 @@ export default function Home() {
                 </div>
 
                 {/* ROAS / Publicidad */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">ROAS / Publicidad</h3>
                   {metricsResult.roas?.ok ? (
                     <>
@@ -2084,7 +2084,7 @@ export default function Home() {
                 </div>
 
                 {/* Tabla por producto */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                   <h3 className="font-semibold text-gray-800">Tabla por producto</h3>
                   {metricsResult.tablaProductos?.ok ? (
                     (metricsResult.tablaProductos.filas?.length ?? 0) > 0 ? (
@@ -2187,7 +2187,7 @@ export default function Home() {
         {/* === TAB: RENTABILIDAD === */}
         {activeTab === "rentabilidad" && (
           <>
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-5">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
               <div>
                 <h2 className="font-bold text-gray-900 text-lg">Rentabilidad por orden</h2>
                 <p className="text-sm text-gray-500 mt-1">
@@ -2240,7 +2240,7 @@ export default function Home() {
               return (
                 <>
                   {/* Resumen agregado */}
-                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                     <h3 className="font-semibold text-gray-800">Resumen del período</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                       <div>
@@ -2266,7 +2266,7 @@ export default function Home() {
                   </div>
 
                   {/* Tabla por orden */}
-                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                     <h3 className="font-semibold text-gray-800">Detalle por orden</h3>
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
@@ -2312,7 +2312,7 @@ export default function Home() {
         {/* === TAB: COMPARADOR VS MAYOR === */}
         {activeTab === "comparador" && (
           <>
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
               <div className="flex flex-wrap items-end gap-4">
                 <div>
                   <h2 className="font-bold text-gray-900 text-lg">Comparador vs Mayor</h2>
@@ -2406,7 +2406,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6">
                     <p className="text-sm text-gray-500 mb-3">{ordenadas.length} de {comparadorResult.filas.length} publicaciones (filtradas)</p>
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
