@@ -7,6 +7,7 @@ import RevisionPublicaciones from "./RevisionPublicaciones";
 import Tablero from "./Tablero";
 import { ListaRankingMovil, ListaVisitasMovil, TarjetasCampanas, TarjetasProductos } from "./MetricasMovil";
 import { TarjetasRentabilidad } from "./RentabilidadMovil";
+import { OrdenarComparadorMovil, TarjetasComparador } from "./ComparadorMovil";
 import ReclamosPorTipo from "./ReclamosPorTipo";
 import { abortoSinBorrar, errorPublicaciones, guardarUltimoSyncPublicaciones, leerUltimoSyncPublicaciones } from "@/lib/sync-estado";
 
@@ -2333,12 +2334,12 @@ export default function Home() {
                   <h2 className="font-bold text-gray-900 text-lg">Comparador vs Mayor</h2>
                   <p className="text-sm text-gray-500 mt-1">Neto ML por unidad vs. precio Mayor de Defontana, para todas las publicaciones activas con cruce.</p>
                 </div>
-                <div className="flex items-end gap-2 ml-auto">
-                  <div>
+                <div className="flex items-end gap-2 ml-auto max-sm:ml-0 max-sm:w-full">
+                  <div className="max-sm:flex-1">
                     <label className="block text-xs text-gray-500 mb-1">Objetivo sobre Mayor (%)</label>
                     <input type="number" value={objetivoComparador} min={0} step={1}
                       onChange={e => setObjetivoComparador(Number(e.target.value) || 0)}
-                      className="w-24 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                      className="w-24 max-sm:w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
                   </div>
                   <button onClick={() => loadComparador(objetivoComparador)} disabled={loadingComparador}
                     className="font-bold py-2 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed text-sm"
@@ -2350,7 +2351,7 @@ export default function Home() {
 
               <div className="flex flex-wrap gap-3">
                 <select value={filtroSemaforo} onChange={e => setFiltroSemaforo(e.target.value as typeof filtroSemaforo)}
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                  className="max-sm:w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
                   <option value="todos">Todos los semáforos</option>
                   <option value="rojo">🔴 Rojo</option>
                   <option value="amarillo">🟡 Amarillo</option>
@@ -2358,9 +2359,9 @@ export default function Home() {
                   <option value="revision">⚠ Mayor en revisión</option>
                 </select>
                 <input type="text" placeholder="Filtrar por marca" value={filtroMarca} onChange={e => setFiltroMarca(e.target.value)}
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                  className="max-sm:w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
                 <input type="text" placeholder="Filtrar por proveedor" value={filtroProveedor} onChange={e => setFiltroProveedor(e.target.value)}
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+                  className="max-sm:w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
               </div>
             </div>
 
@@ -2415,7 +2416,7 @@ export default function Home() {
                       <p className="text-2xl font-bold text-amber-700">{conteoSemaforo.revision}</p>
                       <p className="text-xs text-gray-500 mt-1">⚠ Mayor en revisión (sin semáforo)</p>
                     </div>
-                    <div className="bg-white rounded-xl p-3 text-center border border-gray-200">
+                    <div className="bg-white rounded-xl p-3 text-center border border-gray-200 max-sm:col-span-2">
                       <p className="text-2xl font-bold text-gray-400">{conteoSemaforo.sin}</p>
                       <p className="text-xs text-gray-500 mt-1">Sin referencia Mayor</p>
                     </div>
@@ -2423,7 +2424,11 @@ export default function Home() {
 
                   <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6">
                     <p className="text-sm text-gray-500 mb-3">{ordenadas.length} de {comparadorResult.filas.length} publicaciones (filtradas)</p>
-                    <div className="overflow-x-auto">
+                    <OrdenarComparadorMovil campo={ordenComparador.campo} asc={ordenComparador.asc}
+                      onCampo={(c) => setOrdenComparador({ campo: c, asc: true })}
+                      onToggle={() => setOrdenComparador(prev => ({ ...prev, asc: !prev.asc }))} />
+                    <TarjetasComparador key={`${filtroSemaforo}|${filtroMarca}|${filtroProveedor}|${ordenComparador.campo}|${ordenComparador.asc}`} filas={ordenadas} />
+                    <div className="hidden md:block overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead>
                           <tr className="text-left text-gray-500 border-b border-gray-200">
