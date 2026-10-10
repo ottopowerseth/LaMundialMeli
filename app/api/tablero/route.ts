@@ -10,8 +10,9 @@ import { cargarItemsStock, cargarVentas, cargarVisitas, ventanaPorDias } from "@
 import { analizarStock, candidatosVisitas } from "@/lib/tablero-stock";
 import type { ItemStock } from "@/lib/tablero-stock";
 import { calcularConfianza, resumirVentas, variacion } from "@/lib/tablero-resumen";
-import { asignarLogistico, coberturaLogistica, parsearLogisticoPorOrden } from "@/lib/logistica";
+import { asignarLogistico, coberturaLogistica, grupoLogistico, parsearLogisticoPorOrden } from "@/lib/logistica";
 import { armarReposicion } from "@/lib/reposicion-full";
+import { armarFullVsNormal } from "@/lib/full-vs-normal";
 
 // Tablero "desde arriba": un solo endpoint, calculado en vivo y sin hojas
 // nuevas. Todas las secciones comparten los mismos datos — 120 días de órdenes
@@ -148,6 +149,21 @@ export async function GET(req: NextRequest) {
       lineas: ventas.lineas, ahoraMs: ahoraTopeMs, margenUnitario,
     });
 
+    // ---- Comparativo Full vs Normal (ver lib/full-vs-normal.ts) ----
+    // Sin llamadas nuevas: las mismas ventas con tipo logístico real y el mismo margen del Tablero, por canal
+    // de cada venta, para 30 / 90 / 120 días.
+    // Períodos alineados a días UTC enteros (hasta el fin de hoy), igual que las ventanas del Tablero: los totales de
+    // 30 y 120 días coinciden con los de la sección de margen.
+    const finDiaMs = ventanaPorDias(1, ahora).hastaMs;
+    const fullVsNormal = armarFullVsNormal({
+      lineas: ventas.lineas.filter((l) => l.ms < finDiaMs), ahoraMs: finDiaMs,
+      esFull: (l) => (l.logistic ? grupoLogistico(l.logistic) === "Full" : (fullPorItem.get(l.item) ?? false)),
+      esReal: (l) => !!l.logistic,
+      analizar: (lineas) => margenDesdeDatos({ filasPub, fullPorItem, tarifas, costoPorItem, fueraDeAlcance, lineas }),
+      items: new Map([...itemsMl.values()].map((it) => [it.id, { titulo: it.titulo, estado: it.estado, stock: it.stock, full: it.full }])),
+      costoPorItem,
+    });
+
     return NextResponse.json({
       ok: true,
       generadoEn: new Date().toISOString(),
@@ -165,6 +181,7 @@ export async function GET(req: NextRequest) {
       logistica,
       margen: { resumen: margen.resumen, filas: margen.filas },
       reposicion,
+      fullVsNormal,
       tendencias,
       stock: {
         resumen: stock.resumen,

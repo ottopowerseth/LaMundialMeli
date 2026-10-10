@@ -7,6 +7,8 @@ import PrecioParaGanar from "./PrecioParaGanar";
 import Operacion from "./Operacion";
 import ReclamosPorTipo from "./ReclamosPorTipo";
 import ReposicionFull from "./ReposicionFull";
+import FullVsNormal from "./FullVsNormal";
+import type { ResultadoFvN } from "@/lib/full-vs-normal";
 import type { ResultadoReposicion } from "@/lib/reposicion-full";
 
 // Tablero "desde arriba". Un solo endpoint (/api/tablero) calculado en vivo.
@@ -88,6 +90,7 @@ type TableroApi = {
   stock?: StockApi;
   margen?: MargenApi;
   reposicion?: ResultadoReposicion;
+  fullVsNormal?: ResultadoFvN;
   tendencias?: TendenciasApi;
 };
 
@@ -578,6 +581,8 @@ export default function Tablero() {
       {datos?.stock && <SeccionStock stock={datos.stock} />}
       {/* Reposición de Full: sin llamadas propias, usa el estado y stock que ya trajo el Tablero. */}
       {datos?.reposicion && <ReposicionFull reposicion={datos.reposicion} generadoEn={datos.generadoEn} />}
+      {/* Comparativo Full vs Normal y candidatos Normal → Full: sin llamadas propias. */}
+      {datos?.fullVsNormal && <FullVsNormal datos={datos.fullVsNormal} generadoEn={datos.generadoEn} />}
       {/* A pedido: no se calcula al abrir el Tablero (~40 s, ~730 llamadas a ML). */}
       <Completitud />
       {/* A pedido (~10 s): ACoS, equilibrio y TACoS de Product Ads. */}
