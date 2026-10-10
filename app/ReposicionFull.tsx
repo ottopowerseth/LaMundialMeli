@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { aplicarTope, FACTOR_PICO_RECIENTE, sugeridoPara } from "@/lib/reposicion-full";
 import type { ResultadoReposicion } from "@/lib/reposicion-full";
+import { Dato, Datos, ListaTarjetas, TarjetaFila } from "./TarjetaFila";
 
 // Panel de reposición de Full: publicaciones pausadas por falta de stock que vendían en Full y
 // activas por agotarse, ordenadas por el margen que se pierde (o se arriesga) por día.
@@ -87,7 +88,7 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
         </p>
       )}
 
-      <div className="overflow-x-auto">
+      <div className="hidden md:block overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="text-gray-500 text-left">
@@ -131,6 +132,43 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
           </tbody>
         </table>
       </div>
+      <ListaTarjetas>
+        {filas.slice(0, visibles).map((f) => (
+          <TarjetaFila
+            key={f.id}
+            cabecera={
+              <>
+                <p className="text-sm font-medium text-gray-900 line-clamp-2">{f.titulo}</p>
+                <p className="text-xs mt-0.5 flex flex-wrap items-center gap-1">
+                  <span className={`rounded px-1.5 py-0.5 ${f.tipo === "pausada" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-800"}`}>{f.tipo === "pausada" ? "pausada" : "por agotarse"}</span>
+                  {f.picoReciente && <span className="rounded bg-amber-50 text-amber-800 px-1.5 py-0.5">posible pico reciente</span>}
+                </p>
+                <p className="text-xs text-gray-600 mt-0.5">
+                  Perdido/día <b className="text-gray-900">{f.margenPerdidoDia === null ? "—" : clp(f.margenPerdidoDia)}</b> · Sugerido <b className="text-gray-900">{f.revisar ? "revisar" : num(f.sugeridoUi ?? 0)}</b>
+                </p>
+              </>
+            }
+          >
+            <Datos>
+              <Dato etiqueta="Disponible">{f.disponible ?? "—"}</Dato>
+              <Dato etiqueta="Full 30/60/90 d">{f.f30} / {f.f60} / {f.f90}</Dato>
+              <Dato etiqueta="Vel. 30 d">{dec(f.velocidad30)}{f.velocidadConfiable ? "" : "*"}</Dato>
+              <Dato etiqueta="Vel. 90 d">{dec(f.velocidad90)} <span className="font-normal text-gray-500">({f.f90} u ÷ {f.diasEnFull} d)</span></Dato>
+              <Dato etiqueta="Margen/u*">{f.margenUnitario === null ? "—" : clpSigno(f.margenUnitario)}</Dato>
+              <Dato etiqueta="Cobertura">{f.tipo === "pausada" ? "agotada" : f.cobertura === null ? "—" : `${dec(f.cobertura)} d`}</Dato>
+              <Dato etiqueta="Sugerido" ancho>
+                {f.revisar
+                  ? <span className="text-amber-700">{MOTIVO[f.revisar]}</span>
+                  : f.limitado ? <>{num(f.sugeridoUi ?? 0)} <span className="font-normal text-gray-500">(tope; sin tope {num(f.sugeridoBase ?? 0)})</span></> : num(f.sugeridoUi ?? 0)}
+              </Dato>
+              {f.picoReciente && <Dato etiqueta="Aviso" ancho><span className="text-amber-800">Posible pico reciente, revisa antes de pedir (velocidad de 30 días mayor que {FACTOR_PICO_RECIENTE}× la de 90).</span></Dato>}
+              {f.n90 > 0 && <Dato etiqueta="Otro canal" ancho>+{f.n90} u en 90 días: la velocidad y el margen mezclan canales</Dato>}
+            </Datos>
+            <a href={link(f.id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline">{f.id} ↗</a>
+          </TarjetaFila>
+        ))}
+        {filas.length === 0 && <p className="py-3 text-xs text-gray-500">Sin publicaciones en este grupo.</p>}
+      </ListaTarjetas>
       {filas.length > visibles && (
         <button onClick={() => setVisibles((v) => v + 30)} className="text-sm text-blue-700 hover:underline">Ver más ({filas.length - visibles})</button>
       )}

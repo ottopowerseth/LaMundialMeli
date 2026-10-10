@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { evaluarCandidato } from "@/lib/full-vs-normal";
 import type { CanalPeriodo, ProductoFvN, ResultadoFvN } from "@/lib/full-vs-normal";
+import { Dato, Datos, ListaTarjetas, TarjetaFila } from "./TarjetaFila";
 
 // Comparativo Full vs Normal por período + lista corta de candidatos Normal → Full. Sin llamadas propias:
 // usa lo que ya trajo el Tablero. Definiciones en lib/full-vs-normal.ts. El margen es el mismo del Tablero
@@ -134,7 +135,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
             Se muestran las {periodo.productos.length} publicaciones de mayor venta de {periodo.productosTotal} que vendieron en el período; {periodo.productosTotal - periodo.productos.length} quedaron fuera (las de menor venta).
           </p>
         )}
-        <div className="overflow-x-auto">
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-xs">
             <thead><tr className="text-gray-500 text-left"><th className="font-medium pb-1 pr-3">Publicación</th><th className="font-medium pb-1 pr-3">Full</th><th className="font-medium pb-1">Normal</th></tr></thead>
             <tbody>
@@ -149,6 +150,27 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
             </tbody>
           </table>
         </div>
+        <ListaTarjetas>
+          {productos.slice(0, visibles).map((p) => (
+            <TarjetaFila
+              key={p.id}
+              cabecera={
+                <>
+                  <p className="text-sm font-medium text-gray-900 line-clamp-2">{p.titulo}</p>
+                  <p className="text-xs text-gray-600 mt-0.5">Full <b className="text-gray-900">{p.full ? `${num(p.full.unidades)} u · ${clp(p.full.ingreso)}` : "—"}</b></p>
+                  <p className="text-xs text-gray-600">Normal <b className="text-gray-900">{p.normal ? `${num(p.normal.unidades)} u · ${clp(p.normal.ingreso)}` : "—"}</b></p>
+                </>
+              }
+            >
+              <Datos>
+                <Dato etiqueta="Full" ancho><Lado l={p.full} /></Dato>
+                <Dato etiqueta="Normal" ancho><Lado l={p.normal} /></Dato>
+              </Datos>
+              <a href={link(p.id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline">{p.id} ↗</a>
+            </TarjetaFila>
+          ))}
+          {productos.length === 0 && <p className="py-3 text-xs text-gray-500">Sin publicaciones con ese filtro.</p>}
+        </ListaTarjetas>
         {productos.length > visibles && <button onClick={() => setVisibles((v) => v + 25)} className="text-sm text-blue-700 hover:underline">Ver más ({productos.length - visibles})</button>}
         <p className="text-xs text-gray-400">Margen por publicación y canal: neto, sin IVA. «*» = el envío de ese canal es estimado, no medido.</p>
       </div>
@@ -169,7 +191,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
           <table className="w-full text-xs">
             <thead>
               <tr className="text-gray-500 text-left">
-                <th className="font-medium pb-1 pr-3">Publicación</th>
+                <th className="font-medium pb-1 pr-3 max-md:sticky max-md:left-0 max-md:bg-white">Publicación</th>
                 <th className="font-medium pb-1 pr-3 text-right">u 30/60/90 d</th>
                 <th className="font-medium pb-1 pr-3 text-right">Semanas c/ventas</th>
                 <th className="font-medium pb-1 pr-3 text-right" title="Margen neto por unidad vendida por Normal, sin costos de Full">Margen/u</th>
@@ -180,7 +202,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
             <tbody>
               {lista.map(({ c, ev }) => (
                 <tr key={c.id} className="border-t border-gray-100 align-top">
-                  <td className="py-1.5 pr-3 max-w-[260px]"><a href={link(c.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate" title={c.titulo}>{c.titulo}</a><span className="font-mono text-gray-400">{c.id}</span></td>
+                  <td className="py-1.5 pr-3 max-w-[260px] max-md:max-w-[9.5rem] max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]"><a href={link(c.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate" title={c.titulo}>{c.titulo}</a><span className="font-mono text-gray-400">{c.id}</span></td>
                   <td className="py-1.5 pr-3 text-right whitespace-nowrap">{c.u30} / {c.u60} / {c.u90}</td>
                   <td className="py-1.5 pr-3 text-right">{c.semanasConVenta}</td>
                   <td className="py-1.5 pr-3 text-right">{c.margenUnitario === null ? "sin Costo" : clpSigno(c.margenUnitario)}{c.menosFiable ? " *" : ""}</td>
@@ -206,11 +228,11 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
         <p className="text-xs text-gray-500">Publicaciones activas en Full, con stock y {datos.umbrales.fullVentasBajasU90Max} unidades o menos vendidas en 90 días (todos los canales). Capital = stock × Costo.</p>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead><tr className="text-gray-500 text-left"><th className="font-medium pb-1 pr-3">Publicación</th><th className="font-medium pb-1 pr-3 text-right">Stock</th><th className="font-medium pb-1 pr-3 text-right">u 30 d</th><th className="font-medium pb-1 pr-3 text-right">u 90 d</th><th className="font-medium pb-1 text-right">Capital</th></tr></thead>
+            <thead><tr className="text-gray-500 text-left"><th className="font-medium pb-1 pr-3 max-md:sticky max-md:left-0 max-md:bg-white">Publicación</th><th className="font-medium pb-1 pr-3 text-right">Stock</th><th className="font-medium pb-1 pr-3 text-right">u 30 d</th><th className="font-medium pb-1 pr-3 text-right">u 90 d</th><th className="font-medium pb-1 text-right">Capital</th></tr></thead>
             <tbody>
               {datos.fullVentasBajas.slice(0, 15).map((x) => (
                 <tr key={x.id} className="border-t border-gray-100">
-                  <td className="py-1.5 pr-3 max-w-[300px]"><a href={link(x.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate" title={x.titulo}>{x.titulo}</a><span className="font-mono text-gray-400">{x.id}</span></td>
+                  <td className="py-1.5 pr-3 max-w-[300px] max-md:max-w-[9.5rem] max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]"><a href={link(x.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate" title={x.titulo}>{x.titulo}</a><span className="font-mono text-gray-400">{x.id}</span></td>
                   <td className="py-1.5 pr-3 text-right">{x.stock}</td><td className="py-1.5 pr-3 text-right">{x.u30}</td><td className="py-1.5 pr-3 text-right">{x.u90}</td>
                   <td className="py-1.5 text-right">{x.capital === null ? "sin Costo" : clp(x.capital)}</td>
                 </tr>

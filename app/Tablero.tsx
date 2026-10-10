@@ -8,6 +8,7 @@ import Operacion from "./Operacion";
 import ReclamosPorTipo from "./ReclamosPorTipo";
 import ReposicionFull from "./ReposicionFull";
 import FullVsNormal from "./FullVsNormal";
+import { Dato, Datos, ListaTarjetas, TarjetaFila } from "./TarjetaFila";
 import type { ResultadoFvN } from "@/lib/full-vs-normal";
 import type { ResultadoReposicion } from "@/lib/reposicion-full";
 
@@ -152,7 +153,7 @@ function SeccionAlerta({ alerta, total }: { alerta: FilaAlerta[]; total: number 
           (excluye los días agotados). ML no informa desde cuándo está pausada: se usa la última venta.
         </p>
       </div>
-      <div className="overflow-x-auto rounded-xl border border-gray-200">
+      <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200">
         <table className="w-full text-xs">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
@@ -177,6 +178,27 @@ function SeccionAlerta({ alerta, total }: { alerta: FilaAlerta[]; total: number 
           </tbody>
         </table>
       </div>
+      <ListaTarjetas>
+        {alerta.slice(0, visibles).map((a) => (
+          <TarjetaFila
+            key={a.id}
+            cabecera={
+              <>
+                <p className="text-sm font-medium text-gray-900 line-clamp-2">{a.titulo}</p>
+                <p className="text-xs text-gray-500 mt-0.5"><Tipo full={a.full} /> <span className="ml-1">{a.diasSinVender.toFixed(1)} días sin vender</span></p>
+                <p className="text-sm font-semibold text-red-700 mt-0.5">{clp(a.ingresoPerdido)} <span className="text-xs font-normal text-gray-500">perdido (est.)</span></p>
+              </>
+            }
+          >
+            <Datos>
+              <Dato etiqueta="Ingreso 30d">{clp(a.ingreso30)}</Dato>
+              <Dato etiqueta="Tasa $/día (est.)">{clp(a.tasaDiaria)}</Dato>
+              <Dato etiqueta="Acción" ancho>{a.accion}</Dato>
+            </Datos>
+            <Enlace id={a.id} />
+          </TarjetaFila>
+        ))}
+      </ListaTarjetas>
       {alerta.length > visibles && (
         <button onClick={() => setVisibles((v) => v + 15)} className="text-sm text-gray-700 hover:text-black underline">Mostrar más ({alerta.length - visibles})</button>
       )}
@@ -227,7 +249,7 @@ function SeccionTendencias({ t }: { t: TendenciasApi }) {
         <table className="w-full text-xs">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
-              <th className="px-3 py-2">Período</th><th className="px-3 py-2 w-40"></th><th className="px-3 py-2 text-right">Ingresos</th>
+              <th className="px-3 py-2 max-md:sticky max-md:left-0 max-md:bg-gray-50">Período</th><th className="px-3 py-2 w-40 max-md:hidden"></th><th className="px-3 py-2 text-right">Ingresos</th>
               <th className="px-3 py-2 text-right">{tipo === "semanas" ? "vs sem. ant." : "vs mes ant."}</th>
               <th className="px-3 py-2 text-right">Unidades</th><th className="px-3 py-2 text-right">Órdenes</th><th className="px-3 py-2 text-right">Ticket</th>
             </tr>
@@ -235,11 +257,11 @@ function SeccionTendencias({ t }: { t: TendenciasApi }) {
           <tbody className="divide-y divide-gray-100">
             {[...puntos].reverse().map((p) => (
               <tr key={p.desde} className={p.incompleto ? "text-gray-400" : ""}>
-                <td className="px-3 py-2 whitespace-nowrap">{etiqueta(p)}
+                <td className="px-3 py-2 whitespace-nowrap max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]">{etiqueta(p)}
                   {p.parcial && <span className="ml-1 rounded-md bg-amber-100 text-amber-800 px-1.5 py-0.5">parcial</span>}
                   {p.incompleto && <span className="ml-1 rounded-md bg-gray-100 text-gray-500 px-1.5 py-0.5" title={`Solo hay datos desde ${fecha(t.datosDesde)}`}>datos incompletos</span>}
                 </td>
-                <td className="px-3 py-2"><div className="h-2 rounded bg-blue-200" style={{ width: `${Math.max(2, (p.ingresos / maxIng) * 100)}%` }} /></td>
+                <td className="px-3 py-2 max-md:hidden"><div className="h-2 rounded bg-blue-200" style={{ width: `${Math.max(2, (p.ingresos / maxIng) * 100)}%` }} /></td>
                 <td className="px-3 py-2 text-right font-semibold">{clp(p.ingresos)}</td>
                 <td className="px-3 py-2 text-right" title={p.comparadoCon ? `Contra ${fecha(p.comparadoCon.desde)} – ${fecha(new Date(Date.parse(p.comparadoCon.hasta) - 86400000).toISOString())}` : "Sin base comparable"}><Var pct={p.variacion.ingresos} /></td>
                 <td className="px-3 py-2 text-right">{num(p.unidades)}</td>
@@ -331,7 +353,7 @@ function SeccionMargen({ margen, dias }: { margen: MargenApi; dias?: number }) {
         <input value={busqueda} onChange={(e) => { setBusqueda(e.target.value); reset(); }} placeholder="Buscar ID o título" className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-40" />
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-gray-200">
+      <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200">
         <table className="w-full text-xs">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
@@ -364,6 +386,40 @@ function SeccionMargen({ margen, dias }: { margen: MargenApi; dias?: number }) {
           </tbody>
         </table>
       </div>
+      <ListaTarjetas>
+        {filas.slice(0, visibles).map((f) => (
+          <TarjetaFila
+            key={f.id}
+            cabecera={
+              <>
+                <p className="text-sm font-medium text-gray-900 line-clamp-2">{f.titulo}</p>
+                <p className="text-xs text-gray-500 mt-0.5"><Tipo full={f.full} /> <span className="ml-1">{clp(f.ingreso)} · {f.unidades} u</span></p>
+                <p className={`text-sm font-semibold mt-0.5 ${f.pierde ? "text-red-700" : "text-gray-900"}`}>
+                  {f.margenPct !== null
+                    ? <>Margen {pctTxt(f.margenPct)}{f.margenPesos !== null && <span className="text-xs font-normal text-gray-500"> · {clpSigno(f.margenPesos)}</span>}</>
+                    : <span className="text-gray-400 font-normal">{f.fueraDeAlcance ? "—" : f.estado === "sin_costo" ? "sin Costo" : "sin dato"}</span>}
+                </p>
+              </>
+            }
+          >
+            <Datos>
+              <Dato etiqueta="Unidades">{f.unidades}</Dato>
+              <Dato etiqueta="Ingreso">{clp(f.ingreso)}</Dato>
+              <Dato etiqueta="Precio prom.">{clp(f.precioProm)}</Dato>
+              <Dato etiqueta="Costo">{f.costo !== null ? clp(f.costo) : f.fueraDeAlcance ? <span className="text-gray-400">cerrada/inactiva</span> : <span className="text-amber-600">sin Costo</span>}</Dato>
+              <Dato etiqueta="Comisión">{f.comisionPct !== null ? `${(f.comisionPct * 100).toFixed(1).replace(".", ",")}%` : "—"}</Dato>
+              <Dato etiqueta="Envío/u">
+                {f.envioUnidad !== null ? clp(f.envioUnidad) : "—"}
+                {f.menosFiable && <span className={`ml-1 ${f.full ? "text-red-500" : "text-amber-600"}`}>{f.envioFuente === "estimado_otro_tipo" ? "est. (otro tipo)" : f.full ? "⚠ est." : "est."}</span>}
+              </Dato>
+              <Dato etiqueta="Margen (est.)">{f.margenPct !== null ? pctTxt(f.margenPct) : "—"}</Dato>
+              <Dato etiqueta="Margen $ (est.)">{f.margenPesos !== null ? clpSigno(f.margenPesos) : "—"}</Dato>
+            </Datos>
+            <Enlace id={f.id} />
+          </TarjetaFila>
+        ))}
+        {filas.length === 0 && <p className="py-6 text-center text-xs text-gray-400">Ninguna publicación coincide con los filtros.</p>}
+      </ListaTarjetas>
       {filas.length > visibles && (
         <button onClick={() => setVisibles((v) => v + 30)} className="w-full text-sm text-gray-700 hover:text-black underline">Mostrando {visibles} de {filas.length} — mostrar más</button>
       )}
@@ -446,7 +502,7 @@ function SeccionStock({ stock }: { stock: StockApi }) {
         <input value={busqueda} onChange={(e) => { setBusqueda(e.target.value); reset(); }} placeholder="Buscar ID o título" className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-40" />
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-gray-200">
+      <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200">
         <table className="w-full text-xs">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
@@ -477,6 +533,35 @@ function SeccionStock({ stock }: { stock: StockApi }) {
           </tbody>
         </table>
       </div>
+      <ListaTarjetas>
+        {filas.slice(0, visibles).map((f) => (
+          <TarjetaFila
+            key={f.id}
+            cabecera={
+              <>
+                <p className="text-sm font-medium text-gray-900 line-clamp-2">{f.titulo}</p>
+                <p className="text-xs text-gray-500 mt-0.5 flex flex-wrap items-center gap-1">
+                  <span className={`rounded-md px-2 py-0.5 ${ETIQUETA_ESTADO[f.estadoStock].clase}`}>{ETIQUETA_ESTADO[f.estadoStock].texto}</span>
+                  <Tipo full={f.full} />
+                  {f.abc !== "S" && <span>Clase {f.abc}</span>}
+                </p>
+                <p className="text-xs text-gray-600 mt-0.5">Stock <b className="text-gray-900">{f.stock ?? "—"}</b> · Cobertura <b className="text-gray-900">{f.cobertura !== null ? `${f.cobertura} d` : "—"}</b></p>
+              </>
+            }
+          >
+            <Datos>
+              <Dato etiqueta="Vel./día (est.)">
+                {f.unidades30 > 0 ? f.velocidad.toFixed(2) : "0"}
+                {f.diasSinStock > 0 && <span className={`ml-1 ${f.velocidadConfiable ? "text-amber-600" : "text-red-500"}`}>{f.velocidadConfiable ? "*" : "?"}</span>}
+              </Dato>
+              <Dato etiqueta="Capital">{f.capital !== null && (f.estadoStock === "sobrestock" || f.estadoStock === "muerto") ? clp(f.capital) : "—"}</Dato>
+              <Dato etiqueta="Acción" ancho>{f.accion || "—"}</Dato>
+            </Datos>
+            <Enlace id={f.id} />
+          </TarjetaFila>
+        ))}
+        {filas.length === 0 && <p className="py-6 text-center text-xs text-gray-400">Ninguna publicación coincide con los filtros.</p>}
+      </ListaTarjetas>
       <p className="text-xs text-gray-400">* velocidad corregida por días sin stock · ? pocos días con stock (&lt; 7): poco confiable</p>
       {filas.length > visibles && (
         <button onClick={() => setVisibles((v) => v + 40)} className="w-full text-sm text-gray-700 hover:text-black underline">
