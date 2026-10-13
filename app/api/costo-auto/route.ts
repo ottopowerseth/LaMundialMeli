@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { ensureSheets, readSheet, writeSheet, appendSheet, batchWriteSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { armarMapasDefontana } from "@/lib/defontana";
 import type { FilaDefontana, FilaEquivalencia } from "@/lib/defontana";
@@ -35,6 +35,7 @@ export async function POST(request: Request) {
 
     const token = await getValidAccessToken();
     const client = axios.create({ baseURL: "https://api.mercadolibre.com", headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
+    instalarReintento401(client, token);
     const mlGet = <T = unknown>(url: string) => withMlRetry(() => client.get<T>(url), { maxAttempts: 3 });
 
     // Publicaciones: A(id) F(costo) S(unidades). Mismo rango que el Comparador.

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { ensureSheets, readSheet, appendSheet, writeSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { agruparPorOrdenReal, calcularFilaOrden, calcularMargen, sumarAlmacenamiento, BillingDetailRow } from "@/lib/rentabilidad";
 import { resolverEnvioReal, detectarMixto } from "@/lib/envio-real";
@@ -76,6 +76,7 @@ export async function POST(request: Request) {
       headers: { Authorization: `Bearer ${token}` },
       timeout: 15000,
     });
+    instalarReintento401(client, token);
     const budget = createSyncBudget();
     const mlGet = <T = unknown>(url: string, params?: Record<string, unknown>) =>
       withMlRetry(() => client.get<T>(url, { params, headers: { "Api-Version": "1", "Content-Type": "application/json" } }), { budget });

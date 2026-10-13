@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { ensureSheets, readSheet, writeSheet, appendSheet, batchWriteSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { HOJA_TARIFA_ENVIO, obtenerVentasPorItem, procesarTarifas } from "@/lib/tarifa-envio";
 import { parsearLogisticoPorOrden } from "@/lib/logistica";
@@ -60,6 +60,7 @@ export async function POST(request: Request) {
       headers: { Authorization: `Bearer ${token}` },
       timeout: 15000,
     });
+    instalarReintento401(client, token);
     // Sin budget a propósito (ver revision-publicaciones): un 404 puntual de
     // un despacho viejo no debe cortar la corrida. 3 intentos cubren 429.
     // Contadores de la corrida (cada intento fallido cuenta): para reportar llamadas, 429 y 404.

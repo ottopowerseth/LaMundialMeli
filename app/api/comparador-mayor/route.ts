@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
 import { readSheet } from "@/lib/sheets";
 import { IVA } from "@/lib/rentabilidad";
@@ -101,6 +101,7 @@ export async function GET(req: NextRequest) {
       headers: { Authorization: `Bearer ${token}` },
       timeout: 8000,
     });
+    instalarReintento401(mlClient, token);
     const budget = createSyncBudget();
     const mlGet = <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) =>
       withMlRetry(() => mlClient.get<T>(url, { params, headers }), { budget });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
 import { readSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { resolverAdvertiser } from "@/lib/ml-ads";
 import { parsearTarifasEnvio } from "@/lib/envio-medido";
@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
 
     const token = await getValidAccessToken();
     const client = axios.create({ baseURL: "https://api.mercadolibre.com", headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
+    instalarReintento401(client, token);
     const mlGet = <T = unknown>(url: string) => withMlRetry(() => client.get<T>(url), { maxAttempts: 3 });
     const mlGetParams = <T = unknown>(url: string, params?: Record<string, unknown>, headers?: Record<string, string>) =>
       withMlRetry(() => client.get<T>(url, { params, headers }), { maxAttempts: 3 });

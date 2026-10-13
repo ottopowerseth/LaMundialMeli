@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import axios from "axios";
 import { parseAuditFiles, calculateAudit, detectarMesesEnArchivo, cicloEsperado } from "@/lib/audit";
 import { ensureSheets, appendSheet, readSheet, writeSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { logError } from "@/lib/log";
 
 // Lock a nivel de aplicación para el upsert por mes (ver "Bug conocido:
@@ -57,6 +57,7 @@ async function fetchReferenciaML(mes: string) {
       baseURL: "https://api.mercadolibre.com",
       headers: { Authorization: `Bearer ${token}` },
     });
+    instalarReintento401(mlClient, token);
     const { data: user } = await mlClient.get("/users/me");
     const userId = user.id;
 

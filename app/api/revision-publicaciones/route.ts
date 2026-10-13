@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import {
   listarIdsPublicaciones,
@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
       headers: { Authorization: `Bearer ${token}` },
       timeout: 8000,
     });
+    instalarReintento401(mlClient, token);
     // Sin budget a propósito: createSyncBudget cuenta como "fallida" toda
     // llamada no reintentable, incluido el 404 de /description, que acá es el
     // resultado esperado de una publicación sin descripción (75 en la cuenta).

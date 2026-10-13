@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
 import { readSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { parsearTarifasEnvio } from "@/lib/envio-medido";
 import { contextoEnvioDesdeDatos, costoPorItemDesdeHoja, margenDesdeDatos } from "@/lib/tablero-margen-datos";
@@ -44,6 +44,7 @@ export async function GET(req: NextRequest) {
 
     const token = await getValidAccessToken();
     const client = axios.create({ baseURL: "https://api.mercadolibre.com", headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
+    instalarReintento401(client, token);
     // Sin budget a propósito (ver revision-publicaciones): 3 intentos cubren 429.
     const mlGet = <T = unknown>(url: string) => withMlRetry(() => client.get<T>(url), { maxAttempts: 3 });
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { evaluarCompletitud, rutaCategorias } from "@/lib/completitud";
 import { listarIdsPublicaciones, MAX_IDS_REVISION, revisarPublicaciones } from "@/lib/revision-publicaciones";
@@ -29,6 +29,7 @@ export async function POST(req: NextRequest) {
     const token = await getValidAccessToken();
     const crearMlGet = (timeout: number) => {
       const cliente = axios.create({ baseURL: "https://api.mercadolibre.com", headers: { Authorization: `Bearer ${token}` }, timeout });
+      instalarReintento401(cliente, token);
       // Sin budget a propósito: el 404 de /description es un resultado esperado
       // (publicación sin descripción), no una falla.
       return <T = unknown>(url: string) => withMlRetry(() => cliente.get<T>(url));

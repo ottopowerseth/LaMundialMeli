@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
 import { ensureSheets, readSheet, appendSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { ejecutarBackfill } from "@/lib/backfill-shipping";
 import { logError } from "@/lib/log";
 
@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
       headers: { Authorization: `Bearer ${token}` },
       timeout: 8000,
     });
+    instalarReintento401(mlClient, token);
     const { data: user } = await mlClient.get<{ id: string }>("/users/me");
 
     const resultado = await ejecutarBackfill(

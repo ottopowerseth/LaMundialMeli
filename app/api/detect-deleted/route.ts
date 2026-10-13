@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { readSheet, batchWriteSheet } from "@/lib/sheets";
-import { getValidAccessToken } from "@/lib/ml-token";
+import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { logError } from "@/lib/log";
 
@@ -13,6 +13,7 @@ export async function POST() {
       headers: { Authorization: `Bearer ${token}` },
       timeout: 8000,
     });
+    instalarReintento401(mlClient, token);
 
     const { data: user } = await withMlRetry(() => mlClient.get("/users/me"));
     const userId = user.id;
