@@ -418,6 +418,7 @@ export default function Home() {
   const [progresoRentabilidad, setProgresoRentabilidad] = useState({ filasProcesadas: 0, ordenesNuevas: 0, multiItemDetectadas: 0 });
   const [errorRentabilidad, setErrorRentabilidad] = useState<string | null>(null);
   const [rentabilidadRows, setRentabilidadRows] = useState<RentabilidadRow[]>([]);
+  const [rentabilidadTruncada, setRentabilidadTruncada] = useState(false);
   const rentabilidadCancelado = useRef(false);
 
   // --- Comparador vs Mayor state ---
@@ -531,6 +532,7 @@ export default function Home() {
           multiItem: r[11] === "Sí",
         }));
       setRentabilidadRows(rows);
+      setRentabilidadTruncada(data.truncado === true);
     } catch { /* silencioso */ }
   }
 
@@ -2246,6 +2248,11 @@ export default function Home() {
               )}
             </div>
 
+            {rentabilidadTruncada && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800">
+                ⚠ La hoja Rentabilidad llegó al tope de lectura (20.000 filas): hay órdenes que no se están mostrando ni contando en el resumen.
+              </div>
+            )}
             {rentabilidadRows.length > 0 && (() => {
               const calculables = rentabilidadRows.filter(r => r.margenNeto !== null);
               const margenTotal = calculables.reduce((sum, r) => sum + (r.margenNeto ?? 0), 0);
