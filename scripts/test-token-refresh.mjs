@@ -7,33 +7,24 @@ for (const line of envContent.split("\n")) {
   if (key && rest.length) process.env[key.trim()] = rest.join("=").trim();
 }
 
-console.log("1. Probando access token actual...");
+// Nunca se imprime un token completo: solo los últimos 4 caracteres.
+const ult4 = (t) => (t ? `…${String(t).slice(-4)}` : "(vacío)");
+
+// Solo PRUEBA el access token. No refresca ni escribe nada: el refresh de ML es de un solo uso y esa lógica vive
+// únicamente en la app (lib/ml-token.ts); un segundo refresh manual podría invalidar la cadena de tokens.
+console.log("Probando access token actual (" + ult4(process.env.ML_ACCESS_TOKEN) + ")...");
 try {
   const { data } = await axios.get("https://api.mercadolibre.com/users/me", {
     headers: { Authorization: `Bearer ${process.env.ML_ACCESS_TOKEN}` },
   });
   console.log("✓ Access token válido:", data.nickname);
-  process.exit(0);
 } catch (err) {
-  console.log("✗ Access token expirado:", err.response?.status);
-}
-
-console.log("\n2. Intentando refresh con refresh_token...");
-try {
-  const { data } = await axios.post(
-    "https://api.mercadolibre.com/oauth/token",
-    new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: process.env.ML_CLIENT_ID,
-      client_secret: process.env.ML_CLIENT_SECRET,
-      refresh_token: process.env.ML_REFRESH_TOKEN,
-    }),
-    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-  );
-  console.log("✓ Nuevo access_token:", data.access_token);
-  console.log("  Nuevo refresh_token:", data.refresh_token);
-  console.log("  Expira en:", data.expires_in, "segundos");
-  console.log("\n→ Copia estos valores y actualiza .env.local y Vercel");
-} catch (err) {
-  console.error("✗ Error en refresh:", err.response?.data ?? err.message);
+  // Solo estado HTTP y mensaje: nunca el objeto de error completo (arrastra el header Authorization).
+  const status = err.response?.status;
+  if (status === 401) {
+    console.log("✗ Access token vencido (401). Hay que re-autorizar la app en /api/auth/login.");
+  } else {
+    console.error("✗ No se pudo probar el token:", status ?? "", err.response?.data?.message ?? err.message);
+  }
+  process.exit(1);
 }

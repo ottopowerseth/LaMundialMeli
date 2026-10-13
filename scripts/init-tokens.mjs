@@ -44,5 +44,7 @@ await sheets.spreadsheets.values.update({
 });
 
 console.log("✓ Tokens guardados en Sheets Config");
-console.log("  Access Token:", process.env.ML_ACCESS_TOKEN?.slice(0, 30) + "...");
-console.log("  Refresh Token:", process.env.ML_REFRESH_TOKEN);
+// Nunca se imprime un token completo: solo los últimos 4 caracteres.
+const ult4 = (t) => (t ? `…${String(t).slice(-4)}` : "(vacío)");
+console.log("  Access Token:", ult4(process.env.ML_ACCESS_TOKEN));
+console.log("  Refresh Token:", ult4(process.env.ML_REFRESH_TOKEN));

@@ -16,11 +16,12 @@ try {
   const { data: user } = await client.get("/users/me");
   console.log("✓ Conexión exitosa");
   console.log("  Usuario:", user.nickname);
-  console.log("  ID:", user.id);
+  console.log("  ID: …" + String(user.id).slice(-4));
   console.log("  País:", user.country_id);
 
   const { data: listings } = await client.get(`/users/${user.id}/items/search?limit=5`);
   console.log("  Publicaciones totales:", listings.paging?.total ?? 0);
 } catch (err) {
-  console.error("✗ Error:", err.response?.data ?? err.message);
+  // Solo estado HTTP y mensaje: nunca el objeto de error completo (arrastra el header Authorization).
+  console.error("✗ Error:", err.response?.status ?? "", err.response?.data?.message ?? err.message);
 }
