@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSheet } from "@/lib/sheets";
 
+// Tope de filas que se leen de Publicaciones y de Ventas (antes 2.000 y 5.000).
+const TOPE_FILAS_FORECAST = 20000;
+
 type Prioridad = "SIN_STOCK" | "URGENTE" | "PRONTO" | "OK" | "SIN_DATOS";
 
 type ForecastRow = {
@@ -38,8 +41,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const [pubRows, ventaRows] = await Promise.all([
-      readSheet("Publicaciones!A2:R2000"),
-      readSheet("Ventas!A2:J5000"),
+      readSheet(`Publicaciones!A2:R${TOPE_FILAS_FORECAST}`),
+      readSheet(`Ventas!A2:J${TOPE_FILAS_FORECAST}`),
     ]);
 
     const publicaciones = pubRows
@@ -119,8 +122,14 @@ export async function GET(req: NextRequest) {
       return (a.diasRestantes ?? Infinity) - (b.diasRestantes ?? Infinity);
     });
 
+    // Aviso en pantalla si alguna de las dos hojas se acerca al tope de lectura (80 %): así un recorte no pasa en silencio.
+    const filasMax = Math.max(pubRows.length, ventaRows.length);
+    const avisoTope = filasMax >= TOPE_FILAS_FORECAST * 0.8
+      ? `Una de las hojas (Publicaciones o Ventas) tiene ${filasMax} filas y se acerca al tope de lectura de ${TOPE_FILAS_FORECAST}.`
+      : undefined;
+
     return NextResponse.json({
-      ok: true, leadTimeDays, safetyDays, rows, timestamp: new Date().toISOString(),
+      ok: true, leadTimeDays, safetyDays, rows, ...(avisoTope ? { avisoTope } : {}), timestamp: new Date().toISOString(),
     });
   } catch (error) {
     console.error("[forecast]", error);

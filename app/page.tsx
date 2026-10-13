@@ -66,6 +66,7 @@ type ForecastApiResult = {
   leadTimeDays?: number;
   safetyDays?: number;
   rows?: ForecastRow[];
+  avisoTope?: string;
   error?: string;
 } | null;
 
@@ -1668,6 +1669,10 @@ export default function Home() {
                   </>
                 )}
               </div>
+            )}
+
+            {forecastResult?.ok && forecastResult.avisoTope && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800">⚠ {forecastResult.avisoTope}</div>
             )}
 
             {forecastResult?.ok && forecastResult.rows && (
