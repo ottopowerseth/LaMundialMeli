@@ -267,18 +267,30 @@ export async function ejecutarBackfill(deps: DepsBackfill, opts: OpcionesBackfil
 // `extraQuery` agrega filtros ("&order.status=paid"). Deduplica por id: ML a
 // veces repite una orden en el borde de página.
 export async function listarOrdenesDia<T extends { id: number | string }>(
-  get: GetFn, userId: string | number, desdeMs: number, hastaMs: number, extraQuery = ""
+  get: GetFn, userId: string | number, desdeMs: number, hastaMs: number, extraQuery = "",
+  avisos?: { alTope: number } // si se pasa, cuenta las ventanas que llegaron al tope de resultados de ML (lista truncada)
 ): Promise<T[]> {
   const base =
     `/orders/search?seller=${userId}&order.date_created.from=${new Date(desdeMs).toISOString()}` +
     `&order.date_created.to=${new Date(hastaMs - 1).toISOString()}&sort=date_desc&limit=50${extraQuery}`;
   const porId = new Map<string, T>();
+  let completa = false;
   for (let offset = 0; offset < 9950; offset += 50) {
     const { data } = await get<{ results: T[]; paging: { total: number } }>(`${base}&offset=${offset}`);
     for (const o of data.results) porId.set(String(o.id), o);
-    if (data.results.length < 50 || offset + 50 >= data.paging.total) break;
+    if (data.results.length < 50 || offset + 50 >= data.paging.total) { completa = true; break; }
   }
+  if (!completa && avisos) avisos.alTope++; // se agotó el tope de ML con más resultados pendientes: la lista quedó truncada
   return [...porId.values()];
+}
+
+// Ventanas [d, h) de un día que cubren [desdeMs, hastaMs), de la más reciente a la más vieja (la más vieja puede ser más
+// corta). ÚNICO lugar donde se decide dónde empieza y termina cada ventana: la paginación (listarOrdenesRango) solo las
+// recorre, así que alinear las ventanas a otra zona horaria (C-03) se cambia acá sin tocar la paginación.
+export function ventanasDeUnDia(desdeMs: number, hastaMs: number): { d: number; h: number }[] {
+  const ventanas: { d: number; h: number }[] = [];
+  for (let h = hastaMs; h > desdeMs; h -= DIA_MS) ventanas.push({ d: Math.max(desdeMs, h - DIA_MS), h });
+  return ventanas;
 }
 
 // Órdenes de un rango cualquiera, partido en ventanas de un día (la última
@@ -292,15 +304,15 @@ export async function listarOrdenesDia<T extends { id: number | string }>(
 export async function listarOrdenesRango<T extends { id: number | string; date_created?: unknown }>(
   get: GetFn, userId: string | number, desdeMs: number, hastaMs: number,
   opts: { extraQuery?: string; concurrencia?: number } = {}
-): Promise<{ ordenes: T[]; ventanas: number; repetidas: number; fueraDeRango: number }> {
-  const ventanas: { d: number; h: number }[] = [];
-  for (let h = hastaMs; h > desdeMs; h -= DIA_MS) ventanas.push({ d: Math.max(desdeMs, h - DIA_MS), h });
+): Promise<{ ordenes: T[]; ventanas: number; repetidas: number; fueraDeRango: number; ventanasAlTope: number }> {
+  const ventanas = ventanasDeUnDia(desdeMs, hastaMs);
+  const avisos = { alTope: 0 };
   const porVentana: T[][] = new Array(ventanas.length);
   let siguiente = 0;
   await Promise.all(Array.from({ length: Math.max(1, Math.min(opts.concurrencia ?? 4, ventanas.length)) }, async () => {
     while (siguiente < ventanas.length) {
       const i = siguiente++;
-      porVentana[i] = await listarOrdenesDia<T>(get, userId, ventanas[i].d, ventanas[i].h, opts.extraQuery ?? "");
+      porVentana[i] = await listarOrdenesDia<T>(get, userId, ventanas[i].d, ventanas[i].h, opts.extraQuery ?? "", avisos);
     }
   }));
   const vistas = new Set<string>();
@@ -316,7 +328,7 @@ export async function listarOrdenesRango<T extends { id: number | string; date_c
       ordenes.push(o);
     }
   }
-  return { ordenes, ventanas: ventanas.length, repetidas, fueraDeRango };
+  return { ordenes, ventanas: ventanas.length, repetidas, fueraDeRango, ventanasAlTope: avisos.alTope };
 }
 
 // ---------------------------------------------------------------------

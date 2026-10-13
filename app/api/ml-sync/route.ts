@@ -5,6 +5,7 @@ import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { getComisionPct, IVA } from "@/lib/rentabilidad";
 import { agregarSinDuplicar, resolverEnviosPendientes, seleccionarEnviosPendientes } from "@/lib/backfill-shipping";
+import { cargarHistorialVentas } from "@/lib/ventas-historial";
 import { logError } from "@/lib/log";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
@@ -310,24 +311,13 @@ export async function POST() {
     let ventasNuevas: { titulo: unknown; cantidad: unknown; total: unknown; comprador: unknown; fecha: string }[] = [];
 
     try {
-      // Ventas — paginado por fecha, no por offset fijo: el forecast necesita
-      // 30 días completos de historial, y un tope de offset arbitrario se
-      // queda corto o se pasa de largo según el volumen de ventas del momento.
-      // Paramos cuando la orden más vieja de la página ya excede la ventana
-      // (data.results viene ordenado date_desc), con un tope de offset alto
-      // como salvaguarda contra un loop indefinido.
-      const ventanaHistorial = new Date(Date.now() - 35 * 86400000);
-      let ordOffset = 0;
-      while (ordOffset <= 2000) {
-        const { data } = await mlGet<{ results: Record<string, unknown>[]; paging: { total: number } }>(
-          `/orders/search?seller=${userId}&sort=date_desc&limit=50&offset=${ordOffset}`
-        );
-        if (data.results.length === 0) break;
-        orders.push(...data.results);
-        const ultimaOrdenPagina = data.results[data.results.length - 1];
-        const fechaUltima = new Date(ultimaOrdenPagina.date_created as string);
-        if (fechaUltima < ventanaHistorial || orders.length >= data.paging.total) break;
-        ordOffset += 50;
+      // Ventas — historial de DIAS_HISTORIAL_VENTAS días por ventanas de un día (lib/ventas-historial.ts), sin el tope de
+      // ~2.050 órdenes que tenía la paginación por offset. Si una ventana llega al tope de ML se avisa, no se trunca en silencio.
+      const historial = await cargarHistorialVentas((u) => mlGet(u), userId, Date.now());
+      orders = historial.ordenes;
+      if (historial.aviso) {
+        console.warn(`[ml-sync] ${historial.aviso}`);
+        erroresValidacion.push(historial.aviso);
       }
 
       // ShippingCache: persiste logistic_type por orden entre syncs (Ventas se
