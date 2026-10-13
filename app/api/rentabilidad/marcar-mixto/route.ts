@@ -4,6 +4,7 @@ import { readSheet, batchWriteSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { detectarMixto, mediana, deserializarItemsDespacho } from "@/lib/envio-real";
+import { logError } from "@/lib/log";
 
 // Pasada FINAL de marcas (columna Q, Mixto) — se corre una sola vez,
 // después de que el modo "completar" dejó TODO el histórico en fuente
@@ -202,7 +203,7 @@ export async function POST(request: Request) {
     if (error instanceof SyncRetryBudgetExceededError) {
       return NextResponse.json({ ok: false, error: "Budget agotado, reintentar" }, { status: 503 });
     }
-    console.error("[rentabilidad/marcar-mixto]", error);
+    logError("rentabilidad/marcar-mixto", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

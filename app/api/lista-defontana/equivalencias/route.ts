@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ensureSheets, clearSheet, writeSheet } from "@/lib/sheets";
 import { HEADERS_EQUIVALENCIAS, FilaEquivalencia } from "@/lib/defontana";
+import { logError } from "@/lib/log";
 
 // Reemplaza la tabla de equivalencias completa — mismo criterio que la
 // importación de Lista Defontana (no upsert, reemplazo total). Se llama a
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true, filasGuardadas: equivalencias.length });
   } catch (error) {
-    console.error("[lista-defontana/equivalencias]", error);
+    logError("lista-defontana/equivalencias", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

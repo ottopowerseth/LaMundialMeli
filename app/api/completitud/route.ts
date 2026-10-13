@@ -6,6 +6,7 @@ import { evaluarCompletitud, rutaCategorias } from "@/lib/completitud";
 import { listarIdsPublicaciones, MAX_IDS_REVISION, revisarPublicaciones } from "@/lib/revision-publicaciones";
 import { cargarVentas, ventanaPorDias } from "@/lib/tablero-datos";
 import { clasificarAbc } from "@/lib/tablero-stock";
+import { logError } from "@/lib/log";
 
 // Checklist de completitud por publicación (ISP, descripción, fotos, GTIN).
 // A PEDIDO: no se llama al abrir el Tablero. Solo lectura (no escribe en ML ni
@@ -89,7 +90,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: false, error: 'accion debe ser "listar", "ventas" o "revisar"' }, { status: 400 });
   } catch (error) {
-    console.error("[completitud]", error);
+    logError("completitud", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

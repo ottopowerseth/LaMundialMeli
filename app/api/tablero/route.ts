@@ -13,6 +13,7 @@ import { calcularConfianza, resumirVentas, variacion } from "@/lib/tablero-resum
 import { asignarLogistico, coberturaLogistica, grupoLogistico, parsearLogisticoPorOrden } from "@/lib/logistica";
 import { armarReposicion } from "@/lib/reposicion-full";
 import { armarFullVsNormal } from "@/lib/full-vs-normal";
+import { logError } from "@/lib/log";
 
 // Tablero "desde arriba": un solo endpoint, calculado en vivo y sin hojas
 // nuevas. Todas las secciones comparten los mismos datos — 120 días de órdenes
@@ -195,7 +196,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
-    console.error("[tablero]", error);
+    logError("tablero", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

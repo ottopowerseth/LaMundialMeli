@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseAuditFiles, detectarMesesEnArchivo } from "@/lib/audit";
+import { logError } from "@/lib/log";
 
 // Detecta los meses reales (por contenido de "Fecha del cargo", no por
 // nombre de archivo) presentes en Facturación ML y Facturación MP — se
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true, mesesML, mesesMP });
   } catch (error) {
-    console.error("[audit/detect-meses]", error);
+    logError("audit/detect-meses", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

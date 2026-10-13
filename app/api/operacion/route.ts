@@ -4,6 +4,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { armarDespachos } from "@/lib/operacion";
 import { cargarDespachosListos, cargarNivelReputacion, cargarPreguntasSinResponder, cargarReclamosAbiertos } from "@/lib/operacion-datos";
+import { logError } from "@/lib/log";
 
 // Cola de operación (H): despachos listos para enviar, reclamos abiertos, preguntas
 // sin responder y nivel de reputación. SOLO LECTURA (solo GET a ML; no usa Sheets) y
@@ -38,7 +39,7 @@ export async function GET(_req: NextRequest) {
       reputacion: bloque(rep),
     });
   } catch (error) {
-    console.error("[operacion]", error);
+    logError("operacion", error);
     return NextResponse.json({ ok: false, error: mensaje(error) }, { status: 500 });
   }
 }

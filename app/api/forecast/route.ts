@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSheet } from "@/lib/sheets";
+import { logError } from "@/lib/log";
 
 // Tope de filas que se leen de Publicaciones y de Ventas (antes 2.000 y 5.000).
 const TOPE_FILAS_FORECAST = 20000;
@@ -132,7 +133,7 @@ export async function GET(req: NextRequest) {
       ok: true, leadTimeDays, safetyDays, rows, ...(avisoTope ? { avisoTope } : {}), timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error("[forecast]", error);
+    logError("forecast", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

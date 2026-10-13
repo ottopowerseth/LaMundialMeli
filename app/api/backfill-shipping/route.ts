@@ -3,6 +3,7 @@ import axios from "axios";
 import { ensureSheets, readSheet, appendSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { ejecutarBackfill } from "@/lib/backfill-shipping";
+import { logError } from "@/lib/log";
 
 // Backfill del histórico de ShippingCache: completa logistic_type de las
 // órdenes que ml-sync no cubre (tope de 150 nuevas por sync, ventana de 35
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, ...resultado });
   } catch (error) {
-    console.error("[backfill-shipping]", error);
+    logError("backfill-shipping", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

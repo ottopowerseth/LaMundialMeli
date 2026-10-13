@@ -9,6 +9,7 @@ import { cargarItemsStock, cargarVentas, ventanaPorDias } from "@/lib/tablero-da
 import { contextoEnvioDesdeDatos, costoPorItemDesdeHoja, margenDesdeDatos } from "@/lib/tablero-margen-datos";
 import { cargarEsCatalogo, cargarPriceToWin } from "@/lib/precio-para-ganar-datos";
 import { analizarPrecioParaGanar } from "@/lib/precio-para-ganar";
+import { logError } from "@/lib/log";
 
 // Precio para ganar (price_to_win de ML) frente al precio actual y al precio de
 // equilibrio. SOLO LECTURA: no escribe en ML ni en Sheets y no sugiere acciones. A
@@ -76,7 +77,7 @@ export async function GET(_req: NextRequest) {
       filas: analisis.filas,
     });
   } catch (error) {
-    console.error("[precio-para-ganar]", error);
+    logError("precio-para-ganar", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { calcularMargen } from "@/lib/rentabilidad";
 import { procesarTanda } from "@/lib/envio-real";
+import { logError } from "@/lib/log";
 
 // Modo "completar" — orquesta varias tandas de procesarTanda() (misma
 // lógica que rentabilidad/recalcular-envio, ver lib/envio-real.ts) DENTRO
@@ -192,7 +193,7 @@ export async function POST(request: Request) {
       progresoTandas,
     });
   } catch (error) {
-    console.error("[rentabilidad/completar]", error);
+    logError("rentabilidad/completar", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

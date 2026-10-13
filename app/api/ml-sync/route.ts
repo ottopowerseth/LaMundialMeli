@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { getComisionPct, IVA } from "@/lib/rentabilidad";
 import { agregarSinDuplicar, resolverEnviosPendientes, seleccionarEnviosPendientes } from "@/lib/backfill-shipping";
+import { logError } from "@/lib/log";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
@@ -299,7 +300,7 @@ export async function POST() {
         }
       }
     } catch (err) {
-      console.error("[ml-sync] Publicaciones", err);
+      logError("ml-sync Publicaciones", err);
       erroresSync.push(`Publicaciones: ${String(err)}`);
     }
 
@@ -408,7 +409,7 @@ export async function POST() {
           };
         });
     } catch (err) {
-      console.error("[ml-sync] Ventas", err);
+      logError("ml-sync Ventas", err);
       erroresSync.push(`Ventas: ${String(err)}`);
     }
 
@@ -425,7 +426,7 @@ export async function POST() {
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error("[ml-sync]", error);
+    logError("ml-sync", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

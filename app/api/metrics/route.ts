@@ -13,6 +13,7 @@ import { obtenerAdsPorItem, ROAS_METRICS_FIELDS } from "@/lib/ml-ads";
 import { armarContextoEnvio, parsearTarifasEnvio, resolverEnvio } from "@/lib/envio-medido";
 import { acumularComision, pctComisionListingPrices, resolverComision } from "@/lib/comision-real";
 import type { AcumuladoComision, ComisionResuelta } from "@/lib/comision-real";
+import { logError } from "@/lib/log";
 
 // Endpoint separado de ml-sync (no reutiliza su maxDuration ni su budget):
 // mismo criterio que backfill-shipping, para no arriesgar timeouts en rutas
@@ -286,7 +287,7 @@ export async function GET(req: NextRequest) {
       tablaProductos,
     });
   } catch (error) {
-    console.error("[metrics]", error);
+    logError("metrics", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

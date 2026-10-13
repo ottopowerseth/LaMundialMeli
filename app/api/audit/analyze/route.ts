@@ -3,6 +3,7 @@ import axios from "axios";
 import { parseAuditFiles, calculateAudit, detectarMesesEnArchivo, cicloEsperado } from "@/lib/audit";
 import { ensureSheets, appendSheet, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
+import { logError } from "@/lib/log";
 
 // Lock a nivel de aplicación para el upsert por mes (ver "Bug conocido:
 // condición de carrera en upsert por mes" en docs/estado-metricas-y-pendientes.md).
@@ -84,7 +85,7 @@ async function fetchReferenciaML(mes: string) {
 
     return { ventasBrutas, cantidadVentas };
   } catch (error) {
-    console.error("[audit/analyze] referencia ML", error);
+    logError("audit/analyze referencia ML", error);
     return null;
   }
 }
@@ -183,7 +184,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true, mes, result, referenciaML, mesesML, mesesMP });
   } catch (error) {
-    console.error("[audit/analyze]", error);
+    logError("audit/analyze", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   } finally {
     // Libera el lock en cualquier salida (éxito, error de cobertura,

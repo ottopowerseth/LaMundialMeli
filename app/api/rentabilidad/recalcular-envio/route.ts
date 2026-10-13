@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { calcularMargen } from "@/lib/rentabilidad";
 import { procesarTanda } from "@/lib/envio-real";
+import { logError } from "@/lib/log";
 
 // Recálculo del envío de las filas YA EXISTENTES de Rentabilidad con el fix
 // de despacho compartido (ver lib/envio-real.ts y docs/estado-metricas-y-
@@ -77,7 +78,7 @@ export async function POST(request: Request) {
     if (error instanceof SyncRetryBudgetExceededError) {
       return NextResponse.json({ ok: false, error: "Budget agotado, reintentar" }, { status: 503 });
     }
-    console.error("[rentabilidad/recalcular-envio]", error);
+    logError("rentabilidad/recalcular-envio", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

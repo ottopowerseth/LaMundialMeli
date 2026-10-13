@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSheet } from "@/lib/sheets";
+import { logError } from "@/lib/log";
 
 const ALLOWED_TABS = ["Publicaciones", "Ventas", "Auditoría", "Rentabilidad"] as const;
 
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest) {
     const truncado = tab === "Rentabilidad" && rows.length >= TOPE_FILAS_RENTABILIDAD;
     return NextResponse.json(truncado ? { headers, rows: data, truncado: true } : { headers, rows: data });
   } catch (error) {
-    console.error("[sheets-data]", error);
+    logError("sheets-data", error);
     return NextResponse.json({ error: "Error al leer datos" }, { status: 500 });
   }
 }

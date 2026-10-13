@@ -14,6 +14,7 @@ import { pctComisionListingPrices, resolverComision } from "@/lib/comision-real"
 import type { ComisionResuelta } from "@/lib/comision-real";
 import { obtenerVentasPorItem } from "@/lib/tarifa-envio";
 import { mayoresEnRevision } from "@/lib/mayor-en-revision";
+import { logError } from "@/lib/log";
 
 // Comparador vs Mayor — pestaña propia con endpoint propio (no dentro de
 // metrics/route.ts): cubre TODAS las publicaciones activas con cruce
@@ -322,7 +323,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ ok: true, objetivo, filas });
   } catch (error) {
-    console.error("[comparador-mayor]", error);
+    logError("comparador-mayor", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

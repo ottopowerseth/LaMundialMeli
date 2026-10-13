@@ -3,6 +3,7 @@ import axios from "axios";
 import { readSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry } from "@/lib/http-retry";
+import { logError } from "@/lib/log";
 
 // Verificación estratificada post-corrida (decisión de Otto 2026-10-02):
 // 15 filas ya escritas con fuente "costs" — 5 despachos Full
@@ -145,7 +146,7 @@ export async function POST() {
       excepcionesSuma,
     });
   } catch (error) {
-    console.error("[rentabilidad/verificar-muestra]", error);
+    logError("rentabilidad/verificar-muestra", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

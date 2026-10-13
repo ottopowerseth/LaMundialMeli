@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { ensureSheets, clearSheet, writeSheet } from "@/lib/sheets";
 import { HEADERS_LISTA_DEFONTANA, FilaDefontana } from "@/lib/defontana";
+import { logError } from "@/lib/log";
 
 // Importación manual y mensual de la lista de precios del proveedor
 // (Defontana) — reemplaza la hoja completa, no hace upsert. Se sube el
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true, filasImportadas: filas.length, cargado });
   } catch (error) {
-    console.error("[lista-defontana/importar]", error);
+    logError("lista-defontana/importar", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

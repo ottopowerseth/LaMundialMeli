@@ -8,6 +8,7 @@ import {
   revisarPublicaciones,
   UMBRAL_DESCRIPCION_CHARS,
 } from "@/lib/revision-publicaciones";
+import { logError } from "@/lib/log";
 
 // Revisión de faltantes por publicación: descripción e ISP. La lógica vive en
 // lib/revision-publicaciones.ts (la comparte /api/completitud). Dos acciones,
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: false, error: 'accion debe ser "listar" o "revisar"' }, { status: 400 });
   } catch (error) {
-    console.error("[revision-publicaciones]", error);
+    logError("revision-publicaciones", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

@@ -8,6 +8,7 @@ import type { FilaDefontana, FilaEquivalencia } from "@/lib/defontana";
 import { obtenerVentasPorItem } from "@/lib/tarifa-envio";
 import { HOJA_COSTO_ORIGEN, procesarCostoAuto } from "@/lib/costo-auto";
 import type { PublicacionCosto, ResultadoCosto } from "@/lib/costo-auto";
+import { logError } from "@/lib/log";
 
 // Completa el Costo (columna F de Publicaciones) con el MAYOR de la Lista
 // Defontana (ver lib/costo-auto.ts para el cruce, las reglas y por qué el
@@ -123,7 +124,7 @@ export async function POST(request: Request) {
       aEscribirMuestra: lista.filter((r) => r.escribir).sort(porIngreso).slice(0, 10).map(detalle),
     });
   } catch (error) {
-    console.error("[costo-auto]", error);
+    logError("costo-auto", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

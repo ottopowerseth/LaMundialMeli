@@ -3,6 +3,7 @@ import axios from "axios";
 import { readSheet, batchWriteSheet } from "@/lib/sheets";
 import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
+import { logError } from "@/lib/log";
 
 export async function POST() {
   try {
@@ -53,7 +54,7 @@ export async function POST() {
 
     return NextResponse.json({ ok: true, eliminados: eliminados.length, productos: eliminados });
   } catch (error) {
-    console.error("[detect-deleted]", error);
+    logError("detect-deleted", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

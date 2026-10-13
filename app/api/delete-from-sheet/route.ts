@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
+import { logError } from "@/lib/log";
 
 function getSheetsClient() {
   const auth = new google.auth.GoogleAuth({
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, borrados: filasOrdenadas.length });
   } catch (error) {
-    console.error("[delete-from-sheet]", error);
+    logError("delete-from-sheet", error);
     return NextResponse.json({ ok: false, error: "Error al borrar filas" }, { status: 500 });
   }
 }

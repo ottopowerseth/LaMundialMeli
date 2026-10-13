@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { HOJA_TARIFA_ENVIO, obtenerVentasPorItem, procesarTarifas } from "@/lib/tarifa-envio";
 import { parsearLogisticoPorOrden } from "@/lib/logistica";
+import { logError } from "@/lib/log";
 
 // Cachea en la hoja "TarifaEnvio" la tarifa de envío por unidad de cada
 // publicación con ventas recientes (ver lib/tarifa-envio.ts para el método,
@@ -113,7 +114,7 @@ export async function POST(request: Request) {
       filas: resultado.filas.slice(0, confirmar ? 25 : 40).map((f) => ({ itemId: f.itemId, tipo: f.tipo, sku: f.sku, ...f.r })),
     });
   } catch (error) {
-    console.error("[tarifa-envio]", error);
+    logError("tarifa-envio", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

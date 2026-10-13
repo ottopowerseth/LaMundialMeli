@@ -10,6 +10,7 @@ import { costoPorItemDesdeHoja, margenDesdeDatos } from "@/lib/tablero-margen-da
 import { resumirVentas } from "@/lib/tablero-resumen";
 import { cargarAnunciosMl, cargarCampanasMl } from "@/lib/publicidad-datos";
 import { analizarPublicidad } from "@/lib/publicidad-equilibrio";
+import { logError } from "@/lib/log";
 
 // ACoS real, ACoS de equilibrio y TACoS de Product Ads. SOLO LECTURA: no escribe
 // en ML ni en Sheets y no sugiere acciones. A pedido (la pantalla lo llama con un
@@ -79,7 +80,7 @@ export async function GET(req: NextRequest) {
       filas: analisis.filas,
     });
   } catch (error) {
-    console.error("[publicidad]", error);
+    logError("publicidad", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { agruparPorOrdenReal, calcularFilaOrden, calcularMargen, sumarAlmacenamiento, BillingDetailRow } from "@/lib/rentabilidad";
 import { resolverEnvioReal, detectarMixto } from "@/lib/envio-real";
+import { logError } from "@/lib/log";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
@@ -339,7 +340,7 @@ export async function POST(request: Request) {
       almacenamientoAcumulado,
     });
   } catch (error) {
-    console.error("[rentabilidad/analyze]", error);
+    logError("rentabilidad/analyze", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
+import { logError } from "@/lib/log";
 
 function getAuthClient() {
   return new google.auth.GoogleAuth({
@@ -45,7 +46,7 @@ export async function DELETE(request: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("[audit/delete-row]", error);
+    logError("audit/delete-row", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }

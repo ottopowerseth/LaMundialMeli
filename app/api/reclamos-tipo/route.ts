@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { ventanaPorDias } from "@/lib/tablero-datos";
 import { cargarReclamosPorTipo } from "@/lib/reclamos-datos";
+import { logError } from "@/lib/log";
 
 // Reclamos por tipo logístico, A PEDIDO (no corre con /api/tablero ni /api/metrics).
 // Query: dias (1-180, default 120; ventana alineada a días UTC) o desde/hasta (ISO);
@@ -46,7 +47,7 @@ export async function GET(req: NextRequest) {
     cache.set(clave, { ts: Date.now(), data });
     return NextResponse.json({ ok: true, ...data, desdeCache: false });
   } catch (error) {
-    console.error("[reclamos-tipo]", error);
+    logError("reclamos-tipo", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }
 }
