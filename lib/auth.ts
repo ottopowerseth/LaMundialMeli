@@ -26,7 +26,7 @@ export async function verifySessionToken(token: string): Promise<boolean> {
   }
 }
 
-function importKey() {
+export function importKey() {
   return crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(process.env.ADMIN_PASSWORD!),
