@@ -129,7 +129,7 @@ function Tarjeta({ titulo, valor, v, anterior }: { titulo: string; valor: string
 const linkPublicacion = (id: string) => `https://articulo.mercadolibre.cl/${id.replace("MLC", "MLC-")}`;
 
 function Enlace({ id }: { id: string }) {
-  return <a href={linkPublicacion(id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline whitespace-nowrap">{id} ↗</a>;
+  return <a href={linkPublicacion(id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline whitespace-nowrap max-md:inline-block max-md:py-3.5">{id} ↗</a>;
 }
 const Tipo = ({ full }: { full: boolean }) => (
   <span className={`rounded-md px-2 py-0.5 ${full ? "bg-blue-50 text-blue-700" : "bg-gray-100 text-gray-600"}`}>{full ? "Full" : "Estándar"}</span>

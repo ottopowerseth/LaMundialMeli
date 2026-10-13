@@ -166,7 +166,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
                 <Dato etiqueta="Full" ancho><Lado l={p.full} /></Dato>
                 <Dato etiqueta="Normal" ancho><Lado l={p.normal} /></Dato>
               </Datos>
-              <a href={link(p.id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline">{p.id} ↗</a>
+              <a href={link(p.id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline max-md:inline-block max-md:py-3.5">{p.id} ↗</a>
             </TarjetaFila>
           ))}
           {productos.length === 0 && <p className="py-3 text-xs text-gray-500">Sin publicaciones con ese filtro.</p>}
@@ -184,7 +184,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
             <input type="number" min={1} value={u90Min} onChange={(e) => setU90Min(Number(e.target.value))} className="w-20 border border-gray-200 rounded-lg py-1 px-2 text-gray-900" /></label>
           <label className="flex items-center gap-2 text-gray-600">Semanas con ventas mín. (de 13)
             <input type="number" min={1} max={13} value={semanasMin} onChange={(e) => setSemanasMin(Number(e.target.value))} className="w-16 border border-gray-200 rounded-lg py-1 px-2 text-gray-900" /></label>
-          <label className="flex items-center gap-2 text-gray-600"><input type="checkbox" checked={verTodosCand} onChange={(e) => setVerTodosCand(e.target.checked)} /> Incluir los que no califican</label>
+          <label className="flex items-center gap-2 text-gray-600 max-md:py-3.5"><input type="checkbox" checked={verTodosCand} onChange={(e) => setVerTodosCand(e.target.checked)} /> Incluir los que no califican</label>
           <span className="text-xs text-gray-500">{califican.length} califican de {candidatos.length} con rotación mínima · se exige además margen unitario positivo</span>
         </div>
         <div className="overflow-x-auto">
@@ -202,7 +202,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
             <tbody>
               {lista.map(({ c, ev }) => (
                 <tr key={c.id} className="border-t border-gray-100 align-top">
-                  <td className="py-1.5 pr-3 max-w-[260px] max-md:max-w-[9.5rem] max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]"><a href={link(c.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate" title={c.titulo}>{c.titulo}</a><span className="font-mono text-gray-400">{c.id}</span></td>
+                  <td className="py-1.5 pr-3 max-w-[260px] max-md:max-w-[9.5rem] max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]"><a href={link(c.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate max-md:py-3.5" title={c.titulo}>{c.titulo}</a><span className="font-mono text-gray-400">{c.id}</span></td>
                   <td className="py-1.5 pr-3 text-right whitespace-nowrap">{c.u30} / {c.u60} / {c.u90}</td>
                   <td className="py-1.5 pr-3 text-right">{c.semanasConVenta}</td>
                   <td className="py-1.5 pr-3 text-right">{c.margenUnitario === null ? "sin Costo" : clpSigno(c.margenUnitario)}{c.menosFiable ? " *" : ""}</td>
@@ -232,7 +232,7 @@ export default function FullVsNormal({ datos, generadoEn }: { datos: ResultadoFv
             <tbody>
               {datos.fullVentasBajas.slice(0, 15).map((x) => (
                 <tr key={x.id} className="border-t border-gray-100">
-                  <td className="py-1.5 pr-3 max-w-[300px] max-md:max-w-[9.5rem] max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]"><a href={link(x.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate" title={x.titulo}>{x.titulo}</a><span className="font-mono text-gray-400">{x.id}</span></td>
+                  <td className="py-1.5 pr-3 max-w-[300px] max-md:max-w-[9.5rem] max-md:sticky max-md:left-0 max-md:bg-white max-md:shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]"><a href={link(x.id)} target="_blank" rel="noopener noreferrer" className="text-gray-800 hover:underline block truncate max-md:py-3.5" title={x.titulo}>{x.titulo}</a><span className="font-mono text-gray-400">{x.id}</span></td>
                   <td className="py-1.5 pr-3 text-right">{x.stock}</td><td className="py-1.5 pr-3 text-right">{x.u30}</td><td className="py-1.5 pr-3 text-right">{x.u90}</td>
                   <td className="py-1.5 text-right">{x.capital === null ? "sin Costo" : clp(x.capital)}</td>
                 </tr>

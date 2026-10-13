@@ -164,7 +164,7 @@ export default function ReposicionFull({ reposicion, generadoEn }: { reposicion:
               {f.picoReciente && <Dato etiqueta="Aviso" ancho><span className="text-amber-800">Posible pico reciente, revisa antes de pedir (velocidad de 30 días mayor que {FACTOR_PICO_RECIENTE}× la de 90).</span></Dato>}
               {f.n90 > 0 && <Dato etiqueta="Otro canal" ancho>+{f.n90} u en 90 días: la velocidad y el margen mezclan canales</Dato>}
             </Datos>
-            <a href={link(f.id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline">{f.id} ↗</a>
+            <a href={link(f.id)} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-700 hover:underline max-md:inline-block max-md:py-3.5">{f.id} ↗</a>
           </TarjetaFila>
         ))}
         {filas.length === 0 && <p className="py-3 text-xs text-gray-500">Sin publicaciones en este grupo.</p>}
