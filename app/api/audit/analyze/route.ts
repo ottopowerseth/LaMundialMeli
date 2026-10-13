@@ -4,6 +4,11 @@ import { parseAuditFiles, calculateAudit, detectarMesesEnArchivo, cicloEsperado 
 import { ensureSheets, appendSheet, readSheet, writeSheet } from "@/lib/sheets";
 import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { logError } from "@/lib/log";
+import { withMlRetry } from "@/lib/http-retry";
+import { calcularReferenciaVentas, ventasBrutasParaAuditoria, type ReferenciaVentas } from "@/lib/audit-referencia";
+
+// La referencia de ML recorre ~30 ventanas de un día (decenas de llamadas): hay que dar margen de tiempo a la función.
+export const maxDuration = 60;
 
 // Lock a nivel de aplicación para el upsert por mes (ver "Bug conocido:
 // condición de carrera en upsert por mes" en docs/estado-metricas-y-pendientes.md).
@@ -39,7 +44,7 @@ async function liberarLock(mes: string) {
   }
 }
 
-async function fetchReferenciaML(mes: string) {
+async function fetchReferenciaML(mes: string): Promise<ReferenciaVentas | null> {
   const [yearStr, monthStr] = mes.split("-");
   const year = parseInt(yearStr);
   const month = parseInt(monthStr);
@@ -49,7 +54,7 @@ async function fetchReferenciaML(mes: string) {
   // el mes calendario — para que ventas_brutas quede en el mismo rango de
   // fechas que las comisiones calculadas desde los archivos de Facturación.
   const { desde, hasta: cicloHasta } = cicloEsperado(mes);
-  const hasta = new Date(cicloHasta.getTime() + 86400000); // +1 día: /orders/search usa "hasta" exclusivo
+  const hasta = new Date(cicloHasta.getTime() + 86400000); // +1 día: el rango de calcularReferenciaVentas es exclusivo en "hasta"
 
   try {
     const token = await getValidAccessToken();
@@ -59,32 +64,8 @@ async function fetchReferenciaML(mes: string) {
     });
     instalarReintento401(mlClient, token);
     const { data: user } = await mlClient.get("/users/me");
-    const userId = user.id;
-
-    let ventasBrutas = 0;
-    let cantidadVentas = 0;
-    let offset = 0;
-    while (offset <= 1000) {
-      const { data } = await mlClient.get(`/orders/search`, {
-        params: {
-          seller: userId,
-          "order.status": "paid",
-          "order.date_created.from": desde.toISOString(),
-          "order.date_created.to": hasta.toISOString(),
-          sort: "date_desc",
-          limit: 50,
-          offset,
-        },
-      });
-      for (const order of data.results ?? []) {
-        ventasBrutas += Number(order.total_amount) || 0;
-        cantidadVentas++;
-      }
-      if (data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
-      offset += 50;
-    }
-
-    return { ventasBrutas, cantidadVentas };
+    // Por ventanas de un día (sin el tope de ~1.050 órdenes del offset). Con reintento ante 429/5xx transitorios.
+    return await calcularReferenciaVentas((u) => withMlRetry(() => mlClient.get(u)), user.id, desde.getTime(), hasta.getTime());
   } catch (error) {
     logError("audit/analyze referencia ML", error);
     return null;
@@ -124,12 +105,18 @@ export async function POST(request: Request) {
     const mesesML = detectarMesesEnArchivo(auditData.facturacionML);
     const mesesMP = detectarMesesEnArchivo(auditData.facturacionMP);
     const referenciaML = await fetchReferenciaML(mes);
-    const result = calculateAudit(mes, auditData, referenciaML?.ventasBrutas);
+    // Solo una referencia COMPLETA pisa ventas_brutas; null (ML falló) o incompleta: se queda lo calculado desde el archivo de ML.
+    const result = calculateAudit(mes, auditData, ventasBrutasParaAuditoria(referenciaML));
+    const avisos: string[] = [];
+    if (referenciaML?.aviso) {
+      console.warn(`[audit/analyze] ${referenciaML.aviso}`);
+      avisos.push(referenciaML.aviso);
+    }
 
     // Si hay mismatch de cobertura, el análisis no corrió el cálculo (ver
     // calculateAudit) — no se guarda una fila vacía/engañosa en Sheets.
     if (result.error_cobertura) {
-      return NextResponse.json({ ok: true, mes, result, referenciaML, mesesML, mesesMP });
+      return NextResponse.json({ ok: true, mes, result, referenciaML, avisos, mesesML, mesesMP });
     }
 
     const headers = [
@@ -183,7 +170,7 @@ export async function POST(request: Request) {
       await appendSheet("Auditoría!A1", [fila]);
     }
 
-    return NextResponse.json({ ok: true, mes, result, referenciaML, mesesML, mesesMP });
+    return NextResponse.json({ ok: true, mes, result, referenciaML, avisos, mesesML, mesesMP });
   } catch (error) {
     logError("audit/analyze", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });

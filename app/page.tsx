@@ -246,7 +246,7 @@ type AuditResult = {
   error_cobertura?: string;
 };
 
-type ReferenciaML = { ventasBrutas: number; cantidadVentas: number } | null;
+type ReferenciaML = { ventasBrutas: number; cantidadVentas: number; incompleta?: boolean } | null;
 
 type MesDetectado = { year: number; month: number; count: number };
 
@@ -255,6 +255,7 @@ type AuditApiResult = {
   mes?: string;
   result?: AuditResult;
   referenciaML?: ReferenciaML;
+  avisos?: string[];
   error?: string;
   mesesML?: MesDetectado[];
   mesesMP?: MesDetectado[];
@@ -1355,8 +1356,15 @@ export default function Home() {
                       </div>
                     )}
 
+                    {/* Avisos del análisis (p. ej. referencia de ML incompleta) */}
+                    {auditResult.avisos && auditResult.avisos.length > 0 && (
+                      <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-4 space-y-1">
+                        {auditResult.avisos.map((a, i) => (<p key={i} className="text-sm text-yellow-800">⚠ {a}</p>))}
+                      </div>
+                    )}
+
                     {/* Comparación contra dashboard de Mercado Libre */}
-                    {auditResult.referenciaML && (() => {
+                    {auditResult.referenciaML && !auditResult.referenciaML.incompleta && auditResult.referenciaML.ventasBrutas > 0 && (() => {
                       const ref = auditResult.referenciaML!;
                       const diferencia = auditResult.result!.ventas_brutas - ref.ventasBrutas;
                       const diferenciaPct = ref.ventasBrutas > 0 ? (diferencia / ref.ventasBrutas) * 100 : 0;
