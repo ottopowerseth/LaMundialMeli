@@ -6,6 +6,7 @@ import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { logError } from "@/lib/log";
 import { withMlRetry } from "@/lib/http-retry";
 import { calcularReferenciaVentas, ventasBrutasParaAuditoria, type ReferenciaVentas } from "@/lib/audit-referencia";
+import { evaluarTasaEfectiva, fuenteVentasBrutas, HEADER_FUENTE } from "@/lib/audit-guardado";
 
 // La referencia de ML recorre ~30 ventanas de un día (decenas de llamadas): hay que dar margen de tiempo a la función.
 export const maxDuration = 60;
@@ -119,6 +120,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, mes, result, referenciaML, avisos, mesesML, mesesMP });
     }
 
+    // Una tasa efectiva mayor al 100 % es imposible (comisiones > ventas): no se guarda, con cualquier fuente de ventas_brutas
+    // (también en el camino sin referencia de ML). Fuera del rango habitual solo se avisa.
+    const evaluacion = evaluarTasaEfectiva(result.total_comisiones, result.ventas_brutas);
+    if (evaluacion.rechazo) {
+      console.warn(`[audit/analyze] ${mes}: análisis rechazado, tasa efectiva fuera de lo posible (no se guardó nada)`);
+      return NextResponse.json({ ok: false, error: evaluacion.rechazo, tasaRechazada: true, mes, avisos }, { status: 422 });
+    }
+    if (evaluacion.aviso) avisos.push(evaluacion.aviso);
+    const fuente = fuenteVentasBrutas(referenciaML);
+
     const headers = [
       "Mes", "Ventas Brutas", "Ventas Netas", "Comisiones ML", "Comisiones MP",
       "Comisiones MP (PX, no verificado)", "Total Comisiones", "Notas Crédito ML",
@@ -132,6 +143,8 @@ export async function POST(request: Request) {
       // /api/rentabilidad/analyze, no desde este endpoint — acá solo se
       // reserva la columna en el header para que quede vacía por defecto.
       "Almacenamiento_Full_Rentabilidad",
+      // Columna R: de dónde salió ventas_brutas (referencia ML / referencia incompleta / archivo ML (sin referencia)).
+      HEADER_FUENTE,
     ];
 
     const fila = [
@@ -166,9 +179,14 @@ export async function POST(request: Request) {
     if (filaExistente >= 0) {
       const numeroFila = filaExistente + 1; // 1-indexed para el rango de Sheets
       await writeSheet(`Auditoría!A${numeroFila}:P${numeroFila}`, [fila]);
+      // La fuente va aparte (R): la columna Q la escribe Rentabilidad y acá no se debe pisar.
+      await writeSheet(`Auditoría!R${numeroFila}:R${numeroFila}`, [[fuente]]);
     } else {
-      await appendSheet("Auditoría!A1", [fila]);
+      await appendSheet("Auditoría!A1", [[...fila, "", fuente]]); // "" = columna Q (Almacenamiento), que llena Rentabilidad
     }
+    // El encabezado de la hoja se escribió con el esquema de cuando se creó (11 columnas): se agrega el de R si falta.
+    const encabezadoR = await readSheet("Auditoría!R1:R1");
+    if (!encabezadoR.length || !encabezadoR[0]?.length) await writeSheet("Auditoría!R1", [[HEADER_FUENTE]]);
 
     return NextResponse.json({ ok: true, mes, result, referenciaML, avisos, mesesML, mesesMP });
   } catch (error) {
