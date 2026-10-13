@@ -1574,7 +1574,7 @@ export default function Home() {
                             <td className="py-2.5 pr-4 text-right text-green-600">${Math.round(row.recuperable).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 text-right">
                               <button
-                                onClick={(e) => { e.stopPropagation(); handleDeleteRow(row.rowIndex); }}
+                                onClick={(e) => { e.stopPropagation(); if (window.confirm(`¿Eliminar ${row.mes} del historial?\n\nSe borra la fila de la hoja Auditoría y no se puede deshacer.`)) handleDeleteRow(row.rowIndex); }}
                                 disabled={deletingRowIdx === row.rowIndex}
                                 className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 disabled:opacity-30 transition-opacity text-lg leading-none"
                                 title="Eliminar">
