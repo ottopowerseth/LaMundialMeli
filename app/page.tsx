@@ -9,6 +9,7 @@ import { ListaRankingMovil, ListaVisitasMovil, TarjetasCampanas, TarjetasProduct
 import { TarjetasRentabilidad } from "./RentabilidadMovil";
 import { OrdenarComparadorMovil, TarjetasComparador } from "./ComparadorMovil";
 import { TarjetasErrores, TarjetasHistorial } from "./AuditoriaMovil";
+import { leerNumeroHoja } from "@/lib/numero-hoja";
 import ReclamosPorTipo from "./ReclamosPorTipo";
 import { abortoSinBorrar, errorPublicaciones, guardarUltimoSyncPublicaciones, leerUltimoSyncPublicaciones } from "@/lib/sync-estado";
 
@@ -458,8 +459,8 @@ export default function Home() {
           orden: r[0] ?? "",
           fecha: r[1] ?? "",
           titulo: r[2] ?? "",
-          cantidad: Number(r[4]) || 0,
-          total: Number(r[6]) || 0,
+          cantidad: leerNumeroHoja(r[4]) || 0,
+          total: leerNumeroHoja(r[6]) || 0,
           comprador: r[7] ?? "",
         }));
       setVentasSemana(ventas);
@@ -491,16 +492,16 @@ export default function Home() {
           const esquemaViejo = r.length <= 14;
           return {
             mes: r[0] ?? "",
-            ventas_brutas: Number(r[1]) || 0,
-            ventas_netas: Number(r[2]) || 0,
-            comisiones_ml: Number(r[3]) || 0,
-            comisiones_mp: Number(r[4]) || 0,
-            comisiones_mp_px: esquemaViejo ? 0 : Number(r[5]) || 0,
-            total_comisiones: Number(r[esquemaViejo ? 5 : 6]) || 0,
-            notas_credito_ml: esquemaViejo ? 0 : Number(r[7]) || 0,
-            recuperable: Number(r[esquemaViejo ? 6 : 8]) || 0,
-            tasa_efectiva: Number(r[esquemaViejo ? 8 : 10]) || 0,
-            errores: Number(r[esquemaViejo ? 11 : 13]) || 0,
+            ventas_brutas: leerNumeroHoja(r[1]) || 0,
+            ventas_netas: leerNumeroHoja(r[2]) || 0,
+            comisiones_ml: leerNumeroHoja(r[3]) || 0,
+            comisiones_mp: leerNumeroHoja(r[4]) || 0,
+            comisiones_mp_px: esquemaViejo ? 0 : leerNumeroHoja(r[5]) || 0,
+            total_comisiones: leerNumeroHoja(r[esquemaViejo ? 5 : 6]) || 0,
+            notas_credito_ml: esquemaViejo ? 0 : leerNumeroHoja(r[7]) || 0,
+            recuperable: leerNumeroHoja(r[esquemaViejo ? 6 : 8]) || 0,
+            tasa_efectiva: leerNumeroHoja(r[esquemaViejo ? 8 : 10]) || 0,
+            errores: leerNumeroHoja(r[esquemaViejo ? 11 : 13]) || 0,
             resumen: r[esquemaViejo ? 12 : 14] ?? "",
             analizado: r[esquemaViejo ? 13 : 15] ?? "",
             rowIndex: i + 1, // +1 porque fila 0 es el header en el Sheet
@@ -524,13 +525,13 @@ export default function Home() {
           idOrden: (r[0] ?? "").replace(/^'/, ""),
           fecha: r[1] ?? "",
           producto: r[3] ?? "",
-          precioVenta: Number(r[4]) || 0,
-          cogs: r[5] === "" || r[5] == null ? null : Number(r[5]),
-          comision: Number(r[6]) || 0,
-          envio: Number(r[7]) || 0,
-          perdida: Number(r[8]) || 0,
-          margenNeto: r[9] === "" || r[9] == null ? null : Number(r[9]),
-          margenPct: r[10] === "" || r[10] == null ? null : Number(r[10]),
+          precioVenta: leerNumeroHoja(r[4]) || 0,
+          cogs: r[5] === "" || r[5] == null ? null : leerNumeroHoja(r[5]),
+          comision: leerNumeroHoja(r[6]) || 0,
+          envio: leerNumeroHoja(r[7]) || 0,
+          perdida: leerNumeroHoja(r[8]) || 0,
+          margenNeto: r[9] === "" || r[9] == null ? null : leerNumeroHoja(r[9]),
+          margenPct: r[10] === "" || r[10] == null ? null : leerNumeroHoja(r[10]),
           multiItem: r[11] === "Sí",
         }));
       setRentabilidadRows(rows);
