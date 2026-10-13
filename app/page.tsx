@@ -8,6 +8,7 @@ import Tablero from "./Tablero";
 import { ListaRankingMovil, ListaVisitasMovil, TarjetasCampanas, TarjetasProductos } from "./MetricasMovil";
 import { TarjetasRentabilidad } from "./RentabilidadMovil";
 import { OrdenarComparadorMovil, TarjetasComparador } from "./ComparadorMovil";
+import { TarjetasErrores, TarjetasHistorial } from "./AuditoriaMovil";
 import ReclamosPorTipo from "./ReclamosPorTipo";
 import { abortoSinBorrar, errorPublicaciones, guardarUltimoSyncPublicaciones, leerUltimoSyncPublicaciones } from "@/lib/sync-estado";
 
@@ -1285,7 +1286,7 @@ export default function Home() {
                         </div>
                         {file && (
                           <button onClick={e => { e.stopPropagation(); setAuditFiles(prev => ({ ...prev, [zone.key]: null })); }}
-                            className="ml-auto text-gray-400 hover:text-red-500 shrink-0 text-lg leading-none">×</button>
+                            className="ml-auto text-gray-400 hover:text-red-500 shrink-0 text-lg leading-none max-md:min-w-[44px] max-md:min-h-[44px] max-md:-my-3 max-md:-mr-3">×</button>
                         )}
                       </div>
                     </div>
@@ -1430,7 +1431,8 @@ export default function Home() {
                             );
                           })}
                         </div>
-                        <div className="overflow-x-auto rounded-xl border border-gray-200">
+                        <TarjetasErrores errores={auditResult.result.errores} />
+                        <div className="hidden md:block overflow-x-auto rounded-xl border border-gray-200">
                           <table className="w-full text-xs">
                             <thead>
                               <tr className="bg-gray-50 border-b border-gray-200 text-left text-gray-500 uppercase tracking-wide">
@@ -1518,7 +1520,8 @@ export default function Home() {
             {historial.length > 0 && (
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-3">
                 <h3 className="font-bold text-gray-900 text-lg">Historial por mes</h3>
-                <div className="overflow-x-auto">
+                <TarjetasHistorial historial={historial} />
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase tracking-wide">
