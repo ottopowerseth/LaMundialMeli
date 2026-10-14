@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSheet } from "@/lib/sheets";
 import { logError } from "@/lib/log";
+import { unidadesPorItem } from "@/lib/forecast-demanda";
 
 // Tope de filas que se leen de Publicaciones y de Ventas (antes 2.000 y 5.000).
 const TOPE_FILAS_FORECAST = 20000;
@@ -19,17 +20,6 @@ type ForecastRow = {
   prioridad: Prioridad;
   estadoML: string;
 };
-
-function parseFechaCL(s: string): Date | null {
-  if (!s) return null;
-  const parts = s.split(/[-\/]/);
-  if (parts.length < 3) return null;
-  const d = Number(parts[0]);
-  const m = Number(parts[1]) - 1;
-  const y = Number(parts[2]);
-  if (Number.isNaN(d) || Number.isNaN(m) || Number.isNaN(y)) return null;
-  return new Date(y, m, d);
-}
 
 function formatFechaCL(d: Date): string {
   return d.toLocaleDateString("es-CL");
@@ -55,22 +45,8 @@ export async function GET(req: NextRequest) {
         estadoML: r[10] ?? "",
       }));
 
-    // Match por ID Item (columna J), no por título: el título en Ventas es el
-    // de la variación específica vendida, no el del producto padre en
-    // Publicaciones, así que matchear por texto genera falsos negativos.
-    // Filas sin ID Item (sync anterior al agregado de esta columna) se
-    // ignoran sin intentar un fallback por título — se resuelven solas en
-    // el próximo sync, que reescribe toda la hoja Ventas desde cero.
-    const hace30d = new Date(Date.now() - 30 * 86400000);
-    const ventasPorId = new Map<string, number>();
-    for (const r of ventaRows) {
-      const fecha = parseFechaCL(r[1] ?? "");
-      if (!fecha || fecha < hace30d) continue;
-      const idItem = r[9] ?? "";
-      const cantidad = Number(r[4]) || 0;
-      if (!idItem || cantidad <= 0) continue;
-      ventasPorId.set(idItem, (ventasPorId.get(idItem) ?? 0) + cantidad);
-    }
+    // Demanda de los últimos 30 días por ID Item, sin órdenes canceladas (lib/forecast-demanda.ts).
+    const ventasPorId = unidadesPorItem(ventaRows, new Date(Date.now() - 30 * 86400000));
 
     const hoy = new Date();
     const rows: ForecastRow[] = publicaciones.map((p) => {
