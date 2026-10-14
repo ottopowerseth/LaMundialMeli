@@ -4,6 +4,7 @@ import { readSheet, batchWriteSheet } from "@/lib/sheets";
 import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { withMlRetry } from "@/lib/http-retry";
 import { logError } from "@/lib/log";
+import { discrepanciasDeProductos } from "@/lib/guardas-filas";
 
 export async function POST() {
   try {
@@ -43,17 +44,29 @@ export async function POST() {
       }
     });
 
-    // Marcar como ELIMINADA en columna Alerta (P) — una sola llamada batch
+    // Marcar como ELIMINADA en columna Alerta (P) — una sola llamada batch. Anti-carrera: ml-sync puede haber reescrito Publicaciones
+    // desde la lectura de arriba; solo se marcan las filas que SIGUEN conteniendo ese ID (patrón de lib/costo-auto.ts).
+    let marcadas = eliminados;
+    let omitidas = 0;
     if (eliminados.length > 0) {
-      await batchWriteSheet(
-        eliminados.map(({ fila }) => ({
-          range: `Publicaciones!P${fila}`,
-          values: [["ELIMINADA"]],
-        }))
-      );
+      const idsActuales = await readSheet(`Publicaciones!A2:A${Math.max(...eliminados.map((e) => e.fila)) + 1}`);
+      const malas = new Set(discrepanciasDeProductos(idsActuales, eliminados).map((m) => m.fila));
+      marcadas = eliminados.filter((e) => !malas.has(e.fila));
+      omitidas = eliminados.length - marcadas.length;
+      if (marcadas.length > 0) {
+        await batchWriteSheet(
+          marcadas.map(({ fila }) => ({
+            range: `Publicaciones!P${fila}`,
+            values: [["ELIMINADA"]],
+          }))
+        );
+      }
     }
 
-    return NextResponse.json({ ok: true, eliminados: eliminados.length, productos: eliminados });
+    return NextResponse.json({
+      ok: true, eliminados: eliminados.length, productos: eliminados,
+      ...(omitidas > 0 ? { aviso: `${omitidas} fila(s) no se marcaron porque la hoja cambió durante la detección (¿hay un sync en curso?). Vuelve a detectar.` } : {}),
+    });
   } catch (error) {
     logError("detect-deleted", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { logError } from "@/lib/log";
+import { readSheet } from "@/lib/sheets";
+import { discrepanciasDeProductos, mensajeDiscrepancias } from "@/lib/guardas-filas";
 
 function getSheetsClient() {
   const auth = new google.auth.GoogleAuth({
@@ -16,17 +18,31 @@ function getSheetsClient() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { filas } = body;
+    // Cada fila viaja con el ID del producto que se listó en esa fila: { productos: [{ fila, id }] }.
+    const { productos } = body as { productos?: { fila?: unknown; id?: unknown }[] };
 
     // Validación estricta
-    if (!Array.isArray(filas) || filas.length === 0) {
+    if (!Array.isArray(productos) && Array.isArray((body as { filas?: unknown }).filas)) {
+      return NextResponse.json({ ok: false, error: "Formato antiguo (solo números de fila): ahora cada fila debe viajar con su ID, { productos: [{ fila, id }] }. Productos inválidos; no se borró nada. Recarga la página." }, { status: 400 });
+    }
+    if (!Array.isArray(productos) || productos.length === 0) {
       return NextResponse.json({ ok: true, borrados: 0 });
     }
-    if (filas.length > 100) {
+    if (productos.length > 100) {
       return NextResponse.json({ error: "Máximo 100 filas por operación" }, { status: 400 });
     }
-    if (!filas.every((f) => Number.isInteger(f) && f >= 2)) {
-      return NextResponse.json({ error: "Filas inválidas (deben ser enteros ≥ 2)" }, { status: 400 });
+    if (!productos.every((p) => Number.isInteger(p?.fila) && (p.fila as number) >= 2 && typeof p.id === "string" && p.id.trim() !== "")) {
+      return NextResponse.json({ error: "Productos inválidos: cada uno necesita { fila (entero ≥ 2), id }. No se borró nada." }, { status: 400 });
+    }
+    const items = productos.map((p) => ({ fila: p.fila as number, id: String(p.id) }));
+    const filas = items.map((p) => p.fila);
+
+    // Anti-carrera: ml-sync reescribe Publicaciones completa y puede reordenar las filas. Si alguna fila ya no contiene el ID
+    // esperado, no se borra NADA (ni siquiera las que sí coinciden) y se avisa (patrón de lib/costo-auto.ts).
+    const idsActuales = await readSheet(`Publicaciones!A2:A${Math.max(...filas) + 1}`);
+    const malos = discrepanciasDeProductos(idsActuales, items);
+    if (malos.length > 0) {
+      return NextResponse.json({ ok: false, error: mensajeDiscrepancias(malos, "borró"), discrepancias: malos }, { status: 409 });
     }
 
     const sheets = getSheetsClient();

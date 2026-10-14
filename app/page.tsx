@@ -46,6 +46,7 @@ type DeletedResult = {
   ok: boolean;
   eliminados?: number;
   productos?: ProductoEliminado[];
+  aviso?: string;
   error?: string;
 } | null;
 
@@ -785,11 +786,18 @@ export default function Home() {
   async function borrarDelSheet(filas: number[]) {
     setBorrandoFilas(filas);
     try {
-      await fetch("/api/delete-from-sheet", {
+      // Cada fila viaja con el ID del producto listado en ella: el servidor no borra si la hoja cambió.
+      const productos = filas.map(fila => ({ fila, id: deletedResult?.productos?.find(p => p.fila === fila)?.id ?? "" }));
+      const res = await fetch("/api/delete-from-sheet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filas }),
+        body: JSON.stringify({ productos }),
       });
+      const json = await res.json().catch(() => ({ ok: false, error: "Respuesta inválida del servidor" }));
+      if (!res.ok || json.ok === false) {
+        window.alert(json.error ?? "No se pudo borrar. No se borró nada.");
+        return;
+      }
       setDeletedResult(prev =>
         prev ? { ...prev, productos: prev.productos?.filter(p => !filas.includes(p.fila)) } : prev
       );
@@ -803,14 +811,17 @@ export default function Home() {
     setSeleccionados(prev => prev.includes(fila) ? prev.filter(f => f !== fila) : [...prev, fila]);
   }
 
-  async function handleDeleteRow(rowIndex: number) {
+  async function handleDeleteRow(rowIndex: number, mes: string, analizado: string) {
     setDeletingRowIdx(rowIndex);
     try {
-      await fetch("/api/audit/delete-row", {
+      // Se manda también el mes y la fecha de análisis que muestra la fila: el servidor no borra si la hoja ya no tiene eso.
+      const res = await fetch("/api/audit/delete-row", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rowIndex }),
+        body: JSON.stringify({ rowIndex, mes, analizado }),
       });
+      const json = await res.json().catch(() => ({ ok: false, error: "Respuesta inválida del servidor" }));
+      if (!res.ok || json.ok === false) window.alert(json.error ?? "No se pudo borrar la fila. No se borró nada.");
       await loadHistorial();
     } finally {
       setDeletingRowIdx(null);
@@ -1123,6 +1134,7 @@ export default function Home() {
             {deletedResult && (
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
                 <h2 className="font-bold text-gray-900 text-lg">Productos eliminados de ML</h2>
+                {deletedResult.aviso && <p className="text-sm text-amber-700">⚠ {deletedResult.aviso}</p>}
                 {!deletedResult.ok ? (
                   <p className="text-red-600 text-sm">✗ Error: {deletedResult.error}</p>
                 ) : productosRestantes.length === 0 ? (
@@ -1601,7 +1613,7 @@ export default function Home() {
                             <td className="py-2.5 pr-4 text-right text-green-600">${Math.round(row.recuperable).toLocaleString("es-CL")}</td>
                             <td className="py-2.5 text-right">
                               <button
-                                onClick={(e) => { e.stopPropagation(); if (window.confirm(`¿Eliminar ${row.mes}${row.analizado ? ` (analizado ${row.analizado})` : ""} del historial?\n\nSe borra la fila ${row.rowIndex + 1} de la hoja Auditoría y no se puede deshacer.`)) handleDeleteRow(row.rowIndex); }}
+                                onClick={(e) => { e.stopPropagation(); if (window.confirm(`¿Eliminar ${row.mes}${row.analizado ? ` (analizado ${row.analizado})` : ""} del historial?\n\nSe borra la fila ${row.rowIndex + 1} de la hoja Auditoría y no se puede deshacer.`)) handleDeleteRow(row.rowIndex, row.mes, row.analizado); }}
                                 disabled={deletingRowIdx === row.rowIndex}
                                 className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 disabled:opacity-30 transition-opacity text-lg leading-none"
                                 title="Eliminar">
