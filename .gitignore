@@ -19,3 +19,9 @@ next-env.d.ts
 
 # grabaciones del arnes (respuestas reales de ML y Sheets, con datos de compradores): NO versionar
 /scripts/harness/grabaciones/
+
+# planes, registros y diffs de las herramientas de un solo uso (scripts/una-vez): traen datos reales de las hojas, NO versionar
+*_plan*.json
+*.registro.json
+*_ensayo*.csv
+*_diff*.csv
