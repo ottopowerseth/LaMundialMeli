@@ -9,6 +9,7 @@ import { agregarSinDuplicar, resolverEnviosPendientes, seleccionarEnviosPendient
 import { cargarHistorialVentas } from "@/lib/ventas-historial";
 import { logError } from "@/lib/log";
 import { textoExternoSeguro } from "@/lib/texto-seguro";
+import { tipoLogisticoItem } from "@/lib/logistica";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
@@ -179,12 +180,14 @@ async function sincronizar(inicioRuta: number): Promise<NextResponse> {
     // unidad del código con que cruza en Defontana — solo se sube a mano
     // cuando el título indica pack Y el artículo de Defontana con que
     // cruzó NO lo indica (ver docs, "Unidades por publicación").
+    // T:Tipo logístico — también al final: shipping.logistic_type ACTUAL de la publicación (fulfillment = Full), de /items, sin
+    // llamadas extra. Lo lee Forecast para separar Full de Normal. No es manual: se reescribe en cada sync.
     const headers = [
       "ID", "Categoría", "Título", "Stock", "Vendidos",
       "Costo", "Precio de Venta", "Comisión $", "Envío", "Comisión %",
       "Estado ML", "Tipo Publicación",
       "Ganancia", "Margen %", "Días de Stock", "Alerta", "URL", "Actualizado",
-      "Unidades",
+      "Unidades", "Tipo logístico",
     ];
 
     // Leer hoja anterior ANTES de reemplazar para preservar datos manuales y detectar cambios de stock. Sin tope de filas
@@ -255,6 +258,7 @@ async function sincronizar(inicioRuta: number): Promise<NextResponse> {
         item.permalink,                                       // Q: URL
         new Date().toLocaleDateString("es-CL"),               // R: Actualizado
         manual.unidades || "1",                               // S: Unidades (se preserva entre syncs, default 1)
+        tipoLogisticoItem(item),                              // T: Tipo logístico (shipping.logistic_type actual; enumeración de ML, no texto libre)
       ];
     });
 

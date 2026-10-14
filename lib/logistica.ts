@@ -80,3 +80,13 @@ export function coberturaLogistica(lineas: LineaVenta[], fullActual: Map<string,
     respaldoPorTipo: { full: Math.round(rFull), noFull: Math.round(rNoFull) },
   };
 }
+
+// Tipo logístico ACTUAL de una publicación: `shipping.logistic_type` de /items (ej. "fulfillment", "xd_drop_off", "cross_docking",
+// "self_service"). ml-sync lo guarda en Publicaciones!T; "" = ML no lo informó. Una publicación tiene UN solo tipo a la vez (el de sus
+// ventas futuras): no es el de una orden vieja, que pudo ser de otro modo si la publicación migró.
+export function tipoLogisticoItem(item: { shipping?: unknown } | null | undefined): string {
+  const s = item?.shipping;
+  if (!s || typeof s !== "object") return "";
+  const v = (s as { logistic_type?: unknown }).logistic_type;
+  return typeof v === "string" ? v.trim() : "";
+}

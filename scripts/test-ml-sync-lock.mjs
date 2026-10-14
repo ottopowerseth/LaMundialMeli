@@ -17,7 +17,7 @@ const compilar = (origen, destino) => {
   fs.writeFileSync(path.join(out, destino), ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
 };
 for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/http-retry.ts", "http-retry.js"], ["lib/rentabilidad.ts", "rentabilidad.js"], ["lib/backfill-shipping.ts", "backfill-shipping.js"], ["lib/ventas-historial.ts", "ventas-historial.js"],
-  ["lib/guardas-filas.ts", "guardas-filas.js"], ["lib/lock-sheets.ts", "lock-sheets.js"], ["lib/texto-seguro.ts", "texto-seguro.js"], ["app/api/ml-sync/route.ts", "ml-sync.js"]]) compilar(o, d);
+  ["lib/guardas-filas.ts", "guardas-filas.js"], ["lib/lock-sheets.ts", "lock-sheets.js"], ["lib/texto-seguro.ts", "texto-seguro.js"], ["lib/logistica.ts", "logistica.js"], ["app/api/ml-sync/route.ts", "ml-sync.js"]]) compilar(o, d);
 
 // ---- simulados: ml-token (cuenta las veces que se pide el token), axios (no debería llamarse) y Sheets en memoria con la hoja Locks ----
 fs.writeFileSync(path.join(out, "ml-token.js"), `exports.getValidAccessToken = async () => { globalThis.__tokenPedido++; if (globalThis.__demoraToken) await new Promise((r) => setTimeout(r, globalThis.__demoraToken)); throw new Error("token no disponible (simulado)"); }; exports.instalarReintento401 = () => {};`);
