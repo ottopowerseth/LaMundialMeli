@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
-import { ensureSheets, clearSheet, writeSheet } from "@/lib/sheets";
+import { ensureSheets, reemplazarHoja } from "@/lib/sheets";
 import { HEADERS_LISTA_DEFONTANA, FilaDefontana } from "@/lib/defontana";
 import { logError } from "@/lib/log";
 
@@ -45,14 +45,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "La hoja PRECIOS no tiene filas con cod" }, { status: 400 });
     }
 
+    // El archivo ya se leyó y validó arriba (hoja PRECIOS, al menos una fila con cod). Escribir primero y limpiar el sobrante
+    // después (S-08): si algo falla, la lista anterior sigue ahí.
     await ensureSheets(["Lista Defontana"]);
-    await clearSheet("Lista Defontana");
-
     const cargado = new Date().toLocaleString("es-CL");
     const rows = filas.map((f) => [f.proveedor, f.marca, f.familia, f.cod, f.barras, f.articulo, String(f.mayor), cargado]);
-    await writeSheet("Lista Defontana!A1", [HEADERS_LISTA_DEFONTANA, ...rows]);
+    const reemplazo = await reemplazarHoja("Lista Defontana", [HEADERS_LISTA_DEFONTANA, ...rows]);
 
-    return NextResponse.json({ ok: true, filasImportadas: filas.length, cargado });
+    return NextResponse.json({
+      ok: true, filasImportadas: filas.length, cargado,
+      ...(reemplazo.sobranteLimpio ? {} : { aviso: `La lista nueva se escribió pero no se pudieron limpiar las filas sobrantes (${reemplazo.errorSobrante}). Vuelve a importar para limpiarlas.` }),
+    });
   } catch (error) {
     logError("lista-defontana/importar", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });

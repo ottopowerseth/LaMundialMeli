@@ -100,6 +100,28 @@ export type FilaEquivalencia = {
 
 export const HEADERS_EQUIVALENCIAS = ["Publicacion ID", "Componente Cod", "Cantidad"];
 
+// Valida TODAS las equivalencias recibidas antes de tocar la hoja (S-06/S-08): un elemento mal formado ya no puede dejar la hoja
+// a medio reemplazar. Cada una necesita publicacionId y componenteCod (texto no vacío) y cantidad (número finito > 0): los lectores
+// usan `Number(cantidad) || 1`, así que una cantidad inválida se leería en silencio como 1.
+export function validarEquivalencias(entrada: unknown): { ok: true; filas: FilaEquivalencia[] } | { ok: false; error: string } {
+  if (!Array.isArray(entrada) || entrada.length === 0) return { ok: false, error: "Falta el array de equivalencias" };
+  const filas: FilaEquivalencia[] = [];
+  for (let i = 0; i < entrada.length; i++) {
+    const e = entrada[i] as Record<string, unknown> | null;
+    const donde = `Equivalencia ${i + 1} de ${entrada.length}`;
+    if (!e || typeof e !== "object" || Array.isArray(e)) return { ok: false, error: `${donde}: no es un objeto. No se escribió nada.` };
+    const publicacionId = typeof e.publicacionId === "string" ? e.publicacionId.trim() : "";
+    const componenteCod = typeof e.componenteCod === "string" ? e.componenteCod.trim() : "";
+    if (!publicacionId) return { ok: false, error: `${donde}: falta publicacionId (texto no vacío). No se escribió nada.` };
+    if (!componenteCod) return { ok: false, error: `${donde}: falta componenteCod (texto no vacío). No se escribió nada.` };
+    if (typeof e.cantidad !== "number" || !Number.isFinite(e.cantidad) || e.cantidad <= 0) {
+      return { ok: false, error: `${donde}: cantidad inválida (debe ser un número mayor que 0). No se escribió nada.` };
+    }
+    filas.push({ publicacionId, componenteCod, cantidad: e.cantidad });
+  }
+  return { ok: true, filas };
+}
+
 // Precio de referencia de una publicación con equivalencia manual: suma del
 // MAYOR de cada componente × su cantidad. Si algún componente no está en la
 // lista Defontana actual (código descontinuado, etc.), esa publicación
