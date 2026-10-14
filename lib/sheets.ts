@@ -176,7 +176,31 @@ export async function batchWriteSheet(updates: { range: string; values: unknown[
   );
 }
 
-export async function appendSheet(range: string, values: unknown[][]) {
+// Borra filas enteras de una pestaña (números 1-based de la hoja), de abajo hacia arriba y sin repetidas, en UNA llamada.
+// Las filas de abajo se corren hacia arriba: quien llama debe haber verificado su contenido justo antes (lib/guardas-filas.ts).
+export async function borrarFilasHoja(sheetName: string, filas: number[]) {
+  const unicas = [...new Set(filas)].sort((a, b) => b - a);
+  if (unicas.length === 0) return;
+  if (!unicas.every((f) => Number.isInteger(f) && f >= 2)) throw new Error("borrarFilasHoja: las filas deben ser enteros >= 2 (la 1 es el encabezado)");
+  const auth = getAuthClient();
+  const sheets = google.sheets({ version: "v4", auth });
+  const { data } = await sheets.spreadsheets.get({ spreadsheetId: process.env.GOOGLE_SHEET_ID });
+  const sheetId = data.sheets?.find((s) => s.properties?.title === sheetName)?.properties?.sheetId;
+  if (sheetId === undefined || sheetId === null) throw new Error(`Pestaña ${sheetName} no encontrada`);
+  await withRetry(() =>
+    sheets.spreadsheets.batchUpdate({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      requestBody: {
+        requests: unicas.map((fila) => ({ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: fila - 1, endIndex: fila } } })),
+      },
+    })
+  );
+}
+
+// `insertarFilas`: con appends SIMULTÁNEOS a la misma hoja, el modo por defecto (OVERWRITE) puede hacer que dos llamadas escriban en
+// la misma fila y una pise a la otra (medido contra Sheets real el 2026-10-14: de 13 tickets quedaron 7). INSERT_ROWS inserta una fila
+// nueva por cada llamada. Lo usa lib/lock-sheets.ts; el resto de los llamadores conserva el comportamiento anterior.
+export async function appendSheet(range: string, values: unknown[][], opciones?: { insertarFilas?: boolean }) {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
 
@@ -185,6 +209,7 @@ export async function appendSheet(range: string, values: unknown[][]) {
       spreadsheetId: process.env.GOOGLE_SHEET_ID,
       range,
       valueInputOption: "USER_ENTERED",
+      ...(opciones?.insertarFilas ? { insertDataOption: "INSERT_ROWS" } : {}),
       requestBody: { values },
     })
   );
