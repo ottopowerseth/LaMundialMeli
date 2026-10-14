@@ -2,9 +2,9 @@
 
 import { Fragment, CSSProperties, useEffect, useState, useRef } from "react";
 import Image from "next/image";
-import * as XLSX from "xlsx";
 import RevisionPublicaciones from "./RevisionPublicaciones";
 import Tablero from "./Tablero";
+import ForecastPorModo from "./ForecastPorModo";
 import { ListaRankingMovil, ListaVisitasMovil, TarjetasCampanas, TarjetasProductos } from "./MetricasMovil";
 import { TarjetasRentabilidad } from "./RentabilidadMovil";
 import { OrdenarComparadorMovil, TarjetasComparador } from "./ComparadorMovil";
@@ -47,28 +47,6 @@ type DeletedResult = {
   eliminados?: number;
   productos?: ProductoEliminado[];
   aviso?: string;
-  error?: string;
-} | null;
-
-type Prioridad = "SIN_STOCK" | "URGENTE" | "PRONTO" | "OK" | "SIN_DATOS";
-type ForecastRow = {
-  id: string;
-  titulo: string;
-  stockActual: number;
-  ventas30d: number;
-  velocidadDiaria: number;
-  diasRestantes: number | null;
-  fechaQuiebre: string | null;
-  cantidadSugerida: number;
-  prioridad: Prioridad;
-  estadoML: string;
-};
-type ForecastApiResult = {
-  ok: boolean;
-  leadTimeDays?: number;
-  safetyDays?: number;
-  rows?: ForecastRow[];
-  avisoTope?: string;
   error?: string;
 } | null;
 
@@ -407,13 +385,6 @@ export default function Home() {
   const [deletingRowIdx, setDeletingRowIdx] = useState<number | null>(null);
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // --- Forecast state ---
-  const [leadTimeDays, setLeadTimeDays] = useState(15);
-  const [safetyDays, setSafetyDays] = useState(7);
-  const [loadingForecast, setLoadingForecast] = useState(false);
-  const [forecastResult, setForecastResult] = useState<ForecastApiResult>(null);
-  const [filtroPrioridad, setFiltroPrioridad] = useState<Prioridad | "TODOS">("TODOS");
-
   // --- Métricas state ---
   const [periodoMetrics, setPeriodoMetrics] = useState<Periodo>("mes");
   const [loadingMetrics, setLoadingMetrics] = useState(false);
@@ -546,20 +517,6 @@ export default function Home() {
     } catch { /* silencioso */ }
   }
 
-  async function loadForecast(customLeadTime?: number, customSafety?: number) {
-    setLoadingForecast(true);
-    try {
-      const lt = customLeadTime ?? leadTimeDays;
-      const sd = customSafety ?? safetyDays;
-      const res = await fetch(`/api/forecast?leadTimeDays=${lt}&safetyDays=${sd}`);
-      setForecastResult(await res.json());
-    } catch {
-      setForecastResult({ ok: false, error: "Error de red" });
-    } finally {
-      setLoadingForecast(false);
-    }
-  }
-
   async function loadMetrics(customPeriodo?: Periodo) {
     setLoadingMetrics(true);
     try {
@@ -573,56 +530,8 @@ export default function Home() {
     }
   }
 
-  function getFilasParaPedido(): ForecastRow[] {
-    if (!forecastResult?.ok || !forecastResult.rows) return [];
-    const prioridadesPedido: Prioridad[] = ["SIN_STOCK", "URGENTE", "PRONTO"];
-    return forecastResult.rows.filter(
-      r => prioridadesPedido.includes(r.prioridad) && r.cantidadSugerida > 0
-    );
-  }
-
-  function descargarListaPedido() {
-    const filas = getFilasParaPedido();
-    if (filas.length === 0) return;
-
-    const headers = [
-      "PRODUCTO", "STOCK ACTUAL", "VENTAS 30 DÍAS", "VELOCIDAD DIARIA",
-      "DÍAS RESTANTES", "FECHA ESTIMADA DE QUIEBRE", "CANTIDAD A PEDIR", "PRIORIDAD",
-    ];
-    const data = filas.map(r => [
-      r.titulo,
-      r.stockActual,
-      r.ventas30d,
-      r.velocidadDiaria,
-      r.diasRestantes ?? "",
-      r.fechaQuiebre ?? "",
-      r.cantidadSugerida,
-      r.prioridad,
-    ]);
-
-    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...data]);
-
-    // Ancho de columna ajustado al contenido más largo de cada columna (con piso/techo)
-    const MIN_WIDTH = 10;
-    const MAX_WIDTH = 45;
-    worksheet["!cols"] = headers.map((h, colIdx) => {
-      const maxLen = Math.max(
-        h.length,
-        ...data.map(row => String(row[colIdx] ?? "").length)
-      );
-      return { wch: Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, maxLen + 2)) };
-    });
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Pedido sugerido");
-
-    const fecha = new Date().toISOString().slice(0, 10);
-    XLSX.writeFile(workbook, `pedido-sugerido-${fecha}.xlsx`);
-  }
-
   useEffect(() => {
     if (activeTab === "auditoria") loadHistorial();
-    if (activeTab === "forecast") loadForecast();
     if (activeTab === "metricas") loadMetrics();
     if (activeTab === "rentabilidad") loadRentabilidad();
     if (activeTab === "comparador" && !comparadorResult) loadComparador(objetivoComparador);
@@ -1646,153 +1555,7 @@ export default function Home() {
         )}
 
         {/* === TAB: FORECAST === */}
-        {activeTab === "forecast" && (
-          <>
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-5">
-              <div>
-                <h2 className="font-bold text-gray-900 text-lg">Reposición sugerida</h2>
-                <p className="text-sm text-gray-500 mt-1">Calcula qué productos pedir según la velocidad de venta de los últimos 30 días.</p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Tiempo de reposición (días)</label>
-                  <input type="number" min={1} value={leadTimeDays}
-                    onChange={e => setLeadTimeDays(Number(e.target.value) || 0)}
-                    className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Margen de seguridad (días)</label>
-                  <input type="number" min={0} value={safetyDays}
-                    onChange={e => setSafetyDays(Number(e.target.value) || 0)}
-                    className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm" />
-                </div>
-                <button onClick={() => loadForecast()} disabled={loadingForecast}
-                  className="font-bold py-2.5 px-4 rounded-xl text-white disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{ backgroundColor: "#C41230" }}>
-                  {loadingForecast ? <><Spinner />Calculando...</> : "Recalcular"}
-                </button>
-              </div>
-            </div>
-
-            {forecastResult && !forecastResult.ok && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6">
-                <p className="text-red-600 text-sm">✗ Error: {forecastResult.error}</p>
-              </div>
-            )}
-
-            {forecastResult?.ok && forecastResult.rows && (
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 flex items-center justify-between">
-                {getFilasParaPedido().length > 0 ? (
-                  <>
-                    <p className="text-sm text-gray-500">
-                      {getFilasParaPedido().length} producto{getFilasParaPedido().length === 1 ? "" : "s"} con reposición pendiente
-                    </p>
-                    <button onClick={descargarListaPedido}
-                      className="font-bold py-2.5 px-4 rounded-xl text-white"
-                      style={{ backgroundColor: "#0F9D58" }}>
-                      Descargar lista de pedido
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <p className="text-sm text-gray-500">Nada que pedir por ahora</p>
-                    <button disabled
-                      className="font-bold py-2.5 px-4 rounded-xl text-white opacity-40 cursor-not-allowed"
-                      style={{ backgroundColor: "#0F9D58" }}>
-                      Descargar lista de pedido
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-
-            {forecastResult?.ok && forecastResult.avisoTope && (
-              <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800">⚠ {forecastResult.avisoTope}</div>
-            )}
-
-            {forecastResult?.ok && forecastResult.rows && (
-              <>
-                {/* Tarjetas resumen */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                  {([
-                    { key: "SIN_STOCK", label: "Sin stock", color: "#DC2626" },
-                    { key: "URGENTE", label: "Urgente", color: "#DC2626" },
-                    { key: "PRONTO", label: "Pronto", color: "#D97706" },
-                    { key: "OK", label: "OK", color: "#059669" },
-                  ] as const).map(({ key, label, color }) => (
-                    <div key={key} className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4">
-                      <p className="text-sm text-gray-500">{label}</p>
-                      <p className="text-2xl font-bold" style={{ color }}>
-                        {forecastResult.rows!.filter(r => r.prioridad === key).length}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Filtro + tabla */}
-                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 sm:p-6 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-gray-800">Detalle por producto</h3>
-                    <select value={filtroPrioridad} onChange={e => setFiltroPrioridad(e.target.value as Prioridad | "TODOS")}
-                      className="border border-gray-300 rounded-xl px-3 py-1.5 text-sm">
-                      <option value="TODOS">Todas las prioridades</option>
-                      <option value="SIN_STOCK">Sin stock</option>
-                      <option value="URGENTE">Urgente</option>
-                      <option value="PRONTO">Pronto</option>
-                      <option value="OK">OK</option>
-                      <option value="SIN_DATOS">Sin datos</option>
-                    </select>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-left text-gray-500 border-b border-gray-200">
-                          <th className="py-2 pr-3">Producto</th>
-                          <th className="py-2 pr-3">Stock</th>
-                          <th className="py-2 pr-3">Ventas 30d</th>
-                          <th className="py-2 pr-3">Vel. diaria</th>
-                          <th className="py-2 pr-3">Días rest.</th>
-                          <th className="py-2 pr-3">Quiebre est.</th>
-                          <th className="py-2 pr-3">Pedir</th>
-                          <th className="py-2 pr-3">Prioridad</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {forecastResult.rows!
-                          .filter(r => filtroPrioridad === "TODOS" || r.prioridad === filtroPrioridad)
-                          .map((r) => {
-                            const badge = {
-                              SIN_STOCK: "bg-red-100 text-red-700",
-                              URGENTE: "bg-red-100 text-red-700",
-                              PRONTO: "bg-amber-100 text-amber-700",
-                              OK: "bg-green-100 text-green-700",
-                              SIN_DATOS: "bg-gray-100 text-gray-500",
-                            }[r.prioridad];
-                            return (
-                              <tr key={r.id} className="border-b border-gray-100 last:border-0">
-                                <td className="py-2 pr-3 text-gray-800 max-w-xs truncate">{r.titulo}</td>
-                                <td className="py-2 pr-3 text-gray-700">{r.stockActual}</td>
-                                <td className="py-2 pr-3 text-gray-700">{r.ventas30d}</td>
-                                <td className="py-2 pr-3 text-gray-700">{r.velocidadDiaria}</td>
-                                <td className="py-2 pr-3 text-gray-700">{r.diasRestantes ?? "-"}</td>
-                                <td className="py-2 pr-3 text-gray-700">{r.fechaQuiebre ?? "-"}</td>
-                                <td className="py-2 pr-3 font-semibold text-gray-900">{r.cantidadSugerida || "-"}</td>
-                                <td className="py-2 pr-3">
-                                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badge}`}>{r.prioridad}</span>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        )}
+        <ForecastPorModo activo={activeTab === "forecast"} />
 
         {/* === TAB: MÉTRICAS === */}
         {activeTab === "metricas" && (
