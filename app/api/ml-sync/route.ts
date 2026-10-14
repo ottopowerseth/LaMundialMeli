@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { ensureSheets, reemplazarHoja, readSheet, appendSheet } from "@/lib/sheets";
+import { conLock } from "@/lib/lock-sheets";
 import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { getComisionPct, IVA } from "@/lib/rentabilidad";
@@ -11,6 +12,10 @@ import { logError } from "@/lib/log";
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
 
+// Presupuesto de tiempo del sync (corte por reintentos agotados), medido desde que EMPIEZA la ruta: incluye adquirir el lock (~2,5 s). Se reservan
+// ~1 s para liberarlo al final, así que son 44 s en vez de los 45 s de antes del lock (que se contaban desde después de ensureSheets + token).
+// El margen para escribir antes de maxDuration (60 s) queda igual o mayor que antes del lock.
+const PRESUPUESTO_SYNC_MS = 44000;
 // Tope de shipments NUEVOS (no vistos en ShippingCache) a resolver por sync, y
 // solo de los últimos DIAS_ENVIOS_NUEVOS días: lo más viejo lo cubre el
 // backfill del tab Sync (/api/backfill-shipping, ventanas de un día), así el
@@ -84,344 +89,363 @@ function getAlerta(item: Record<string, unknown>, stock: number | null) {
   return "OK";
 }
 
-export async function POST() {
+// Lo que ve el usuario cuando el lock de ml-sync no se obtuvo (el cliente muestra `error` tal cual). En ninguno de los dos casos se
+// consultó a ML ni se escribió en ninguna hoja.
+function mensajeLockSync(status: 409 | 503): string {
+  return status === 409
+    ? "Ya hay una sincronización en curso (otra pestaña o un reintento). No se hizo nada en este intento; espera a que termine e inténtalo de nuevo."
+    : "No se pudo proteger la sincronización (no se pudo verificar el bloqueo en la hoja Locks), así que no se sincronizó ni se escribió nada. Reintenta en un momento.";
+}
+
+// Un sync a la vez (S-08): Publicaciones y Ventas se reescriben completas, y dos syncs simultáneos se pisarían entre sí. El lock es
+// cooperativo y NO incluye a las demás rutas que escriben en Publicaciones (costo-auto, detect-deleted, delete-from-sheet): esas
+// verifican la fila antes de escribir (lib/guardas-filas.ts). Vence a los 90 s; maxDuration de esta ruta es 60 s.
+async function sincronizar(inicioRuta: number): Promise<NextResponse> {
   const erroresValidacion: string[] = [];
   const erroresSync: string[] = [];
 
+  await ensureSheets(["Publicaciones", "Ventas", "ShippingCache"]);
+
+  const token = await getValidAccessToken();
+  const mlClient = axios.create({
+    baseURL: "https://api.mercadolibre.com",
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 8000,
+  });
+  instalarReintento401(mlClient, token);
+  // El presupuesto cuenta desde inicioRuta: lo ya gastado (lock, ensureSheets, token) se descuenta de los 44 s.
+  const budget = createSyncBudget(2, Math.max(1000, PRESUPUESTO_SYNC_MS - (Date.now() - inicioRuta)));
+  const mlGet = <T = unknown>(url: string) =>
+    withMlRetry(() => mlClient.get<T>(url), { budget });
+
+  const { data: user } = await mlGet<{ id: string }>("/users/me");
+  const userId = user.id;
+
+  let items: Record<string, unknown>[] = [];
+  let publicacionesOk = false;
+  let productosNuevos: { id: string; titulo: string; precio: number; estado: string }[] = [];
+  let cambiosStock: { titulo: string; antes: number; despues: number; diferencia: number }[] = [];
+  let coberturaCosto: {
+    activasTotal: number;
+    activasConCosto: number;
+    activasSinCosto: number;
+    vendidosActivasConCosto: number;
+    vendidosActivasSinCosto: number;
+    topSinCosto: { id: string; titulo: string; vendidos: number }[];
+  } | null = null;
+
   try {
-    await ensureSheets(["Publicaciones", "Ventas", "ShippingCache"]);
-
-    const token = await getValidAccessToken();
-    const mlClient = axios.create({
-      baseURL: "https://api.mercadolibre.com",
-      headers: { Authorization: `Bearer ${token}` },
-      timeout: 8000,
-    });
-    instalarReintento401(mlClient, token);
-    const budget = createSyncBudget();
-    const mlGet = <T = unknown>(url: string) =>
-      withMlRetry(() => mlClient.get<T>(url), { budget });
-
-    const { data: user } = await mlGet<{ id: string }>("/users/me");
-    const userId = user.id;
-
-    let items: Record<string, unknown>[] = [];
-    let publicacionesOk = false;
-    let productosNuevos: { id: string; titulo: string; precio: number; estado: string }[] = [];
-    let cambiosStock: { titulo: string; antes: number; despues: number; diferencia: number }[] = [];
-    let coberturaCosto: {
-      activasTotal: number;
-      activasConCosto: number;
-      activasSinCosto: number;
-      vendidosActivasConCosto: number;
-      vendidosActivasSinCosto: number;
-      topSinCosto: { id: string; titulo: string; vendidos: number }[];
-    } | null = null;
-
-    try {
-      // Publicaciones — buscar en todos los estados para incluir productos nuevos
-      // "active" y "paused" son los que trae el endpoint sin filtro, pero
-      // productos recién creados pueden estar en "under_review" o "not_yet_active"
-      const allIds: string[] = [];
-      const idSet = new Set<string>();
-      const statusesToFetch = ["active", "paused", "under_review", "not_yet_active", "inactive"];
-      for (const status of statusesToFetch) {
-        let offset = 0;
-        while (true) {
-          const { data } = await mlGet<{ results: string[]; paging: { total: number } }>(
-            `/users/${userId}/items/search?status=${status}&limit=100&offset=${offset}`
-          );
-          for (const id of data.results) {
-            if (!idSet.has(id)) { idSet.add(id); allIds.push(id); }
-          }
-          if (data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
-          offset += 100;
+    // Publicaciones — buscar en todos los estados para incluir productos nuevos
+    // "active" y "paused" son los que trae el endpoint sin filtro, pero
+    // productos recién creados pueden estar en "under_review" o "not_yet_active"
+    const allIds: string[] = [];
+    const idSet = new Set<string>();
+    const statusesToFetch = ["active", "paused", "under_review", "not_yet_active", "inactive"];
+    for (const status of statusesToFetch) {
+      let offset = 0;
+      while (true) {
+        const { data } = await mlGet<{ results: string[]; paging: { total: number } }>(
+          `/users/${userId}/items/search?status=${status}&limit=100&offset=${offset}`
+        );
+        for (const id of data.results) {
+          if (!idSet.has(id)) { idSet.add(id); allIds.push(id); }
         }
+        if (data.results.length === 0 || offset + data.results.length >= data.paging.total) break;
+        offset += 100;
+      }
+    }
+
+    // Detalles en batches de 20
+    for (let i = 0; i < allIds.length; i += 20) {
+      const chunk = allIds.slice(i, i + 20);
+      const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
+        `/items?ids=${chunk.join(",")}`
+      );
+      items.push(
+        ...data
+          .filter((r) => r.code === 200)
+          .map((r) => r.body)
+      );
+    }
+
+    // Columnas en el orden actual de la planilla:
+    // A:ID  B:Categoría  C:Título  D:Stock  E:Vendidos  F:Costo  G:Precio de Venta
+    // H:Comisión$  I:Envío  J:Comisión%  K:Estado ML  L:Tipo Publicación
+    // M:Ganancia  N:Margen%  O:Días de Stock  P:Alerta  Q:URL  R:Actualizado
+    // S:Unidades — al final, no en medio, para no correr los índices que ya
+    // leen esta hoja por posición (ver comentario de Comisión/Ganancia arriba
+    // y metrics/route.ts). Default 1: la mayoría de publicaciones vende 1
+    // unidad del código con que cruza en Defontana — solo se sube a mano
+    // cuando el título indica pack Y el artículo de Defontana con que
+    // cruzó NO lo indica (ver docs, "Unidades por publicación").
+    const headers = [
+      "ID", "Categoría", "Título", "Stock", "Vendidos",
+      "Costo", "Precio de Venta", "Comisión $", "Envío", "Comisión %",
+      "Estado ML", "Tipo Publicación",
+      "Ganancia", "Margen %", "Días de Stock", "Alerta", "URL", "Actualizado",
+      "Unidades",
+    ];
+
+    // Leer hoja anterior ANTES de reemplazar para preservar datos manuales y detectar cambios de stock. Sin tope de filas
+    // (antes tenía tope de 1000 filas): con más de 999 publicaciones las de más abajo perdían Costo/Envío/Unidades manuales (C-07).
+    // A=0,B=1,C=2,D=3,E=4,F=5(Costo),G=6(Precio),H=7,I=8(Envío),S=18(Unidades)
+    const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
+    const datosManual: Record<string, { costo: string; envio: string; unidades: string }> = {};
+    try {
+      const prevRows = await readSheet("Publicaciones!A2:S");
+      for (const r of prevRows) {
+        if (!r[0]) continue;
+        stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
+        datosManual[r[0]] = { costo: r[5] ?? "", envio: r[8] ?? "", unidades: r[18] ?? "" };
+      }
+    } catch (err) {
+      // La hoja ya existe (ensureSheets arriba) y una hoja vacía se lee como [],
+      // así que un error acá es una falla real de lectura, NO "primera vez".
+      // Seguir con datosManual vacío borraría Costo, Envío y Unidades manuales
+      // al limpiar la hoja: se aborta ANTES de tocar nada.
+      throw new Error(
+        `No se pudo leer la hoja Publicaciones anterior (${err instanceof Error ? err.message : String(err)}). ` +
+        "Se aborta el sync de Publicaciones sin borrar ni escribir nada, para no perder Costo/Envío/Unidades manuales. Reintenta."
+      );
+    }
+
+    const rows = items.map((item, i) => {
+      const row = i + 2;
+      const manual = datosManual[String(item.id)] ?? { costo: "", envio: "", unidades: "" };
+      const stock = resolveStock(item);
+      const precio = resolveNumeric(item.price);
+
+      if (stock === null) {
+        erroresValidacion.push(`${item.id} (${item.title ?? "sin título"}): stock ausente o inválido`);
+      }
+      if (precio === null) {
+        erroresValidacion.push(`${item.id} (${item.title ?? "sin título"}): precio ausente o inválido`);
       }
 
-      // Detalles en batches de 20
-      for (let i = 0; i < allIds.length; i += 20) {
-        const chunk = allIds.slice(i, i + 20);
-        const { data } = await mlGet<{ code: number; body: Record<string, unknown> }[]>(
-          `/items?ids=${chunk.join(",")}`
-        );
-        items.push(
-          ...data
-            .filter((r) => r.code === 200)
-            .map((r) => r.body)
-        );
-      }
-
-      // Columnas en el orden actual de la planilla:
-      // A:ID  B:Categoría  C:Título  D:Stock  E:Vendidos  F:Costo  G:Precio de Venta
-      // H:Comisión$  I:Envío  J:Comisión%  K:Estado ML  L:Tipo Publicación
-      // M:Ganancia  N:Margen%  O:Días de Stock  P:Alerta  Q:URL  R:Actualizado
-      // S:Unidades — al final, no en medio, para no correr los índices que ya
-      // leen esta hoja por posición (ver comentario de Comisión/Ganancia arriba
-      // y metrics/route.ts). Default 1: la mayoría de publicaciones vende 1
-      // unidad del código con que cruza en Defontana — solo se sube a mano
-      // cuando el título indica pack Y el artículo de Defontana con que
-      // cruzó NO lo indica (ver docs, "Unidades por publicación").
-      const headers = [
-        "ID", "Categoría", "Título", "Stock", "Vendidos",
-        "Costo", "Precio de Venta", "Comisión $", "Envío", "Comisión %",
-        "Estado ML", "Tipo Publicación",
-        "Ganancia", "Margen %", "Días de Stock", "Alerta", "URL", "Actualizado",
-        "Unidades",
+      return [
+        String(item.id),                                      // A: ID
+        item.category_id,                                     // B: Categoría
+        item.title,                                           // C: Título
+        stock ?? "",                                          // D: Stock
+        resolveNumeric(item.sold_quantity) ?? 0,              // E: Vendidos
+        manual.costo,                                         // F: Costo (se preserva entre syncs)
+        precio ?? "",                                         // G: Precio de Venta
+        `=G${row}*J${row}`,                                   // H: Comisión $ = Precio × Comisión%
+        manual.envio,                                         // I: Envío (se preserva entre syncs)
+        getComisionPct(item.listing_type_id as string, !!(item.catalog_listing)), // J: Comisión %
+        item.status,                                          // K: Estado ML
+        item.listing_type_id,                                 // L: Tipo Publicación
+        // M: Ganancia = (Precio − Costo − Com$ − Envío) / 1.19 — Precio/Costo/
+        // Com$/Envío son TODOS brutos (ver comentario de IVA arriba), así que
+        // restar en bruto y llevar el resultado a neto es lo mismo que llevar
+        // cada término. Se divide como ×100/119 y NO con un literal "1.19":
+        // la hoja está en locale es_ES (coma decimal), donde "1.19" es un
+        // error de parseo — las 620 filas mostraban #ERROR! en Ganancia y
+        // Margen % desde que se agregó el ajuste de IVA (1a0c521/692f8c2).
+        // Vacía si falta Costo (F) o Envío (I): con una celda vacía la resta
+        // la trata como 0 y mostraba una ganancia inflada (ej. Plaisance
+        // ~12% con Envío vacío, contra ~3,8% real). Ojo: Comisión % (J) sigue
+        // siendo la aproximación por tipo de publicación (ver getComisionPct),
+        // que difiere ~2 puntos de la real — por eso M/N son referenciales.
+        `=IF(OR(F${row}="";I${row}="");"";(G${row}-F${row}-H${row}-I${row})*100/${Math.round((1 + IVA) * 100)})`,
+        `=IF(OR(M${row}="";G${row}<=0);"";M${row}/(G${row}*100/${Math.round((1 + IVA) * 100)}))`,      // N: Margen % — usa ; por locale; vacío si M está vacío
+        getDiasStock(item, stock),                            // O: Días de Stock
+        getAlerta(item, stock),                                // P: Alerta
+        item.permalink,                                       // Q: URL
+        new Date().toLocaleDateString("es-CL"),               // R: Actualizado
+        manual.unidades || "1",                               // S: Unidades (se preserva entre syncs, default 1)
       ];
-
-      // Leer hoja anterior ANTES de reemplazar para preservar datos manuales y detectar cambios de stock. Sin tope de filas
-      // (antes tenía tope de 1000 filas): con más de 999 publicaciones las de más abajo perdían Costo/Envío/Unidades manuales (C-07).
-      // A=0,B=1,C=2,D=3,E=4,F=5(Costo),G=6(Precio),H=7,I=8(Envío),S=18(Unidades)
-      const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
-      const datosManual: Record<string, { costo: string; envio: string; unidades: string }> = {};
-      try {
-        const prevRows = await readSheet("Publicaciones!A2:S");
-        for (const r of prevRows) {
-          if (!r[0]) continue;
-          stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
-          datosManual[r[0]] = { costo: r[5] ?? "", envio: r[8] ?? "", unidades: r[18] ?? "" };
-        }
-      } catch (err) {
-        // La hoja ya existe (ensureSheets arriba) y una hoja vacía se lee como [],
-        // así que un error acá es una falla real de lectura, NO "primera vez".
-        // Seguir con datosManual vacío borraría Costo, Envío y Unidades manuales
-        // al limpiar la hoja: se aborta ANTES de tocar nada.
-        throw new Error(
-          `No se pudo leer la hoja Publicaciones anterior (${err instanceof Error ? err.message : String(err)}). ` +
-          "Se aborta el sync de Publicaciones sin borrar ni escribir nada, para no perder Costo/Envío/Unidades manuales. Reintenta."
-        );
-      }
-
-      const rows = items.map((item, i) => {
-        const row = i + 2;
-        const manual = datosManual[String(item.id)] ?? { costo: "", envio: "", unidades: "" };
-        const stock = resolveStock(item);
-        const precio = resolveNumeric(item.price);
-
-        if (stock === null) {
-          erroresValidacion.push(`${item.id} (${item.title ?? "sin título"}): stock ausente o inválido`);
-        }
-        if (precio === null) {
-          erroresValidacion.push(`${item.id} (${item.title ?? "sin título"}): precio ausente o inválido`);
-        }
-
-        return [
-          String(item.id),                                      // A: ID
-          item.category_id,                                     // B: Categoría
-          item.title,                                           // C: Título
-          stock ?? "",                                          // D: Stock
-          resolveNumeric(item.sold_quantity) ?? 0,              // E: Vendidos
-          manual.costo,                                         // F: Costo (se preserva entre syncs)
-          precio ?? "",                                         // G: Precio de Venta
-          `=G${row}*J${row}`,                                   // H: Comisión $ = Precio × Comisión%
-          manual.envio,                                         // I: Envío (se preserva entre syncs)
-          getComisionPct(item.listing_type_id as string, !!(item.catalog_listing)), // J: Comisión %
-          item.status,                                          // K: Estado ML
-          item.listing_type_id,                                 // L: Tipo Publicación
-          // M: Ganancia = (Precio − Costo − Com$ − Envío) / 1.19 — Precio/Costo/
-          // Com$/Envío son TODOS brutos (ver comentario de IVA arriba), así que
-          // restar en bruto y llevar el resultado a neto es lo mismo que llevar
-          // cada término. Se divide como ×100/119 y NO con un literal "1.19":
-          // la hoja está en locale es_ES (coma decimal), donde "1.19" es un
-          // error de parseo — las 620 filas mostraban #ERROR! en Ganancia y
-          // Margen % desde que se agregó el ajuste de IVA (1a0c521/692f8c2).
-          // Vacía si falta Costo (F) o Envío (I): con una celda vacía la resta
-          // la trata como 0 y mostraba una ganancia inflada (ej. Plaisance
-          // ~12% con Envío vacío, contra ~3,8% real). Ojo: Comisión % (J) sigue
-          // siendo la aproximación por tipo de publicación (ver getComisionPct),
-          // que difiere ~2 puntos de la real — por eso M/N son referenciales.
-          `=IF(OR(F${row}="";I${row}="");"";(G${row}-F${row}-H${row}-I${row})*100/${Math.round((1 + IVA) * 100)})`,
-          `=IF(OR(M${row}="";G${row}<=0);"";M${row}/(G${row}*100/${Math.round((1 + IVA) * 100)}))`,      // N: Margen % — usa ; por locale; vacío si M está vacío
-          getDiasStock(item, stock),                            // O: Días de Stock
-          getAlerta(item, stock),                                // P: Alerta
-          item.permalink,                                       // Q: URL
-          new Date().toLocaleDateString("es-CL"),               // R: Actualizado
-          manual.unidades || "1",                               // S: Unidades (se preserva entre syncs, default 1)
-        ];
-      });
-
-      // Escribir primero y limpiar el sobrante después (S-08): si algo falla en el medio la hoja anterior sigue ahí, nunca vacía.
-      const reemplazoPub = await reemplazarHoja("Publicaciones", [headers, ...rows]);
-      publicacionesOk = true;
-      if (!reemplazoPub.sobranteLimpio) {
-        erroresSync.push(`Publicaciones: se escribió la tabla nueva pero no se pudieron limpiar las filas sobrantes (${reemplazoPub.errorSobrante}). Reintenta el sync.`);
-      }
-
-      // Cobertura del campo Costo (columna F, manual) entre publicaciones
-      // activas — solo activas: una pausada/cerrada sin costo no es urgente
-      // de completar. Se usa el manual.costo YA leído arriba (preservado
-      // entre syncs), no lo que trae ML, porque Costo nunca viene de la API.
-      const activasSinCosto: { id: string; titulo: string; vendidos: number }[] = [];
-      let activasCount = 0;
-      let activasConCostoCount = 0;
-      let vendidosActivasConCosto = 0;
-      let vendidosActivasSinCosto = 0;
-      for (const item of items) {
-        if (item.status !== "active") continue;
-        activasCount++;
-        const id = String(item.id);
-        const vendidos = resolveNumeric(item.sold_quantity) ?? 0;
-        const tieneCosto = !!datosManual[id]?.costo;
-        if (tieneCosto) {
-          activasConCostoCount++;
-          vendidosActivasConCosto += vendidos;
-        } else {
-          vendidosActivasSinCosto += vendidos;
-          activasSinCosto.push({ id, titulo: item.title as string, vendidos });
-        }
-      }
-      coberturaCosto = {
-        activasTotal: activasCount,
-        activasConCosto: activasConCostoCount,
-        activasSinCosto: activasCount - activasConCostoCount,
-        vendidosActivasConCosto,
-        vendidosActivasSinCosto,
-        topSinCosto: activasSinCosto.sort((a, b) => b.vendidos - a.vendidos).slice(0, 20),
-      };
-
-      // Detectar productos nuevos (IDs que no estaban en la hoja anterior)
-      productosNuevos = items
-        .filter((item) => !datosManual[String(item.id)])
-        .map((item) => ({
-          id: String(item.id),
-          titulo: item.title as string,
-          precio: item.price as number,
-          estado: item.status as string,
-        }));
-
-      // Detectar cambios de stock
-      for (const item of items) {
-        const id = String(item.id);
-        const stockNuevo = resolveStock(item);
-        const anterior = stockAnterior[id];
-        if (anterior && stockNuevo !== null && anterior.stock !== stockNuevo) {
-          cambiosStock.push({
-            titulo: item.title as string,
-            antes: anterior.stock,
-            despues: stockNuevo,
-            diferencia: stockNuevo - anterior.stock,
-          });
-        }
-      }
-    } catch (err) {
-      logError("ml-sync Publicaciones", err);
-      erroresSync.push(`Publicaciones: ${String(err)}`);
-    }
-
-    let orders: Record<string, unknown>[] = [];
-    let ventasOk = false;
-    let ventasNuevas: { titulo: unknown; cantidad: unknown; total: unknown; comprador: unknown; fecha: string }[] = [];
-
-    try {
-      // Ventas — historial de DIAS_HISTORIAL_VENTAS días por ventanas de un día (lib/ventas-historial.ts), sin el tope de
-      // ~2.050 órdenes que tenía la paginación por offset. Si una ventana llega al tope de ML se avisa, no se trunca en silencio.
-      const historial = await cargarHistorialVentas((u) => mlGet(u), userId, Date.now());
-      orders = historial.ordenes;
-      if (historial.aviso) {
-        console.warn(`[ml-sync] ${historial.aviso}`);
-        erroresValidacion.push(historial.aviso);
-      }
-
-      // ShippingCache: persiste logistic_type por orden entre syncs (Ventas se
-      // reescribe completa cada vez, así que el cache no puede vivir ahí).
-      // Append-only, nunca se limpia. Columnas: ID Orden | Shipping ID |
-      // Logistic Type | Fecha Consulta.
-      const cacheLogisticoPorOrden = new Map<string, string>();
-      try {
-        const cacheRows = await readSheet("ShippingCache!A2:D100000");
-        for (const r of cacheRows) {
-          if (r[0] && r[2]) cacheLogisticoPorOrden.set(String(r[0]), r[2]);
-        }
-      } catch { /* primera vez, hoja recién creada */ }
-
-      // Órdenes en `orders` ya vienen date_desc (más recientes primero) desde
-      // la paginación de arriba, así que iterar en ese orden natural ya
-      // prioriza lo más reciente sin lógica extra.
-      const ordenesAProcesar = seleccionarEnviosPendientes(
-        orders,
-        cacheLogisticoPorOrden, Date.now(), DIAS_ENVIOS_NUEVOS, MAX_SHIPMENTS_NUEVOS_POR_SYNC
-      );
-
-      // Se escribe a ShippingCache cada FILAS_POR_ESCRITURA_CACHE filas y, vía el
-      // finally de resolverEnviosPendientes, también si el budget corta la
-      // ejecución a mitad de camino. agregarSinDuplicar relee la columna A justo
-      // antes de agregar y descarta ids que ya existan (otra corrida o el
-      // backfill): no genera duplicados nuevos.
-      await resolverEnviosPendientes(
-        ordenesAProcesar,
-        {
-          getEnvio: async (shippingId) => (await mlGet<{ logistic_type?: string }>(`/shipments/${shippingId}`)).data,
-          persistir: (filas) => agregarSinDuplicar((r) => readSheet(r), (f) => appendSheet("ShippingCache!A:D", f), filas),
-          esFatal: (err) => err instanceof SyncRetryBudgetExceededError,
-          alResolver: (orderId, tipo) => cacheLogisticoPorOrden.set(orderId, tipo),
-          alFallar: (orderId, err) => erroresValidacion.push(`Orden ${orderId}: no se pudo obtener el tipo de envío (${String(err)})`),
-        },
-        { tamLote: SHIPMENT_BATCH_SIZE, filasPorEscritura: FILAS_POR_ESCRITURA_CACHE }
-      );
-
-      // Columnas J (ID Item) y K (Logístico) se agregan al final, no en medio,
-      // para no correr los índices que ya leen esta hoja por posición
-      // (page.tsx, forecast/route.ts).
-      const ordHeaders = ["ID Orden", "Fecha", "Producto", "SKU", "Cantidad", "Precio Unit.", "Total", "Comprador", "Estado", "ID Item", "Logístico"];
-      const ordRows = orders.map((order) => {
-        const item = (order.order_items as Record<string, unknown>[])?.[0];
-        return [
-          // Prefijo "'" fuerza texto literal en Sheets — sin esto, IDs
-          // numéricos largos se autoformatean a notación científica y
-          // rompen el matching por ID Orden contra ShippingCache.
-          `'${String(order.id)}`,
-          new Date(order.date_created as string).toLocaleDateString("es-CL"),
-          (item?.item as Record<string, unknown>)?.title ?? "",
-          (item?.item as Record<string, unknown>)?.seller_sku ?? "",
-          item?.quantity ?? "",
-          item?.unit_price ?? "",
-          order.total_amount,
-          (order.buyer as Record<string, unknown>)?.nickname ?? "",
-          order.status,
-          (item?.item as Record<string, unknown>)?.id ?? "",
-          cacheLogisticoPorOrden.get(String(order.id)) ?? "",
-        ];
-      });
-
-      // Mismo orden que Publicaciones: escribir primero, limpiar el sobrante después.
-      const reemplazoVentas = await reemplazarHoja("Ventas", [ordHeaders, ...ordRows]);
-      ventasOk = true;
-      if (!reemplazoVentas.sobranteLimpio) {
-        erroresSync.push(`Ventas: se escribió la tabla nueva pero no se pudieron limpiar las filas sobrantes (${reemplazoVentas.errorSobrante}). Reintenta el sync.`);
-      }
-
-      // Ventas nuevas (últimas 24h para el contador, pero devolvemos 7 días para no perder ventas)
-      const hace7d = new Date(Date.now() - 7 * 86400000);
-      ventasNuevas = orders
-        .filter(o => new Date(o.date_created as string) > hace7d)
-        .map(o => {
-          const it = (o.order_items as Record<string, unknown>[])?.[0];
-          return {
-            titulo: (it?.item as Record<string, unknown>)?.title ?? "",
-            cantidad: it?.quantity ?? 0,
-            total: o.total_amount,
-            comprador: (o.buyer as Record<string, unknown>)?.nickname ?? "",
-            fecha: new Date(o.date_created as string).toLocaleDateString("es-CL"),
-          };
-        });
-    } catch (err) {
-      logError("ml-sync Ventas", err);
-      erroresSync.push(`Ventas: ${String(err)}`);
-    }
-
-    return NextResponse.json({
-      ok: publicacionesOk || ventasOk,
-      publicaciones: publicacionesOk ? items.length : null,
-      ventas: ventasOk ? orders.length : null,
-      productosNuevos,
-      cambiosStock,
-      coberturaCosto,
-      ventasNuevas,
-      erroresValidacion,
-      erroresSync,
-      timestamp: new Date().toISOString(),
     });
+
+    // Escribir primero y limpiar el sobrante después (S-08): si algo falla en el medio la hoja anterior sigue ahí, nunca vacía.
+    const reemplazoPub = await reemplazarHoja("Publicaciones", [headers, ...rows]);
+    publicacionesOk = true;
+    if (!reemplazoPub.sobranteLimpio) {
+      erroresSync.push(`Publicaciones: se escribió la tabla nueva pero no se pudieron limpiar las filas sobrantes (${reemplazoPub.errorSobrante}). Reintenta el sync.`);
+    }
+
+    // Cobertura del campo Costo (columna F, manual) entre publicaciones
+    // activas — solo activas: una pausada/cerrada sin costo no es urgente
+    // de completar. Se usa el manual.costo YA leído arriba (preservado
+    // entre syncs), no lo que trae ML, porque Costo nunca viene de la API.
+    const activasSinCosto: { id: string; titulo: string; vendidos: number }[] = [];
+    let activasCount = 0;
+    let activasConCostoCount = 0;
+    let vendidosActivasConCosto = 0;
+    let vendidosActivasSinCosto = 0;
+    for (const item of items) {
+      if (item.status !== "active") continue;
+      activasCount++;
+      const id = String(item.id);
+      const vendidos = resolveNumeric(item.sold_quantity) ?? 0;
+      const tieneCosto = !!datosManual[id]?.costo;
+      if (tieneCosto) {
+        activasConCostoCount++;
+        vendidosActivasConCosto += vendidos;
+      } else {
+        vendidosActivasSinCosto += vendidos;
+        activasSinCosto.push({ id, titulo: item.title as string, vendidos });
+      }
+    }
+    coberturaCosto = {
+      activasTotal: activasCount,
+      activasConCosto: activasConCostoCount,
+      activasSinCosto: activasCount - activasConCostoCount,
+      vendidosActivasConCosto,
+      vendidosActivasSinCosto,
+      topSinCosto: activasSinCosto.sort((a, b) => b.vendidos - a.vendidos).slice(0, 20),
+    };
+
+    // Detectar productos nuevos (IDs que no estaban en la hoja anterior)
+    productosNuevos = items
+      .filter((item) => !datosManual[String(item.id)])
+      .map((item) => ({
+        id: String(item.id),
+        titulo: item.title as string,
+        precio: item.price as number,
+        estado: item.status as string,
+      }));
+
+    // Detectar cambios de stock
+    for (const item of items) {
+      const id = String(item.id);
+      const stockNuevo = resolveStock(item);
+      const anterior = stockAnterior[id];
+      if (anterior && stockNuevo !== null && anterior.stock !== stockNuevo) {
+        cambiosStock.push({
+          titulo: item.title as string,
+          antes: anterior.stock,
+          despues: stockNuevo,
+          diferencia: stockNuevo - anterior.stock,
+        });
+      }
+    }
+  } catch (err) {
+    logError("ml-sync Publicaciones", err);
+    erroresSync.push(`Publicaciones: ${String(err)}`);
+  }
+
+  let orders: Record<string, unknown>[] = [];
+  let ventasOk = false;
+  let ventasNuevas: { titulo: unknown; cantidad: unknown; total: unknown; comprador: unknown; fecha: string }[] = [];
+
+  try {
+    // Ventas — historial de DIAS_HISTORIAL_VENTAS días por ventanas de un día (lib/ventas-historial.ts), sin el tope de
+    // ~2.050 órdenes que tenía la paginación por offset. Si una ventana llega al tope de ML se avisa, no se trunca en silencio.
+    const historial = await cargarHistorialVentas((u) => mlGet(u), userId, Date.now());
+    orders = historial.ordenes;
+    if (historial.aviso) {
+      console.warn(`[ml-sync] ${historial.aviso}`);
+      erroresValidacion.push(historial.aviso);
+    }
+
+    // ShippingCache: persiste logistic_type por orden entre syncs (Ventas se
+    // reescribe completa cada vez, así que el cache no puede vivir ahí).
+    // Append-only, nunca se limpia. Columnas: ID Orden | Shipping ID |
+    // Logistic Type | Fecha Consulta.
+    const cacheLogisticoPorOrden = new Map<string, string>();
+    try {
+      const cacheRows = await readSheet("ShippingCache!A2:D100000");
+      for (const r of cacheRows) {
+        if (r[0] && r[2]) cacheLogisticoPorOrden.set(String(r[0]), r[2]);
+      }
+    } catch { /* primera vez, hoja recién creada */ }
+
+    // Órdenes en `orders` ya vienen date_desc (más recientes primero) desde
+    // la paginación de arriba, así que iterar en ese orden natural ya
+    // prioriza lo más reciente sin lógica extra.
+    const ordenesAProcesar = seleccionarEnviosPendientes(
+      orders,
+      cacheLogisticoPorOrden, Date.now(), DIAS_ENVIOS_NUEVOS, MAX_SHIPMENTS_NUEVOS_POR_SYNC
+    );
+
+    // Se escribe a ShippingCache cada FILAS_POR_ESCRITURA_CACHE filas y, vía el
+    // finally de resolverEnviosPendientes, también si el budget corta la
+    // ejecución a mitad de camino. agregarSinDuplicar relee la columna A justo
+    // antes de agregar y descarta ids que ya existan (otra corrida o el
+    // backfill): no genera duplicados nuevos.
+    await resolverEnviosPendientes(
+      ordenesAProcesar,
+      {
+        getEnvio: async (shippingId) => (await mlGet<{ logistic_type?: string }>(`/shipments/${shippingId}`)).data,
+        persistir: (filas) => agregarSinDuplicar((r) => readSheet(r), (f) => appendSheet("ShippingCache!A:D", f), filas),
+        esFatal: (err) => err instanceof SyncRetryBudgetExceededError,
+        alResolver: (orderId, tipo) => cacheLogisticoPorOrden.set(orderId, tipo),
+        alFallar: (orderId, err) => erroresValidacion.push(`Orden ${orderId}: no se pudo obtener el tipo de envío (${String(err)})`),
+      },
+      { tamLote: SHIPMENT_BATCH_SIZE, filasPorEscritura: FILAS_POR_ESCRITURA_CACHE }
+    );
+
+    // Columnas J (ID Item) y K (Logístico) se agregan al final, no en medio,
+    // para no correr los índices que ya leen esta hoja por posición
+    // (page.tsx, forecast/route.ts).
+    const ordHeaders = ["ID Orden", "Fecha", "Producto", "SKU", "Cantidad", "Precio Unit.", "Total", "Comprador", "Estado", "ID Item", "Logístico"];
+    const ordRows = orders.map((order) => {
+      const item = (order.order_items as Record<string, unknown>[])?.[0];
+      return [
+        // Prefijo "'" fuerza texto literal en Sheets — sin esto, IDs
+        // numéricos largos se autoformatean a notación científica y
+        // rompen el matching por ID Orden contra ShippingCache.
+        `'${String(order.id)}`,
+        new Date(order.date_created as string).toLocaleDateString("es-CL"),
+        (item?.item as Record<string, unknown>)?.title ?? "",
+        (item?.item as Record<string, unknown>)?.seller_sku ?? "",
+        item?.quantity ?? "",
+        item?.unit_price ?? "",
+        order.total_amount,
+        (order.buyer as Record<string, unknown>)?.nickname ?? "",
+        order.status,
+        (item?.item as Record<string, unknown>)?.id ?? "",
+        cacheLogisticoPorOrden.get(String(order.id)) ?? "",
+      ];
+    });
+
+    // Mismo orden que Publicaciones: escribir primero, limpiar el sobrante después.
+    const reemplazoVentas = await reemplazarHoja("Ventas", [ordHeaders, ...ordRows]);
+    ventasOk = true;
+    if (!reemplazoVentas.sobranteLimpio) {
+      erroresSync.push(`Ventas: se escribió la tabla nueva pero no se pudieron limpiar las filas sobrantes (${reemplazoVentas.errorSobrante}). Reintenta el sync.`);
+    }
+
+    // Ventas nuevas (últimas 24h para el contador, pero devolvemos 7 días para no perder ventas)
+    const hace7d = new Date(Date.now() - 7 * 86400000);
+    ventasNuevas = orders
+      .filter(o => new Date(o.date_created as string) > hace7d)
+      .map(o => {
+        const it = (o.order_items as Record<string, unknown>[])?.[0];
+        return {
+          titulo: (it?.item as Record<string, unknown>)?.title ?? "",
+          cantidad: it?.quantity ?? 0,
+          total: o.total_amount,
+          comprador: (o.buyer as Record<string, unknown>)?.nickname ?? "",
+          fecha: new Date(o.date_created as string).toLocaleDateString("es-CL"),
+        };
+      });
+  } catch (err) {
+    logError("ml-sync Ventas", err);
+    erroresSync.push(`Ventas: ${String(err)}`);
+  }
+
+  return NextResponse.json({
+    ok: publicacionesOk || ventasOk,
+    publicaciones: publicacionesOk ? items.length : null,
+    ventas: ventasOk ? orders.length : null,
+    productosNuevos,
+    cambiosStock,
+    coberturaCosto,
+    ventasNuevas,
+    erroresValidacion,
+    erroresSync,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+export async function POST() {
+  try {
+    const inicioRuta = Date.now();
+    const r = await conLock("ml-sync", () => sincronizar(inicioRuta));
+    if (!r.ok) return NextResponse.json({ ok: false, error: mensajeLockSync(r.status) }, { status: r.status });
+    return r.valor;
   } catch (error) {
     logError("ml-sync", error);
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
