@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const PROJ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ts = require(path.join(PROJ, "node_modules", "typescript"));
 const out = fs.mkdtempSync(path.join(os.tmpdir(), "tarifa-tipo-test-"));
-for (const f of ["envio-real", "envio-estimado", "tarifa-envio", "backfill-shipping"]) {
+for (const f of ["envio-real", "envio-estimado", "tarifa-envio", "backfill-shipping", "numero-texto"]) {
   let js = ts.transpileModule(fs.readFileSync(`${PROJ}/lib/${f}.ts`, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
   js = js.replace(/require\("@\/lib\/([a-z-]+)"\)/g, 'require("./$1.js")');
   fs.writeFileSync(path.join(out, f + ".js"), js);
@@ -120,7 +120,7 @@ const base = (h, extra = {}) => ({ mlGet, ...h, ventas: ventasAB(), skuPorItem: 
   eq([r.paresConVenta, r.vigentes, r.pendientesAntes, r.procesadas], [2, 1, 1, 1], "A tiene fila Full vigente: solo falta el par A|despacho");
   eq(h.escritas.append.length, 1, "una escritura de filas nuevas");
   const nueva = h.escritas.append[0][1][0];
-  eq([nueva[0], nueva[2], nueva[3], nueva[4], nueva[8]], ["A", "810", X, "2", "ok"], "fila nueva: publicación, tarifa 810, tipo xd_drop_off, Muestras = 2, estado ok");
+  eq([nueva[0], nueva[2], nueva[3], nueva[4], nueva[8]], ["A", "'810", X, "'2", "ok"], "fila nueva: publicación, tarifa 810 y Muestras = 2 escritas como TEXTO con apóstrofo (S-07), tipo xd_drop_off, estado ok");
   eq(h.escritas.batch.length, 0, "no actualiza la fila de Full");
   eq(r.porMuestras, { 2: 1 }, "el resultado resume cuántas filas salieron con 0, 1 o 2 muestras");
 }
@@ -164,7 +164,7 @@ console.log("par sin muestra limpia: estimador sin la propia publicación");
   const h = hoja(filas);
   const r = await T.procesarTarifas(base(h, { ventas: ventasConP, skuPorItem: new Map(), soloSinFilaDelTipo: true, limite: 1 }));
   const nueva = h.escritas.append[0][1][0];
-  eq([nueva[0], nueva[2], nueva[3], nueva[4], nueva[8], nueva[11]], ["D", "820", X, "0", "estimado", "sin_costo"], "sin muestra limpia: fila estimada (mediana del tramo de despacho), tipo del par, Muestras = 0 y motivo");
+  eq([nueva[0], nueva[2], nueva[3], nueva[4], nueva[8], nueva[11]], ["D", "'820", X, "'0", "estimado", "sin_costo"], "sin muestra limpia: fila estimada (mediana del tramo de despacho, escrita como texto con apóstrofo), tipo del par, Muestras = 0 y motivo");
   eq(r.porEstado, { estimado: 1 }, "cuenta como estimada");
 }
 console.log("estimador: no usa la tarifa del otro tipo de la propia publicación");
@@ -175,7 +175,7 @@ console.log("estimador: no usa la tarifa del otro tipo de la propia publicación
   const h = hoja([fila("D", 410, F, "ok", "2026-10-05T00:00:00.000Z", "S9"), fila("R", 830, X, "ok", "2026-10-05T00:00:00.000Z", "S9")]);
   await T.procesarTarifas(base(h, { ventas, skuPorItem: new Map([["D", "S9"], ["R", "S9"]]), soloSinFilaDelTipo: true }));
   const nueva = h.escritas.append[0][1][0];
-  eq([nueva[2], nueva[10]], ["830", "sku (n=1)"], "SKU gemelo = R (830, n=1); con la Full de la propia D sería la mediana 620 (n=2)");
+  eq([nueva[2], nueva[10]], ["'830", "sku (n=1)"], "SKU gemelo = R (830, n=1); con la Full de la propia D sería la mediana 620 (n=2)");
 }
 console.log("una sola muestra");
 {
@@ -183,7 +183,7 @@ console.log("una sola muestra");
   const h = hoja([]);
   const r = await T.procesarTarifas(base(h, { ventas, skuPorItem: new Map() }));
   const f = h.escritas.append[0][1][0];
-  eq([f[2], f[4], f[8]], ["830", "1", "ok"], "con un solo despacho candidato la fila queda ok con Muestras = 1");
+  eq([f[2], f[4], f[8]], ["'830", "'1", "ok"], "con un solo despacho candidato la fila queda ok con Muestras = 1");
   eq(r.porMuestras, { 1: 1 }, "porMuestras refleja el 1");
 }
 console.log("modo anterior (sin tipo por orden): se comporta como antes");
@@ -210,7 +210,7 @@ console.log("soloMuestraReal: solo se escriben las filas medidas");
   const r = await T.procesarTarifas(base(h, { ventas: new Map([...ventas, ["P", { ingreso: 1, precio: 8000, comision: 0, ingresoConComision: 0, despachos: [] }], ["Q", { ingreso: 1, precio: 9000, comision: 0, ingresoConComision: 0, despachos: [] }]]), skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true }));
   eq([r.procesadas, r.escritas, r.omitidas], [2, { nuevas: 1, actualizadas: 0 }, 1], "se calculan 2 pares, se escribe 1 (la medida) y se omite 1 (la que quedaría estimada)");
   const filas = h.escritas.append[0][1];
-  eq(filas.map((x) => [x[0], x[8], x[4]]), [["A", "ok", "2"]], "la única fila escrita es la medida, con Muestras = 2");
+  eq(filas.map((x) => [x[0], x[8], x[4]]), [["A", "ok", "'2"]], "la única fila escrita es la medida, con Muestras = 2");
   eq(r.filas.find((x) => x.itemId === "D").r.estado, "sin_costo", "la omitida figura en el informe con su estado real (sin estimar: no se calcula el respaldo)");
   const hs = hoja([]);
   const rs = await T.procesarTarifas(base(hs, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, dryRun: true }));
@@ -226,7 +226,7 @@ console.log("soloEntregados: no se escriben filas apoyadas en despachos sin entr
   const h = hoja([]);
   const r = await T.procesarTarifas(base(h, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, soloEntregados: true }));
   eq([r.procesadas, r.escritas, r.omitidas], [3, { nuevas: 1, actualizadas: 0 }, 2], "se calculan 3 pares; se escribe solo A (todas sus muestras entregadas) y se omiten G y H");
-  eq(h.escritas.append[0][1].map((x) => [x[0], x[4]]), [["A", "2"]], "la fila escrita es A con Muestras = 2");
+  eq(h.escritas.append[0][1].map((x) => [x[0], x[4]]), [["A", "'2"]], "la fila escrita es A con Muestras = 2 (texto con apóstrofo)");
   const h2 = hoja([]);
   const r2 = await T.procesarTarifas(base(h2, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true }));
   eq(r2.escritas.nuevas, 3, "sin soloEntregados se escribirían las 3 (G y H con muestras sin entregar)");
@@ -258,7 +258,7 @@ console.log("minMuestras: solo filas con suficientes muestras limpias");
   const h = hoja([]);
   const r = await T.procesarTarifas(base(h, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true, minMuestras: 2 }));
   eq([r.procesadas, r.escritas.nuevas, r.omitidas], [2, 1, 1], "con minMuestras:2 se escribe A (2 muestras) y se omite E (1 muestra)");
-  eq(h.escritas.append[0][1].map((x) => [x[0], x[4]]), [["A", "2"]], "la fila escrita es A con Muestras = 2");
+  eq(h.escritas.append[0][1].map((x) => [x[0], x[4]]), [["A", "'2"]], "la fila escrita es A con Muestras = 2 (texto con apóstrofo)");
   const h2 = hoja([]);
   const r2 = await T.procesarTarifas(base(h2, { ventas, skuPorItem: new Map(), soloSinFilaDelTipo: true, soloMuestraReal: true }));
   eq([r2.escritas.nuevas, r2.omitidas], [2, 0], "sin minMuestras se escriben las dos (comportamiento por defecto)");

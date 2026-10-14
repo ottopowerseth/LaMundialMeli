@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const PROJ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ts = require(path.join(PROJ, "node_modules", "typescript"));
 const out = fs.mkdtempSync(path.join(os.tmpdir(), "ship-sin-dup-"));
-for (const f of ["envio-real", "backfill-shipping"]) {
+for (const f of ["envio-real", "backfill-shipping", "numero-texto"]) {
   let js = ts.transpileModule(fs.readFileSync(`${PROJ}/lib/${f}.ts`, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
   js = js.replace(/require\("@\/lib\/([a-z-]+)"\)/g, 'require("./$1.js")');
   fs.writeFileSync(path.join(out, f + ".js"), js);

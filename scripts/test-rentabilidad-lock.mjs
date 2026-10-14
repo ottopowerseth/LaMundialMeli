@@ -16,7 +16,7 @@ const compilar = (origen, destino) => {
   const src = fs.readFileSync(path.join(PROJ, origen), "utf8").replace(/from "@\/lib\/([\w-]+)"/g, 'from "./$1"');
   fs.writeFileSync(path.join(out, destino), ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
 };
-for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/http-retry.ts", "http-retry.js"], ["lib/rentabilidad.ts", "rentabilidad.js"], ["lib/backfill-shipping.ts", "backfill-shipping.js"], ["lib/envio-real.ts", "envio-real.js"],
+for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/http-retry.ts", "http-retry.js"], ["lib/rentabilidad.ts", "rentabilidad.js"], ["lib/backfill-shipping.ts", "backfill-shipping.js"], ["lib/envio-real.ts", "envio-real.js"], ["lib/numero-texto.ts", "numero-texto.js"],
   ["lib/guardas-filas.ts", "guardas-filas.js"], ["lib/lock-sheets.ts", "lock-sheets.js"], ["app/api/rentabilidad/analyze/route.ts", "analyze.js"]]) compilar(o, d);
 
 fs.writeFileSync(path.join(out, "ml-token.js"), `exports.getValidAccessToken = async () => { globalThis.__tokenPedido++; return "token-falso"; }; exports.instalarReintento401 = () => {};`);

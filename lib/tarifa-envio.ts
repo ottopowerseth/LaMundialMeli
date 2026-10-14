@@ -28,6 +28,7 @@
 import type { MlGet } from "@/lib/envio-real";
 import { mediana } from "@/lib/envio-real";
 import { armarMuestrasEnvio, calcularEnvioEstimadoPorUnidad } from "@/lib/envio-estimado";
+import { numeroComoTexto } from "@/lib/numero-texto";
 
 export const HOJA_TARIFA_ENVIO = "TarifaEnvio";
 export const HEADERS_TARIFA_ENVIO = [
@@ -283,16 +284,16 @@ export type ResultadoTarifas = {
 
 function filaDeSheet(f: FilaTarifa, tipoCruda: string): string[] {
   const r = f.r;
-  // Números como string con punto: misma convención que el resto de las
-  // hojas (la hoja tiene locale es_CL y USER_ENTERED los guarda como texto,
-  // que los lectores parsean con Number()).
+  // Números como TEXTO con apóstrofo inicial (S-07, lib/numero-texto.ts). Antes se escribían como string sin apóstrofo bajo la creencia de
+  // que «USER_ENTERED los guarda como texto»: es falso. Sheets interpreta «1019.9» (año.mes) o «3.9» (día.mes) como una FECHA que se muestra
+  // igual pero queda guardada como fecha (28 celdas de la columna C y 3 de la F estaban así). Los lectores parsean el valor mostrado con Number().
   return [
     f.itemId, f.sku,
-    r.tarifaPorUnidad === null ? "" : String(r.tarifaPorUnidad),
+    numeroComoTexto(r.tarifaPorUnidad),
     // Siempre con tipo: una fila sin muestra también lleva el tipo del par, así su clave es estable y se reintenta por TTL.
-    r.tipoLogistico || tipoCruda, String(r.muestras),
-    r.dispersionPct === null ? "" : String(r.dispersionPct),
-    r.despachoMuestra, r.unidadesDespacho === null ? "" : String(r.unidadesDespacho),
+    r.tipoLogistico || tipoCruda, numeroComoTexto(r.muestras),
+    numeroComoTexto(r.dispersionPct),
+    r.despachoMuestra, numeroComoTexto(r.unidadesDespacho),
     r.estado, f.actualizado,
     r.fuenteEstimacion ?? "", r.motivo ?? "",
   ];

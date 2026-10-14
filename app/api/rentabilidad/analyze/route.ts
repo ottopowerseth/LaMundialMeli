@@ -6,6 +6,7 @@ import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/l
 import { agruparPorOrdenReal, calcularFilaOrden, calcularMargen, sumarAlmacenamiento, BillingDetailRow } from "@/lib/rentabilidad";
 import { resolverEnvioReal, detectarMixto } from "@/lib/envio-real";
 import { agregarSinDuplicar } from "@/lib/backfill-shipping";
+import { numeroComoTexto } from "@/lib/numero-texto";
 import { conLock } from "@/lib/lock-sheets";
 import { logError } from "@/lib/log";
 
@@ -241,9 +242,9 @@ async function analizarMes(mes: string, inicioRuta: number): Promise<NextRespons
             nuevasEntradasCache.push([
               `'${ordenId}`, `'${resultado.shippingId ?? ""}`, resultado.logisticType,
               new Date().toISOString(),
-              resultado.costoTotalDespacho === null ? "" : String(resultado.costoTotalDespacho),
-              resultado.unidadesDespacho === null ? "" : String(resultado.unidadesDespacho),
-              String(resultado.unidadesEstaOrden),
+              numeroComoTexto(resultado.costoTotalDespacho),
+              numeroComoTexto(resultado.unidadesDespacho),
+              numeroComoTexto(resultado.unidadesEstaOrden),
               resultado.fuente,
             ]);
             if (resultado.fuente === "costs") {
@@ -281,17 +282,18 @@ async function analizarMes(mes: string, inicioRuta: number): Promise<NextRespons
           fila.fecha,
           fila.idItem,
           fila.producto,
-          String(fila.precioVenta),
-          fila.cogs === null ? "" : String(fila.cogs),
-          String(fila.comision),
-          String(fila.envio),
-          String(fila.perdida),
-          fila.margenNeto === null ? "" : String(fila.margenNeto),
-          fila.margenPct === null ? "" : String(fila.margenPct),
+          // Números como TEXTO (S-07): sin esto, «4989.6» se guardaba como fecha (ver lib/numero-texto.ts).
+          numeroComoTexto(fila.precioVenta),
+          numeroComoTexto(fila.cogs),
+          numeroComoTexto(fila.comision),
+          numeroComoTexto(fila.envio),
+          numeroComoTexto(fila.perdida),
+          numeroComoTexto(fila.margenNeto),
+          numeroComoTexto(fila.margenPct),
           fila.multiItem ? "Sí" : "",
           new Date().toLocaleString("es-CL"),
-          String(fila.unidades),
-          String(fila.envioPorUnidad),
+          numeroComoTexto(fila.unidades),
+          numeroComoTexto(fila.envioPorUnidad),
           fuenteEnvio,
           mixto ?? "",
         ]);

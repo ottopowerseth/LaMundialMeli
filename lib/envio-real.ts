@@ -8,6 +8,7 @@
 // esta orden / unidades totales del despacho).
 
 import { agregarSinDuplicar } from "@/lib/backfill-shipping";
+import { numeroComoTexto } from "@/lib/numero-texto";
 
 export type MlGet = <T = unknown>(url: string) => Promise<{ data: T }>;
 
@@ -345,9 +346,10 @@ export async function procesarTanda(opciones: OpcionesTanda): Promise<ResultadoT
       nuevasEntradasCache.push([
         `'${ordenId}`, `'${shippingId ?? ""}`, logisticType,
         new Date().toISOString(),
-        costoTotalDespacho === null ? "" : String(costoTotalDespacho),
-        unidadesDespacho === null ? "" : String(unidadesDespacho),
-        String(unidadesEstaOrden),
+        // Números como TEXTO (S-07): ver lib/numero-texto.ts.
+        numeroComoTexto(costoTotalDespacho),
+        numeroComoTexto(unidadesDespacho),
+        numeroComoTexto(unidadesEstaOrden),
         costoTotalDespacho !== null ? "costs" : "billing",
         esDespachoCompartido && itemsDelDespacho ? serializarItemsDespacho(itemsDelDespacho) : "",
       ]);
@@ -461,12 +463,12 @@ export async function procesarTanda(opciones: OpcionesTanda): Promise<ResultadoT
           : [{ range: `Rentabilidad!P${fila}:Q${fila}`, values: [[fuente, mixto]] }];
       }
       const base = [
-        { range: `Rentabilidad!H${fila}:H${fila}`, values: [[envio]] },
-        { range: `Rentabilidad!J${fila}:K${fila}`, values: [[margenNeto, margenPct]] },
+        { range: `Rentabilidad!H${fila}:H${fila}`, values: [[numeroComoTexto(envio)]] },
+        { range: `Rentabilidad!J${fila}:K${fila}`, values: [[numeroComoTexto(margenNeto), numeroComoTexto(margenPct)]] },
       ];
       return omitirMarca
-        ? [...base, { range: `Rentabilidad!O${fila}:P${fila}`, values: [[envioPorUnidad, fuente]] }]
-        : [...base, { range: `Rentabilidad!O${fila}:Q${fila}`, values: [[envioPorUnidad, fuente, mixto]] }];
+        ? [...base, { range: `Rentabilidad!O${fila}:P${fila}`, values: [[numeroComoTexto(envioPorUnidad), fuente]] }]
+        : [...base, { range: `Rentabilidad!O${fila}:Q${fila}`, values: [[numeroComoTexto(envioPorUnidad), fuente, mixto]] }];
     });
     await batchWriteSheet(updates);
   }
