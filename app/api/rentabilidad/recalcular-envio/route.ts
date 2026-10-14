@@ -58,7 +58,7 @@ export async function POST(request: Request) {
       withMlRetry(() => client.get<T>(url, { headers: { "Api-Version": "1", "Content-Type": "application/json" } }), { budget });
 
     const resultado = await procesarTanda({
-      mlGet, readSheet, appendSheet, batchWriteSheet, calcularMargen,
+      mlGet, readSheet, appendSheet: (rango, valores) => appendSheet(rango, valores, { modo: "OVERWRITE" }), /* solo agrega a ShippingCache (formatos mixtos): modo anterior (C-14) */ batchWriteSheet, calcularMargen,
       forzarReintentos, dryRun, dryRunLimite, omitirMarca, limite,
       tiempoMaximoMs: TIEMPO_MAXIMO_MS,
     });

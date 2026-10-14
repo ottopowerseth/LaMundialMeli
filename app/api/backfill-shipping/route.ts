@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
         leerHoja: async (rango) => {
           try { return await readSheet(rango); } catch { return []; } // primera vez, hoja recién creada
         },
-        agregarFilas: (filas) => appendSheet("ShippingCache!A:D", filas),
+        agregarFilas: (filas) => appendSheet("ShippingCache!A:D", filas, { modo: "OVERWRITE" }), // ShippingCache tiene formatos mixtos: modo anterior (C-14)
       },
       {
         dias: body?.dias,

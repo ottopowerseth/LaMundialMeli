@@ -80,7 +80,7 @@ export function depsPorDefecto(hoja: string = HOJA_LOCKS): DepsLock {
       );
       hojasListas.add(hoja);
     },
-    agregar: (fila) => appendSheet(`${hoja}!A:D`, [fila], { insertarFilas: true }), // INSERT_ROWS: sin esto, appends simultáneos se pisan
+    agregar: (fila) => appendSheet(`${hoja}!A:D`, [fila]), // INSERT_ROWS (valor por defecto de appendSheet): con OVERWRITE los tickets simultáneos se pisaban
     leer: () => readSheet(`${hoja}!A2:D`),
     leerTokens: (hasta) => readSheet(`${hoja}!B2:B${hasta}`),
     marcarLiberado: (fila) => writeSheet(`${hoja}!D${fila}`, [["x"]]),

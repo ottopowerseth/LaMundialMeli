@@ -161,10 +161,10 @@ console.log("vencimiento leído de una planilla es_ES: parseo tolerante");
   const w = nuevoMundo(); w.hoja.push(["ml-sync", "tk-miles", "1.760.443.200", ""]); w.reloj = (x - 30) * 1000;
   const r = await L.adquirirLock("ml-sync", w.deps()); eq([r.ok, r.status], [false, 409], "un ticket con el vencimiento escrito con puntos de miles sigue contando como vigente"); }
 
-console.log("append del lock: INSERT_ROWS (appends simultáneos no se pisan); el resto de los llamadores no cambia");
+console.log("append del lock: INSERT_ROWS (valor por defecto de appendSheet); el modo anterior sigue disponible de forma explícita");
 { process.env.GOOGLE_SHEET_ID = "hoja-falsa"; globalThis.__appends = []; await L.depsPorDefecto("Locks").agregar(["k", "tk-1", 1760443200, ""]);
   eq([globalThis.__appends[0].insertDataOption, globalThis.__appends[0].range, globalThis.__appends[0].valueInputOption], ["INSERT_ROWS", "Locks!A:D", "USER_ENTERED"], "el ticket se agrega con INSERT_ROWS");
-  globalThis.__appends = []; await Sh.appendSheet("ShippingCache!A:D", [["a"]]); eq("insertDataOption" in globalThis.__appends[0], false, "appendSheet sin opciones sigue sin insertDataOption (comportamiento anterior)"); }
+  globalThis.__appends = []; await Sh.appendSheet("ShippingCache!A:D", [["a"]], { modo: "OVERWRITE" }); eq(globalThis.__appends[0].insertDataOption, "OVERWRITE", "con modo: \"OVERWRITE\" explícito se conserva el modo anterior"); }
 
 console.log("cuota de Sheets (429) al adquirir: falla cerrado con 503 y mensaje claro, sin colgarse");
 { process.env.GOOGLE_SHEET_ID = "hoja-falsa"; globalThis.__appends = []; globalThis.__cuota429 = true;

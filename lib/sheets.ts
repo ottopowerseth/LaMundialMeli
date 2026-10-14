@@ -197,10 +197,18 @@ export async function borrarFilasHoja(sheetName: string, filas: number[]) {
   );
 }
 
-// `insertarFilas`: con appends SIMULTÁNEOS a la misma hoja, el modo por defecto (OVERWRITE) puede hacer que dos llamadas escriban en
-// la misma fila y una pise a la otra (medido contra Sheets real el 2026-10-14: de 13 tickets quedaron 7). INSERT_ROWS inserta una fila
-// nueva por cada llamada. Lo usa lib/lock-sheets.ts; el resto de los llamadores conserva el comportamiento anterior.
-export async function appendSheet(range: string, values: unknown[][], opciones?: { insertarFilas?: boolean }) {
+// Modo de inserción del append (C-14). Con appends SIMULTÁNEOS a la misma hoja, OVERWRITE (el modo de la API por defecto) puede hacer que dos
+// llamadas escriban en la misma fila y una pise a la otra: medido contra Sheets real el 2026-10-14, con appends separados por menos de
+// ~200 ms se perdieron filas (2 appends a 0 ms: 2 de 8 ensayos con pérdida; 5 appends a 0 y 50 ms: 6 de 6), y con 200 ms o más no se perdió
+// ninguna. INSERT_ROWS inserta una fila nueva por cada llamada y no se pisan.
+//
+// DIFERENCIA A CONOCER: INSERT_ROWS hereda el formato de número de la fila de ARRIBA en las filas nuevas (OVERWRITE no: escribe en filas sin
+// formato). Con formatos uniformes por columna es inocuo; pero en hojas donde alguna celda numérica quedó con formato de fecha (S-07: un
+// texto como «4989.6» se interpreta como fecha con USER_ENTERED) la herencia propagaría ese formato a todas las filas siguientes y los
+// lectores, que usan FORMATTED_VALUE, leerían fechas en vez de números. Esas hojas (ShippingCache, Rentabilidad, TarifaEnvio) se agregan con
+// modo: "OVERWRITE" explícito hasta resolver S-07; test-append-modos.mjs vigila que ningún llamador de ellas use el modo por defecto.
+export type ModoAppend = "INSERT_ROWS" | "OVERWRITE";
+export async function appendSheet(range: string, values: unknown[][], opciones?: { modo?: ModoAppend }) {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
 
@@ -209,7 +217,7 @@ export async function appendSheet(range: string, values: unknown[][], opciones?:
       spreadsheetId: process.env.GOOGLE_SHEET_ID,
       range,
       valueInputOption: "USER_ENTERED",
-      ...(opciones?.insertarFilas ? { insertDataOption: "INSERT_ROWS" } : {}),
+      insertDataOption: opciones?.modo ?? "INSERT_ROWS",
       requestBody: { values },
     })
   );

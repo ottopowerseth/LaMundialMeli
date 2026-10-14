@@ -368,7 +368,7 @@ async function sincronizar(inicioRuta: number): Promise<NextResponse> {
       ordenesAProcesar,
       {
         getEnvio: async (shippingId) => (await mlGet<{ logistic_type?: string }>(`/shipments/${shippingId}`)).data,
-        persistir: (filas) => agregarSinDuplicar((r) => readSheet(r), (f) => appendSheet("ShippingCache!A:D", f), filas),
+        persistir: (filas) => agregarSinDuplicar((r) => readSheet(r), (f) => appendSheet("ShippingCache!A:D", f, { modo: "OVERWRITE" }), filas),
         esFatal: (err) => err instanceof SyncRetryBudgetExceededError,
         alResolver: (orderId, tipo) => cacheLogisticoPorOrden.set(orderId, tipo),
         alFallar: (orderId, err) => erroresValidacion.push(`Orden ${orderId}: no se pudo obtener el tipo de envío (${String(err)})`),

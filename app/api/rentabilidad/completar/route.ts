@@ -101,7 +101,7 @@ export async function POST(request: Request) {
       let resultado;
       try {
         resultado = await procesarTanda({
-          mlGet, readSheet, appendSheet, batchWriteSheet, calcularMargen,
+          mlGet, readSheet, appendSheet: (rango, valores) => appendSheet(rango, valores, { modo: "OVERWRITE" }), /* solo agrega a ShippingCache (formatos mixtos): modo anterior (C-14) */ batchWriteSheet, calcularMargen,
           forzarReintentos: false,
           dryRun: !confirmar,
           // En simulación (confirmar:false), dryRunLimite reemplaza a

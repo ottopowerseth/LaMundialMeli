@@ -311,9 +311,9 @@ async function analizarMes(mes: string, inicioRuta: number): Promise<NextRespons
   if (filasParaEscribir.length > 0) {
     const existingHeaders = await readSheet("Rentabilidad!A1:A1");
     if (!existingHeaders.length || !existingHeaders[0]?.length) {
-      await appendSheet("Rentabilidad!A1", [HEADERS_RENTABILIDAD]);
+      await appendSheet("Rentabilidad!A1", [HEADERS_RENTABILIDAD], { modo: "OVERWRITE" });
     }
-    await appendSheet("Rentabilidad!A:Q", filasParaEscribir);
+    await appendSheet("Rentabilidad!A:Q", filasParaEscribir, { modo: "OVERWRITE" }); // Rentabilidad tiene formatos mixtos: modo anterior (C-14)
   }
 
   if (nuevasEntradasCache.length > 0) {
@@ -322,10 +322,10 @@ async function analizarMes(mes: string, inicioRuta: number): Promise<NextRespons
       await appendSheet("ShippingCache!A1", [[
         "ID Orden", "Shipping ID", "Logistic Type", "Fecha Consulta",
         "Costo Total Despacho", "Unidades Despacho", "Unidades Esta Orden", "Fuente",
-      ]]);
+      ]], { modo: "OVERWRITE" });
     }
     // S-08: relee la columna A justo antes de agregar; solo escribe las órdenes que todavía no están (otra corrida pudo agregarlas).
-    await agregarSinDuplicar((r) => readSheet(r), (filas) => appendSheet("ShippingCache!A:H", filas), nuevasEntradasCache);
+    await agregarSinDuplicar((r) => readSheet(r), (filas) => appendSheet("ShippingCache!A:H", filas, { modo: "OVERWRITE" }), nuevasEntradasCache);
   }
 
   await guardarProgreso(mes, offset, almacenamientoAcumulado, completo, progreso.fila);

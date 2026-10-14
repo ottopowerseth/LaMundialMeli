@@ -101,7 +101,7 @@ export async function POST(request: Request) {
     if (confirmar) await ensureSheets([HOJA_TARIFA_ENVIO]);
 
     const resultado = await procesarTarifas({
-      mlGet, readSheet, writeSheet, appendSheet, batchWriteSheet,
+      mlGet, readSheet, writeSheet, appendSheet: (rango, valores) => appendSheet(rango, valores, { modo: "OVERWRITE" }), /* TarifaEnvio tiene formatos mixtos: modo anterior (C-14) */ batchWriteSheet,
       ventas, skuPorItem, logisticoPorItem, ahora: new Date(),
       dryRun: !confirmar, forzar, soloSinFilaDelTipo, soloMuestraReal, soloEntregados, minMuestras, publicacionesEsperadas, limite, tiempoMaximoMs: TIEMPO_PROCESO_MS,
     });
