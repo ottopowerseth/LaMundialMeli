@@ -5,6 +5,7 @@ import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { agruparPorOrdenReal, calcularFilaOrden, calcularMargen, sumarAlmacenamiento, BillingDetailRow } from "@/lib/rentabilidad";
 import { resolverEnvioReal, detectarMixto } from "@/lib/envio-real";
+import { agregarSinDuplicar } from "@/lib/backfill-shipping";
 import { logError } from "@/lib/log";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
@@ -311,7 +312,8 @@ export async function POST(request: Request) {
           "Costo Total Despacho", "Unidades Despacho", "Unidades Esta Orden", "Fuente",
         ]]);
       }
-      await appendSheet("ShippingCache!A:H", nuevasEntradasCache);
+      // S-08: relee la columna A justo antes de agregar; solo escribe las órdenes que todavía no están (otra corrida pudo agregarlas).
+      await agregarSinDuplicar((r) => readSheet(r), (filas) => appendSheet("ShippingCache!A:H", filas), nuevasEntradasCache);
     }
 
     await guardarProgreso(mes, offset, almacenamientoAcumulado, completo, progreso.fila);

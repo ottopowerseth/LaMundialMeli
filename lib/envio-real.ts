@@ -7,6 +7,8 @@
 // proporcional a unidades: envioDeEstaOrden = costoTotal × (unidades de
 // esta orden / unidades totales del despacho).
 
+import { agregarSinDuplicar } from "@/lib/backfill-shipping";
+
 export type MlGet = <T = unknown>(url: string) => Promise<{ data: T }>;
 
 type Order = {
@@ -443,7 +445,13 @@ export async function procesarTanda(opciones: OpcionesTanda): Promise<ResultadoT
 
   if (!dryRun) {
     if (nuevasEntradasCache.length > 0) {
-      await appendSheet("ShippingCache!A:I", nuevasEntradasCache);
+      // S-08: las órdenes que NO estaban en ShippingCache se agregan sin duplicar (se relee la columna A justo antes, por si otra
+      // corrida —ml-sync, backfill— las agregó mientras tanto). Las que ya estaban (reintento billing → costs) se agregan igual que
+      // antes: el lector se queda con la última fila de la orden, así que descartarlas dejaría la mejora sin guardar.
+      const nuevas = nuevasEntradasCache.filter((e) => !cachePorOrden.has(String(e[0]).replace(/^'/, "")));
+      const mejoras = nuevasEntradasCache.filter((e) => cachePorOrden.has(String(e[0]).replace(/^'/, "")));
+      await agregarSinDuplicar(readSheet, (filas) => appendSheet("ShippingCache!A:I", filas), nuevas);
+      if (mejoras.length > 0) await appendSheet("ShippingCache!A:I", mejoras);
     }
 
     const updates = resultados.flatMap(({ fila, envio, margenNeto, margenPct, envioPorUnidad, fuente, mixto }) => {
