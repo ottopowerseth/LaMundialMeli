@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { ensureSheets, clearSheet, readSheet, writeSheet, appendSheet } from "@/lib/sheets";
+import { ensureSheets, reemplazarHoja, readSheet, appendSheet } from "@/lib/sheets";
 import { getValidAccessToken, instalarReintento401 } from "@/lib/ml-token";
 import { createSyncBudget, withMlRetry, SyncRetryBudgetExceededError } from "@/lib/http-retry";
 import { getComisionPct, IVA } from "@/lib/rentabilidad";
@@ -170,12 +170,13 @@ export async function POST() {
         "Unidades",
       ];
 
-      // Leer hoja anterior ANTES de limpiar para preservar datos manuales y detectar cambios de stock
+      // Leer hoja anterior ANTES de reemplazar para preservar datos manuales y detectar cambios de stock. Sin tope de filas
+      // (antes tenía tope de 1000 filas): con más de 999 publicaciones las de más abajo perdían Costo/Envío/Unidades manuales (C-07).
       // A=0,B=1,C=2,D=3,E=4,F=5(Costo),G=6(Precio),H=7,I=8(Envío),S=18(Unidades)
       const stockAnterior: Record<string, { titulo: string; stock: number; precio: number }> = {};
       const datosManual: Record<string, { costo: string; envio: string; unidades: string }> = {};
       try {
-        const prevRows = await readSheet("Publicaciones!A2:S1000");
+        const prevRows = await readSheet("Publicaciones!A2:S");
         for (const r of prevRows) {
           if (!r[0]) continue;
           stockAnterior[r[0]] = { titulo: r[2] ?? "", stock: Number(r[3]) || 0, precio: Number(r[6]) || 0 };
@@ -240,10 +241,12 @@ export async function POST() {
         ];
       });
 
-      // Limpiar hoja antes de escribir para que no queden filas viejas
-      await clearSheet("Publicaciones");
-      await writeSheet("Publicaciones!A1", [headers, ...rows]);
+      // Escribir primero y limpiar el sobrante después (S-08): si algo falla en el medio la hoja anterior sigue ahí, nunca vacía.
+      const reemplazoPub = await reemplazarHoja("Publicaciones", [headers, ...rows]);
       publicacionesOk = true;
+      if (!reemplazoPub.sobranteLimpio) {
+        erroresSync.push(`Publicaciones: se escribió la tabla nueva pero no se pudieron limpiar las filas sobrantes (${reemplazoPub.errorSobrante}). Reintenta el sync.`);
+      }
 
       // Cobertura del campo Costo (columna F, manual) entre publicaciones
       // activas — solo activas: una pausada/cerrada sin costo no es urgente
@@ -381,9 +384,12 @@ export async function POST() {
         ];
       });
 
-      await clearSheet("Ventas");
-      await writeSheet("Ventas!A1", [ordHeaders, ...ordRows]);
+      // Mismo orden que Publicaciones: escribir primero, limpiar el sobrante después.
+      const reemplazoVentas = await reemplazarHoja("Ventas", [ordHeaders, ...ordRows]);
       ventasOk = true;
+      if (!reemplazoVentas.sobranteLimpio) {
+        erroresSync.push(`Ventas: se escribió la tabla nueva pero no se pudieron limpiar las filas sobrantes (${reemplazoVentas.errorSobrante}). Reintenta el sync.`);
+      }
 
       // Ventas nuevas (últimas 24h para el contador, pero devolvemos 7 días para no perder ventas)
       const hace7d = new Date(Date.now() - 7 * 86400000);

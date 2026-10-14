@@ -31,7 +31,7 @@ export async function POST() {
     }
 
     // Leer sheet con ID (A) y Título (C)
-    const sheetRows = await readSheet("Publicaciones!A2:C1000");
+    const sheetRows = await readSheet("Publicaciones!A2:C");
     if (sheetRows.length === 0) {
       return NextResponse.json({ ok: true, eliminados: 0, productos: [] });
     }
