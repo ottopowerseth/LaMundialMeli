@@ -29,6 +29,7 @@ import type { MlGet } from "@/lib/envio-real";
 import { mediana } from "@/lib/envio-real";
 import { armarMuestrasEnvio, calcularEnvioEstimadoPorUnidad } from "@/lib/envio-estimado";
 import { numeroComoTexto } from "@/lib/numero-texto";
+import { textoExternoSeguro } from "@/lib/texto-seguro";
 
 export const HOJA_TARIFA_ENVIO = "TarifaEnvio";
 export const HEADERS_TARIFA_ENVIO = [
@@ -288,7 +289,7 @@ function filaDeSheet(f: FilaTarifa, tipoCruda: string): string[] {
   // que «USER_ENTERED los guarda como texto»: es falso. Sheets interpreta «1019.9» (año.mes) o «3.9» (día.mes) como una FECHA que se muestra
   // igual pero queda guardada como fecha (28 celdas de la columna C y 3 de la F estaban así). Los lectores parsean el valor mostrado con Number().
   return [
-    f.itemId, f.sku,
+    f.itemId, textoExternoSeguro(f.sku),
     numeroComoTexto(r.tarifaPorUnidad),
     // Siempre con tipo: una fila sin muestra también lleva el tipo del par, así su clave es estable y se reintenta por TTL.
     r.tipoLogistico || tipoCruda, numeroComoTexto(r.muestras),

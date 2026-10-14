@@ -7,6 +7,7 @@ import { agruparPorOrdenReal, calcularFilaOrden, calcularMargen, sumarAlmacenami
 import { resolverEnvioReal, detectarMixto } from "@/lib/envio-real";
 import { agregarSinDuplicar } from "@/lib/backfill-shipping";
 import { numeroComoTexto } from "@/lib/numero-texto";
+import { textoExternoSeguro } from "@/lib/texto-seguro";
 import { conLock } from "@/lib/lock-sheets";
 import { logError } from "@/lib/log";
 
@@ -281,7 +282,7 @@ async function analizarMes(mes: string, inicioRuta: number): Promise<NextRespons
           `'${fila.idOrden}`,
           fila.fecha,
           fila.idItem,
-          fila.producto,
+          textoExternoSeguro(fila.producto),
           // Números como TEXTO (S-07): sin esto, «4989.6» se guardaba como fecha (ver lib/numero-texto.ts).
           numeroComoTexto(fila.precioVenta),
           numeroComoTexto(fila.cogs),

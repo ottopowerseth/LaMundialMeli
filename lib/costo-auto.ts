@@ -23,6 +23,7 @@
 //   - Simula por defecto; solo escribe con confirmar:true.
 import { cruzarConDefontana, precioReferenciaEquivalencia } from "@/lib/defontana";
 import type { FilaDefontana, FilaEquivalencia } from "@/lib/defontana";
+import { textoExternoSeguro } from "@/lib/texto-seguro";
 
 export const HOJA_COSTO_ORIGEN = "CostoOrigen";
 export const HEADERS_COSTO_ORIGEN = [
@@ -240,9 +241,9 @@ export async function procesarCostoAuto(op: OpcionesCostoAuto): Promise<ResumenC
   for (const r of registrar) {
     const costoEscrito = r.escribir ? String(r.calculo.costo) : r.p.costoActual.trim();
     const fila = [
-      r.p.id, r.p.sku ?? "", r.origen, costoEscrito,
+      r.p.id, textoExternoSeguro(r.p.sku), r.origen, costoEscrito,
       r.calculo.costo === null ? "" : String(r.calculo.costo), r.calculo.fuente ?? "",
-      r.calculo.codigo ?? "", r.calculo.articulo ?? "", r.motivos.join(" + "), op.ahora.toISOString(),
+      textoExternoSeguro(r.calculo.codigo), textoExternoSeguro(r.calculo.articulo), r.motivos.join(" + "), op.ahora.toISOString(),
     ];
     const previo = origenPrevio.get(r.p.id);
     if (previo) { updates.push({ range: `${hoja}!A${previo.fila}:J${previo.fila}`, values: [fila] }); resumen.escritas.origenActualizados++; }

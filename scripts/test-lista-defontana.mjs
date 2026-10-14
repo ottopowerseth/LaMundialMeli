@@ -17,7 +17,7 @@ const compilar = (origen, destino) => {
   const src = fs.readFileSync(path.join(PROJ, origen), "utf8").replace(/from "@\/lib\/([\w-]+)"/g, 'from "./$1"');
   fs.writeFileSync(path.join(out, destino), ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
 };
-for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/sheets.ts", "sheets.js"], ["lib/defontana.ts", "defontana.js"], ["app/api/lista-defontana/importar/route.ts", "importar.js"], ["app/api/lista-defontana/equivalencias/route.ts", "equivalencias.js"]]) compilar(o, d);
+for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/sheets.ts", "sheets.js"], ["lib/defontana.ts", "defontana.js"], ["lib/texto-seguro.ts", "texto-seguro.js"], ["app/api/lista-defontana/importar/route.ts", "importar.js"], ["app/api/lista-defontana/equivalencias/route.ts", "equivalencias.js"]]) compilar(o, d);
 
 fs.mkdirSync(path.join(out, "node_modules", "googleapis"), { recursive: true });
 fs.writeFileSync(path.join(out, "node_modules", "googleapis", "index.js"), `

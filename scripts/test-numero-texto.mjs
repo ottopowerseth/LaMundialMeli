@@ -18,7 +18,7 @@ const compilar = (origen, destino) => {
   const src = fs.readFileSync(path.join(PROJ, origen), "utf8").replace(/from "@\/lib\/([\w-]+)"/g, 'from "./$1"');
   fs.writeFileSync(path.join(out, destino), ts.transpileModule(src, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
 };
-for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/http-retry.ts", "http-retry.js"], ["lib/rentabilidad.ts", "rentabilidad.js"], ["lib/backfill-shipping.ts", "backfill-shipping.js"], ["lib/numero-texto.ts", "numero-texto.js"],
+for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/http-retry.ts", "http-retry.js"], ["lib/rentabilidad.ts", "rentabilidad.js"], ["lib/backfill-shipping.ts", "backfill-shipping.js"], ["lib/numero-texto.ts", "numero-texto.js"], ["lib/texto-seguro.ts", "texto-seguro.js"],
   ["lib/numero-hoja.ts", "numero-hoja.js"], ["lib/envio-real.ts", "envio-real.js"], ["lib/guardas-filas.ts", "guardas-filas.js"], ["lib/lock-sheets.ts", "lock-sheets.js"], ["app/api/rentabilidad/analyze/route.ts", "analyze.js"]]) compilar(o, d);
 
 // Hojas en memoria que se comportan como Sheets con USER_ENTERED para lo que importa aquí (medido en la sonda del 2026-10-15): un apóstrofo inicial se
@@ -66,7 +66,7 @@ console.log("C. el verificador estático falla si alguien rompe la regla (se pru
   const alterar = (rel, de, a) => { const f = path.join(raiz, rel); const orig = fs.readFileSync(f, "utf8"); const s = orig.split("\r\n").join("\n"); assert.ok(s.includes(de), "no se encontró " + de); fs.writeFileSync(f, s.replace(de, a)); return () => fs.writeFileSync(f, orig); };
   let r = correr(); check(r.status === 0, "el código actual pasa");
   let deshacer = alterar("app/api/rentabilidad/analyze/route.ts", "numeroComoTexto(fila.envio),", "String(fila.envio),"); r = correr(); check(r.status === 1 && /columna #7 \(H\)/.test(r.stderr), "analyze: una columna numérica de Rentabilidad sin el ayudante hace fallar: " + (r.stderr.split("\n")[1] ?? "").trim().slice(0, 100)); deshacer();
-  deshacer = alterar("app/api/rentabilidad/analyze/route.ts", "          fila.producto,\n", "          numeroComoTexto(fila.producto),\n"); r = correr(); check(r.status === 1 && /NO es numérica/.test(r.stderr), "analyze: aplicar el ayudante a una columna de TEXTO (producto) también hace fallar"); deshacer();
+  deshacer = alterar("app/api/rentabilidad/analyze/route.ts", "          textoExternoSeguro(fila.producto),\n", "          numeroComoTexto(fila.producto),\n"); r = correr(); check(r.status === 1 && /NO es numérica/.test(r.stderr), "analyze: aplicar el ayudante a una columna de TEXTO (producto) también hace fallar"); deshacer();
   deshacer = alterar("app/api/rentabilidad/analyze/route.ts", "              numeroComoTexto(resultado.costoTotalDespacho),", "              String(resultado.costoTotalDespacho),"); r = correr(); check(r.status === 1 && /ShippingCache/.test(r.stderr), "analyze: la entrada de ShippingCache sin el ayudante hace fallar"); deshacer();
   deshacer = alterar("lib/envio-real.ts", "values: [[numeroComoTexto(envio)]]", "values: [[envio]]"); r = correr(); check(r.status === 1 && /actualización de H/.test(r.stderr), "envio-real: la ACTUALIZACIÓN de H sin el ayudante hace fallar"); deshacer();
   deshacer = alterar("lib/envio-real.ts", "values: [[numeroComoTexto(margenNeto), numeroComoTexto(margenPct)]]", "values: [[margenNeto, numeroComoTexto(margenPct)]]"); r = correr(); check(r.status === 1 && /J:K/.test(r.stderr), "envio-real: J:K con una sola columna sin el ayudante hace fallar"); deshacer();

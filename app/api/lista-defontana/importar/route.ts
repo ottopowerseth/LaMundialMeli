@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { ensureSheets, reemplazarHoja } from "@/lib/sheets";
 import { HEADERS_LISTA_DEFONTANA, FilaDefontana } from "@/lib/defontana";
 import { logError } from "@/lib/log";
+import { textoExternoSeguro } from "@/lib/texto-seguro";
 
 // Importación manual y mensual de la lista de precios del proveedor
 // (Defontana) — reemplaza la hoja completa, no hace upsert. Se sube el
@@ -49,7 +50,8 @@ export async function POST(request: Request) {
     // después (S-08): si algo falla, la lista anterior sigue ahí.
     await ensureSheets(["Lista Defontana"]);
     const cargado = new Date().toLocaleString("es-CL");
-    const rows = filas.map((f) => [f.proveedor, f.marca, f.familia, f.cod, f.barras, f.articulo, String(f.mayor), cargado]);
+    // Textos del Excel del proveedor = texto externo: se protegen contra fórmulas (S-07). El MAYOR es numérico y no se toca.
+    const rows = filas.map((f) => [textoExternoSeguro(f.proveedor), textoExternoSeguro(f.marca), textoExternoSeguro(f.familia), textoExternoSeguro(f.cod), textoExternoSeguro(f.barras), textoExternoSeguro(f.articulo), String(f.mayor), cargado]);
     const reemplazo = await reemplazarHoja("Lista Defontana", [HEADERS_LISTA_DEFONTANA, ...rows]);
 
     return NextResponse.json({

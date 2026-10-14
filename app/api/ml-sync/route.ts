@@ -8,6 +8,7 @@ import { getComisionPct, IVA } from "@/lib/rentabilidad";
 import { agregarSinDuplicar, resolverEnviosPendientes, seleccionarEnviosPendientes } from "@/lib/backfill-shipping";
 import { cargarHistorialVentas } from "@/lib/ventas-historial";
 import { logError } from "@/lib/log";
+import { textoExternoSeguro } from "@/lib/texto-seguro";
 
 // Máximo permitido en el plan de Vercel (Hobby): 60s.
 export const maxDuration = 60;
@@ -225,7 +226,7 @@ async function sincronizar(inicioRuta: number): Promise<NextResponse> {
       return [
         String(item.id),                                      // A: ID
         item.category_id,                                     // B: Categoría
-        item.title,                                           // C: Título
+        textoExternoSeguro(item.title),                       // C: Título (texto externo: protegido contra fórmulas)
         stock ?? "",                                          // D: Stock
         resolveNumeric(item.sold_quantity) ?? 0,              // E: Vendidos
         manual.costo,                                         // F: Costo (se preserva entre syncs)
@@ -388,12 +389,12 @@ async function sincronizar(inicioRuta: number): Promise<NextResponse> {
         // rompen el matching por ID Orden contra ShippingCache.
         `'${String(order.id)}`,
         new Date(order.date_created as string).toLocaleDateString("es-CL"),
-        (item?.item as Record<string, unknown>)?.title ?? "",
-        (item?.item as Record<string, unknown>)?.seller_sku ?? "",
+        textoExternoSeguro((item?.item as Record<string, unknown>)?.title),
+        textoExternoSeguro((item?.item as Record<string, unknown>)?.seller_sku),
         item?.quantity ?? "",
         item?.unit_price ?? "",
         order.total_amount,
-        (order.buyer as Record<string, unknown>)?.nickname ?? "",
+        textoExternoSeguro((order.buyer as Record<string, unknown>)?.nickname),
         order.status,
         (item?.item as Record<string, unknown>)?.id ?? "",
         cacheLogisticoPorOrden.get(String(order.id)) ?? "",
