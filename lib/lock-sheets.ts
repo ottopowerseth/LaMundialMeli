@@ -47,6 +47,7 @@ export type DepsLock = {
   ahora: () => number; // ms
   nuevoToken: () => string;
   timeoutMs?: number;
+  olvidarHoja?: () => void; // invalida el «la pestaña ya está lista» recordado (si alguien borró la pestaña o su encabezado, se rehace)
 };
 
 // filaProbable: dónde estaba el ticket en la lectura de la adquisición. Es solo una PISTA para ahorrar una lectura al liberar (la cuota
@@ -86,6 +87,7 @@ export function depsPorDefecto(hoja: string = HOJA_LOCKS): DepsLock {
     borrarFilas: (filas) => borrarFilasHoja(hoja, filas),
     ahora: () => Date.now(),
     nuevoToken: () => globalThis.crypto.randomUUID(),
+    olvidarHoja: () => { hojasListas.delete(hoja); },
   };
 }
 
@@ -173,6 +175,7 @@ export async function adquirirLock(clave: string, deps: DepsLock = depsPorDefect
     await conTimeout(deps.agregar([clave, ticket.token, Math.floor(deps.ahora() / 1000) + TTL_LOCK_S, ""]), ms);
     filas = await conTimeout(deps.leer(), ms);
   } catch (err) {
+    deps.olvidarHoja?.();
     await liberarSinFallar(ticket, deps); // el append pudo haber llegado aunque la respuesta falló: no dejar un ticket fantasma
     return falloCerrado(clave, err);
   }
@@ -180,6 +183,7 @@ export async function adquirirLock(clave: string, deps: DepsLock = depsPorDefect
   const ahoraS = Math.floor(deps.ahora() / 1000);
   const propiaVisible = filas.some((f) => texto(f?.[1]) === ticket.token);
   if (!propiaVisible) {
+    deps.olvidarHoja?.();
     await liberarSinFallar(ticket, deps);
     return falloCerrado(clave, new Error("el ticket propio no apareció al releer la hoja Locks"));
   }

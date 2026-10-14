@@ -21,7 +21,8 @@ for (const [o, d] of [["lib/log.ts", "log.js"], ["lib/guardas-filas.ts", "guarda
 fs.mkdirSync(path.join(out, "node_modules", "googleapis"), { recursive: true });
 fs.writeFileSync(path.join(out, "node_modules", "googleapis", "index.js"), `exports.google = { auth: { GoogleAuth: class {} }, sheets: () => ({ spreadsheets: {
   get: async () => ({ data: { sheets: [{ properties: { title: "Locks", sheetId: 77 } }] } }),
-  values: { append: async (r) => { globalThis.__appends.push(r); return {}; } },
+  values: { append: async (r) => { globalThis.__appends.push(r); if (globalThis.__cuota429) throw Object.assign(new Error("Quota exceeded for quota metric 'Write requests'"), { code: 429 }); return {}; },
+    get: async () => ({ data: { values: [["Clave"]] } }) },
   batchUpdate: async (r) => { globalThis.__peticiones.push(r.requestBody.requests); return {}; } } }) };`);
 const L = require(path.join(out, "lock-sheets.js")); const Sh = require(path.join(out, "sheets.js"));
 let ok = 0; const eq = (a, b, m) => { assert.deepStrictEqual(a, b, m); ok++; console.log("  ✓", m); };
@@ -98,6 +99,11 @@ console.log("falla al adquirir → falla cerrado (la tarea no corre)");
   { const w = nuevoMundo(); let n = 0; const d = w.deps(); const leerOriginal = d.leer; d.leer = async () => { n++; const f = await leerOriginal(); return n === 1 ? f.filter((x) => !String(x[1]).startsWith("tk-")) : f; };
     const r = await silencio(() => L.adquirirLock("ml-sync", d)); eq([r.ok, r.status], [false, 503], "si al releer no aparece el ticket propio, falla cerrado (no asume que ganó)"); } }
 
+console.log("si falla la adquisición se olvida que la pestaña estaba lista (se rehace sola si alguien la borró)");
+{ const w = nuevoMundo(); let olvidos = 0; const d = w.deps(); d.olvidarHoja = () => { olvidos++; }; w.falla.agregar = true; await silencio(() => L.adquirirLock("ml-sync", d));
+  const w2 = nuevoMundo(); const d2 = w2.deps(); d2.olvidarHoja = () => { olvidos++; }; const leerOriginal = d2.leer; let n = 0; d2.leer = async () => { n++; const f = await leerOriginal(); return n === 1 ? [] : f; }; await silencio(() => L.adquirirLock("ml-sync", d2));
+  eq(olvidos, 2, "tanto con error de Sheets como cuando el ticket propio no aparece al releer"); }
+
 console.log("liberación siempre, también si la tarea lanza");
 { const w = nuevoMundo(); await assert.rejects(() => L.conLock("audit:2026-06", async () => { throw new Error("boom"); }, w.deps()), /boom/); ok++; console.log("  ✓ el error de la tarea se propaga");
   eq(activos(w, "audit:2026-06"), 0, "el ticket quedó liberado"); const r = await L.conLock("audit:2026-06", async () => 1, w.deps()); check(r.ok, "y el siguiente puede adquirir"); }
@@ -160,6 +166,17 @@ console.log("append del lock: INSERT_ROWS (appends simultáneos no se pisan); el
   eq([globalThis.__appends[0].insertDataOption, globalThis.__appends[0].range, globalThis.__appends[0].valueInputOption], ["INSERT_ROWS", "Locks!A:D", "USER_ENTERED"], "el ticket se agrega con INSERT_ROWS");
   globalThis.__appends = []; await Sh.appendSheet("ShippingCache!A:D", [["a"]]); eq("insertDataOption" in globalThis.__appends[0], false, "appendSheet sin opciones sigue sin insertDataOption (comportamiento anterior)"); }
 
+console.log("cuota de Sheets (429) al adquirir: falla cerrado con 503 y mensaje claro, sin colgarse");
+{ process.env.GOOGLE_SHEET_ID = "hoja-falsa"; globalThis.__appends = []; globalThis.__cuota429 = true;
+  const d = L.depsPorDefecto("Locks"); d.timeoutMs = 300; let corrio = false; const t0 = Date.now();
+  const r = await silencio(() => L.conLock("ml-sync", async () => { corrio = true; }, d));
+  eq([r.ok, r.status, corrio], [false, 503, false], "429 en el append (con los reintentos reales de lib/sheets en curso): 503 y la tarea NO corre");
+  check(Date.now() - t0 < 3000, "responde enseguida (corta por el timeout de " + d.timeoutMs + " ms), no espera los reintentos de 10-30 s de Sheets");
+  check(/No se pudo verificar el bloqueo de «ml-sync»/.test(r.mensaje) && /no se ejecutó nada/.test(r.mensaje), "mensaje: «" + r.mensaje + "»");
+  globalThis.__cuota429 = false; }
+{ const w = nuevoMundo(); const d = w.deps(); const leerOriginal = d.leer; d.leer = async () => { throw Object.assign(new Error("Quota exceeded for quota metric 'Read requests'"), { code: 429 }); };
+  let corrio = false; const r = await silencio(() => L.conLock("ml-sync", async () => { corrio = true; }, d)); eq([r.ok, r.status, corrio], [false, 503, false], "429 en la lectura posterior al append: 503 y la tarea NO corre"); }
+
 console.log("pestaña nueva: carrera de dos contendientes creándola a la vez");
 { let creada = false; const ensure1 = async () => { if (creada) throw new Error("ya existe una hoja con ese nombre"); creada = true; };
   let encabezados = 0; const leer = async () => []; const esc = async () => { encabezados++; };
@@ -177,3 +194,4 @@ console.log("borrarFilasHoja (lib/sheets): filas 1-based, de abajo hacia arriba,
   globalThis.__peticiones = []; await Sh.borrarFilasHoja("Locks", []); eq(globalThis.__peticiones.length, 0, "lista vacía: no llama a la API"); }
 
 console.log(`\n${ok} comprobaciones OK`);
+process.exit(0); // los reintentos de cuota simulados siguen durmiendo en segundo plano
