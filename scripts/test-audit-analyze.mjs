@@ -75,6 +75,7 @@ console.log("A. referencia ML completa");
 { nuevaHoja(); const ventasRef = generar(10).length * 20000; const r = await analizar({ ml: crearML(generar(10)), ventasArchivo: 9_999_999, comisiones: Math.round(ventasRef * 0.15) });
   const f = filaGuardada();
   check(r.status === 200 && r.j.ok && r.j.avisos.length === 0, "guarda y responde ok, sin avisos");
+  check(f[4] === "" && f[5] === "" && f[9] === "" && f[3] === 55000 && f[6] === Math.round(ventasRef * 0.15), "C-12: las comisiones de MP (E y F) y el neto de MP (J) NO se guardan (celdas vacías); Total = cargos de ML");
   check(f[1] === ventasRef && f.length === 18 && f[16] === "" && f[17] === "referencia ML", `la fila tiene 18 columnas: ventas_brutas = referencia ML ($${ventasRef.toLocaleString("es-CL")}), Q vacía y R = «${f[17]}»`);
   check(globalThis.__hojas["Auditoría"][0][17] === "Fuente Ventas Brutas", "el encabezado de R se agregó a la hoja (la hoja traía el encabezado viejo de 11 columnas)");
   check(globalThis.__hojas.AuditoriaLocks.every((x) => !x[0]), "el lock del mes quedó liberado"); }
@@ -96,11 +97,11 @@ for (const [etiqueta, ml, ventasArchivo] of [["con referencia completa", crearML
   check(globalThis.__hojas.AuditoriaLocks.every((x) => !x[0]), `${etiqueta}: el lock se libera igual`); }
 console.log("F. ventas 0 con comisiones");
 { nuevaHoja(); const r = await analizar({ ml: crearML([], { fallaUsuario: true }), ventasArchivo: 0, comisiones: 50_000 }); check(r.status === 422 && /no se puede calcular la tasa/.test(r.j.error) && escrituras().length === 0, "ventas brutas $0 con comisiones → rechazado y sin escrituras"); }
-console.log("G. tasa fuera del rango habitual → se guarda con aviso");
-for (const [com, etiqueta] of [[200_000, "2 %"], [3_000_000, "30 %"]]) { nuevaHoja(); const r = await analizar({ ml: crearML([], { fallaUsuario: true }), ventasArchivo: 10_000_000, comisiones: com });
-  check(r.status === 200 && r.j.ok && !!filaGuardada() && r.j.avisos.some((a) => /fuera del rango habitual/.test(a)), `tasa ${etiqueta}: se guarda y aparece el aviso (no bloquea)`); }
+console.log("G. sin aviso por rango (se eliminó el 8 %-25 %): cualquier tasa entre 0 y 100 % se guarda sin aviso");
+for (const [com, etiqueta] of [[200_000, "2 %"], [3_000_000, "30 %"], [5_400_000, "54 %"]]) { nuevaHoja(); const r = await analizar({ ml: crearML([], { fallaUsuario: true }), ventasArchivo: 10_000_000, comisiones: com });
+  check(r.status === 200 && r.j.ok && !!filaGuardada() && r.j.avisos.length === 0, `tasa ${etiqueta}: se guarda y NO aparece ningún aviso de rango`); }
 { nuevaHoja(); const r = await analizar({ ml: crearML([], { fallaUsuario: true }), ventasArchivo: 10_000_000, comisiones: 1_400_000 }); check(r.j.avisos.length === 0, "tasa de 14 %: sin aviso"); }
-{ nuevaHoja(); const r = await analizar({ ml: crearML([], { fallaUsuario: true }), ventasArchivo: 10_000_000, comisiones: 10_000_000 }); check(r.status === 200 && r.j.avisos.some((a) => /fuera del rango/.test(a)), "tasa de exactamente 100 %: no se rechaza (solo > 100 %), pero avisa"); }
+{ nuevaHoja(); const r = await analizar({ ml: crearML([], { fallaUsuario: true }), ventasArchivo: 10_000_000, comisiones: 10_000_000 }); check(r.status === 200 && r.j.ok && r.j.avisos.length === 0, "tasa de exactamente 100 %: no se rechaza (solo > 100 %) y no avisa"); }
 console.log("H. re-análisis de un mes existente: no se pisa la columna Q (Almacenamiento de Rentabilidad)");
 { nuevaHoja([[MES, 1, 1, 1, 1, 1, 0, 1, 14.5, 0, 0, 0, "viejo", "01-01-2026", "", "", "1234"]]); const ventasRef = generar(10).length * 20000; const r = await analizar({ ml: crearML(generar(10)), ventasArchivo: 1, comisiones: Math.round(ventasRef * 0.14) }); const f = globalThis.__hojas["Auditoría"][1];
   const w = escrituras().filter((l) => l.op === "write").map((l) => l.range);

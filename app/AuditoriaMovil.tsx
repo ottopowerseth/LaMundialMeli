@@ -11,7 +11,7 @@ const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 
 // ---------------- Historial por mes ----------------
 type FilaHistorial = {
-  mes: string; ventas_brutas: number; comisiones_ml: number; comisiones_mp: number; comisiones_mp_px: number;
+  mes: string; ventas_brutas: number; comisiones_ml: number; comisiones_mp: number | null; comisiones_mp_px: number | null;
   total_comisiones: number; notas_credito_ml: number; recuperable: number; tasa_efectiva: number; resumen: string;
   analizado: string; rowIndex: number;
 };
@@ -40,7 +40,7 @@ export function TarjetasHistorial({ historial }: { historial: FilaHistorial[] })
               <>
                 <p className="text-sm font-semibold text-gray-900">{row.mes}</p>
                 <p className="mt-0.5 text-xs text-gray-600">
-                  Total comisiones <b className="text-red-700">{clp(row.total_comisiones)}</b> · Tasa <b className="text-red-700">{Number(row.tasa_efectiva).toFixed(2)}%</b>
+                  Cargos ML <b className="text-red-700">{clp(row.total_comisiones)}</b> · Tasa de cargos ML <b className="text-red-700">{Number(row.tasa_efectiva).toFixed(2)}%</b>
                 </p>
                 <p className="text-xs text-gray-600">Recuperable <b className="text-green-600">{clp(row.recuperable)}</b></p>
               </>
@@ -50,12 +50,12 @@ export function TarjetasHistorial({ historial }: { historial: FilaHistorial[] })
               <Dato etiqueta="Ventas brutas">{clp(row.ventas_brutas)}</Dato>
               <Dato etiqueta="Var. ventas"><span className={colorVar(varVentas)}>{fmtVar(varVentas)}</span></Dato>
               <Dato etiqueta="Com. ML"><span className="text-orange-600">{clp(row.comisiones_ml)}</span></Dato>
-              <Dato etiqueta="Com. MP"><span className="text-orange-600">{clp(row.comisiones_mp)}</span></Dato>
+              <Dato etiqueta="Com. MP (info)"><span className="text-gray-400">{row.comisiones_mp == null ? "—" : clp(row.comisiones_mp)}</span></Dato>
               <Dato etiqueta="Var. comisiones"><span className={colorVar(varComisiones, true)}>{fmtVar(varComisiones)}</span></Dato>
               <Dato etiqueta="NC ML">{clp(row.notas_credito_ml)}</Dato>
             </Datos>
             <p className="text-gray-600">{row.resumen}</p>
-            {row.comisiones_mp_px !== 0 && <p className="text-yellow-700">PX — asumido ML, no verificado: {clp(row.comisiones_mp_px)}</p>}
+            {row.comisiones_mp_px != null && row.comisiones_mp_px !== 0 && <p className="text-yellow-700">PX — asumido ML, no verificado: {clp(row.comisiones_mp_px)}</p>}
             <p className="text-gray-400">Analizado: {row.analizado}</p>
           </TarjetaFila>
         );

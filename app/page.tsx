@@ -228,6 +228,11 @@ type TransaccionError = {
   detalle: string;
 };
 
+type DesgloseML = {
+  cargo_por_venta: number; envio: number; publicidad_mantenimiento: number; anulaciones: number;
+  notas_credito: number; flex_credito: number; flex_debito: number; otros_no_incluidos: number;
+};
+
 type AuditResult = {
   ventas_brutas: number;
   ventas_netas: number;
@@ -235,6 +240,7 @@ type AuditResult = {
   comisiones_mp: number;
   comisiones_mp_px: number;
   total_comisiones: number;
+  desglose_ml: DesgloseML;
   recuperable: number;
   neto_recibido_mp: number;
   tasa_efectiva: number;
@@ -267,8 +273,8 @@ type AuditHistorialRow = {
   ventas_brutas: number;
   ventas_netas: number;
   comisiones_ml: number;
-  comisiones_mp: number;
-  comisiones_mp_px: number;
+  comisiones_mp: number | null;    // null = no se guardó (desde C-12 las comisiones de MP son solo informativas)
+  comisiones_mp_px: number | null;
   total_comisiones: number;
   notas_credito_ml: number;
   recuperable: number;
@@ -495,8 +501,8 @@ export default function Home() {
             ventas_brutas: leerNumeroHoja(r[1]) || 0,
             ventas_netas: leerNumeroHoja(r[2]) || 0,
             comisiones_ml: leerNumeroHoja(r[3]) || 0,
-            comisiones_mp: leerNumeroHoja(r[4]) || 0,
-            comisiones_mp_px: esquemaViejo ? 0 : leerNumeroHoja(r[5]) || 0,
+            comisiones_mp: r[4] === "" || r[4] == null ? null : leerNumeroHoja(r[4]) || 0,
+            comisiones_mp_px: esquemaViejo ? 0 : r[5] === "" || r[5] == null ? null : leerNumeroHoja(r[5]) || 0,
             total_comisiones: leerNumeroHoja(r[esquemaViejo ? 5 : 6]) || 0,
             notas_credito_ml: esquemaViejo ? 0 : leerNumeroHoja(r[7]) || 0,
             recuperable: leerNumeroHoja(r[esquemaViejo ? 6 : 8]) || 0,
@@ -1328,11 +1334,8 @@ export default function Home() {
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       {[
                         { label: "Ventas Brutas", value: formatCLP(auditResult.result.ventas_brutas), color: "text-gray-900" },
-                        { label: "Comisiones ML", value: formatCLP(auditResult.result.comisiones_ml), color: "text-orange-600" },
-                        { label: "Comisiones MP", value: formatCLP(auditResult.result.comisiones_mp), color: "text-orange-600" },
-                        { label: "Total Comisiones", value: formatCLP(auditResult.result.total_comisiones), color: "text-red-700" },
-                        { label: "Tasa Efectiva", value: `${auditResult.result.tasa_efectiva.toFixed(2)}%`, color: "text-red-700" },
-                        { label: "Neto Recibido MP", value: formatCLP(auditResult.result.neto_recibido_mp), color: "text-blue-700" },
+                        { label: "Cargos de ML (total)", value: formatCLP(auditResult.result.total_comisiones), color: "text-red-700" },
+                        { label: "Tasa de cargos ML (venta + envío + publicidad)", value: `${auditResult.result.tasa_efectiva.toFixed(2)}%`, color: "text-red-700" },
                         { label: "Recuperable", value: formatCLP(auditResult.result.recuperable), color: "text-green-600" },
                         { label: "Errores detectados", value: String(auditResult.result.errores_count), color: auditResult.result.errores_count > 0 ? "text-red-600" : "text-gray-900" },
                       ].map(card => (
@@ -1343,19 +1346,31 @@ export default function Home() {
                       ))}
                     </div>
 
-                    {/* Desglose PX: incluido en Comisiones MP de arriba, pero
-                        mostrado aparte porque su clasificación como ML es una
-                        asunción del usuario, no verificada por cruce de datos
-                        (ver hallazgo Fase 1 de validación de Auditoría). */}
-                    {auditResult.result.comisiones_mp_px !== 0 && (
-                      <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-3 text-sm">
-                        <span className="font-semibold text-yellow-800">PX — asumido ML, no verificado: </span>
-                        <span className="text-yellow-700">{formatCLP(auditResult.result.comisiones_mp_px)}</span>
-                        <span className="text-yellow-600 text-xs block mt-1">
-                          Ya incluido en Comisiones MP. No se pudo confirmar por cruce de datos si "PX" es tráfico del marketplace de ML o de otro canal (ej. Shopify) — se asumió ML según lo indicado por el usuario.
-                        </span>
-                      </div>
-                    )}
+                    {/* Desglose de los cargos de ML que forman la tasa (C-12) */}
+                    {(() => {
+                      const d = auditResult.result.desglose_ml;
+                      const otros = d.anulaciones + d.notas_credito + d.flex_credito + d.flex_debito;
+                      const lineas: [string, number][] = [["Cargo por venta", d.cargo_por_venta], ["Envío", d.envio], ["Publicidad y mantenimiento", d.publicidad_mantenimiento], ["Otros (anulaciones, notas de crédito y Flex)", otros]];
+                      return (
+                        <div className="rounded-xl border border-gray-200 p-4 text-sm">
+                          <p className="font-semibold text-gray-800 mb-2">Desglose de los cargos de ML</p>
+                          <div className="space-y-1">
+                            {lineas.map(([etiqueta, valor]) => (
+                              <div key={etiqueta} className="flex justify-between gap-3"><span className="text-gray-600">{etiqueta}</span><span className="font-medium text-gray-900">{formatCLP(valor)}</span></div>
+                            ))}
+                            <div className="flex justify-between gap-3 border-t border-gray-200 pt-1"><span className="font-semibold text-gray-800">Total cargos de ML</span><span className="font-bold text-red-700">{formatCLP(auditResult.result.total_comisiones)}</span></div>
+                          </div>
+                          {d.otros_no_incluidos > 0 && <p className="text-xs text-gray-500 mt-2">Otros cargos del ciclo con otro detalle, no sumados: {formatCLP(d.otros_no_incluidos)}.</p>}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Mercado Pago: solo informativo. No entra en la tasa ni se guarda en la hoja (C-12). */}
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+                      <span className="font-semibold text-gray-700">Informativo, no incluido en la tasa ni guardado: </span>
+                      Comisiones MP {formatCLP(auditResult.result.comisiones_mp)}{auditResult.result.comisiones_mp_px !== 0 ? ` (de ellas PX, asumido ML: ${formatCLP(auditResult.result.comisiones_mp_px)})` : ""} · Neto recibido MP {formatCLP(auditResult.result.neto_recibido_mp)}.
+                      {" "}El CSV de Mercado Pago no trae las ventas del marketplace de ML, por eso no se suma a los cargos de ML.
+                    </div>
 
                     {/* Avisos del análisis (p. ej. referencia de ML incompleta) */}
                     {auditResult.avisos && auditResult.avisos.length > 0 && (
@@ -1541,10 +1556,10 @@ export default function Home() {
                         <th className="pb-2 pr-4 text-right">Ventas Brutas</th>
                         <th className="pb-2 pr-4 text-right">Var. Ventas</th>
                         <th className="pb-2 pr-4 text-right">Com. ML</th>
-                        <th className="pb-2 pr-4 text-right">Com. MP</th>
-                        <th className="pb-2 pr-4 text-right">Total Com.</th>
-                        <th className="pb-2 pr-4 text-right">Var. Com.</th>
-                        <th className="pb-2 pr-4 text-right">Tasa</th>
+                        <th className="pb-2 pr-4 text-right" title="Solo informativo: desde C-12 ya no se guarda">Com. MP (info)</th>
+                        <th className="pb-2 pr-4 text-right" title="Cargos de ML: venta + envío + publicidad, netos de anulaciones, NC y Flex">Total cargos ML</th>
+                        <th className="pb-2 pr-4 text-right">Var. cargos</th>
+                        <th className="pb-2 pr-4 text-right" title="Cargos de ML sobre ventas brutas: incluye envío y publicidad, no es solo la comisión por venta">Tasa cargos ML</th>
                         <th className="pb-2 pr-4 text-right">NC ML</th>
                         <th className="pb-2 pr-4 text-right">Recuperable</th>
                         <th className="pb-2 w-8"></th>
@@ -1578,7 +1593,7 @@ export default function Home() {
                             <td className="py-2.5 pr-4 text-right text-gray-700">${Math.round(row.ventas_brutas).toLocaleString("es-CL")}</td>
                             <td className={`py-2.5 pr-4 text-right ${colorVar(varVentas)}`}>{fmtVar(varVentas)}</td>
                             <td className="py-2.5 pr-4 text-right text-orange-600">${Math.round(row.comisiones_ml).toLocaleString("es-CL")}</td>
-                            <td className="py-2.5 pr-4 text-right text-orange-600">${Math.round(row.comisiones_mp).toLocaleString("es-CL")}</td>
+                            <td className="py-2.5 pr-4 text-right text-gray-400">{row.comisiones_mp == null ? "—" : `$${Math.round(row.comisiones_mp).toLocaleString("es-CL")}`}</td>
                             <td className="py-2.5 pr-4 text-right font-semibold text-red-700">${Math.round(row.total_comisiones).toLocaleString("es-CL")}</td>
                             <td className={`py-2.5 pr-4 text-right ${colorVar(varComisiones, true)}`}>{fmtVar(varComisiones)}</td>
                             <td className="py-2.5 pr-4 text-right text-red-700">{Number(row.tasa_efectiva).toFixed(2)}%</td>
@@ -1599,7 +1614,7 @@ export default function Home() {
                               <td colSpan={11} className="py-2 pb-3">
                                 <div className="bg-gray-50 rounded-xl px-4 py-3 text-xs text-gray-600 space-y-1">
                                   <p>{row.resumen}</p>
-                                  {row.comisiones_mp_px !== 0 && (
+                                  {row.comisiones_mp_px != null && row.comisiones_mp_px !== 0 && (
                                     <p className="text-yellow-700">PX — asumido ML, no verificado: {formatCLP(row.comisiones_mp_px)}</p>
                                   )}
                                   <p className="text-gray-400">Analizado: {row.analizado}</p>

@@ -120,20 +120,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, mes, result, referenciaML, avisos, mesesML, mesesMP });
     }
 
-    // Una tasa efectiva mayor al 100 % es imposible (comisiones > ventas): no se guarda, con cualquier fuente de ventas_brutas
-    // (también en el camino sin referencia de ML). Fuera del rango habitual solo se avisa.
+    // Una tasa de cargos ML mayor al 100 % es imposible (cargos > ventas): no se guarda, con cualquier fuente de ventas_brutas
+    // (también en el camino sin referencia de ML).
     const evaluacion = evaluarTasaEfectiva(result.total_comisiones, result.ventas_brutas);
     if (evaluacion.rechazo) {
-      console.warn(`[audit/analyze] ${mes}: análisis rechazado, tasa efectiva fuera de lo posible (no se guardó nada)`);
+      console.warn(`[audit/analyze] ${mes}: análisis rechazado, tasa de cargos ML fuera de lo posible (no se guardó nada)`);
       return NextResponse.json({ ok: false, error: evaluacion.rechazo, tasaRechazada: true, mes, avisos }, { status: 422 });
     }
-    if (evaluacion.aviso) avisos.push(evaluacion.aviso);
     const fuente = fuenteVentasBrutas(referenciaML);
 
     const headers = [
-      "Mes", "Ventas Brutas", "Ventas Netas", "Comisiones ML", "Comisiones MP",
-      "Comisiones MP (PX, no verificado)", "Total Comisiones", "Notas Crédito ML",
-      "Recuperable", "Neto Recibido MP", "Tasa Efectiva %", "Flex Crédito",
+      // C-12: la tasa usa solo cargos de ML. Las columnas de MP (E, F y J) se conservan para no correr los índices que leen
+      // el historial y Rentabilidad, pero quedan VACÍAS: las comisiones de MP son solo informativas en el resultado.
+      "Mes", "Ventas Brutas", "Ventas Netas", "Cargos ML (venta+envío+publicidad)", "(MP: no se guarda)",
+      "(MP PX: no se guarda)", "Total Cargos ML", "Notas Crédito ML",
+      "Recuperable", "(Neto MP: no se guarda)", "Tasa Cargos ML %", "Flex Crédito",
       "Flex Débito", "Errores", "Resumen", "Analizado",
       // Préstamo intencional de esquema para Rentabilidad (ver
       // docs/estado-metricas-y-pendientes.md, sección "Diseño de
@@ -152,12 +153,12 @@ export async function POST(request: Request) {
       result.ventas_brutas,
       result.ventas_netas,
       result.comisiones_ml,
-      result.comisiones_mp,
-      result.comisiones_mp_px,
+      "", // comisiones MP: informativas, no se persisten
+      "", // comisiones MP PX: informativas, no se persisten
       result.total_comisiones,
       result.notas_credito_ml,
       result.recuperable,
-      result.neto_recibido_mp,
+      "", // neto recibido MP: informativo, no se persiste
       result.tasa_efectiva,
       result.flex_credito,
       result.flex_debito,

@@ -17,43 +17,32 @@ export function fuenteVentasBrutas(referencia: ReferenciaVentas | null): string 
   return referencia?.incompleta ? FUENTE_REFERENCIA_INCOMPLETA : FUENTE_ARCHIVO_ML;
 }
 
-// Una tasa efectiva (comisiones / ventas brutas) mayor al 100 % es imposible: no se guarda. El rango «habitual» solo
-// genera un aviso (no bloquea). Rango tomado de las filas válidas actuales de la hoja (≈12,5 % a 14,5 %) con margen;
-// ajustar acá si el negocio cambia.
+// Una tasa (cargos de ML / ventas brutas) mayor al 100 % es imposible: no se guarda. No hay rango «habitual» de aviso: la tasa
+// incluye envío y publicidad (en los reportes reales ronda 40 %-55 %), así que un rango sacado de filas de prueba solo daría falsas alarmas.
 export const TASA_MAXIMA = 100;
-export const TASA_HABITUAL = { min: 8, max: 25 };
 
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 
-export type EvaluacionTasa = { tasa: number | null; rechazo: string | null; aviso: string | null };
+export type EvaluacionTasa = { tasa: number | null; rechazo: string | null };
 
-export function evaluarTasaEfectiva(totalComisiones: number, ventasBrutas: number): EvaluacionTasa {
+// totalCargosML = cargos de ML del ciclo (cargo por venta + envío + publicidad y mantenimiento, netos de anulaciones, NC y Flex).
+export function evaluarTasaEfectiva(totalCargosML: number, ventasBrutas: number): EvaluacionTasa {
   if (ventasBrutas <= 0) {
-    // Sin ventas la tasa no existe: con comisiones es incoherente (se rechaza); sin comisiones tampoco hay nada que validar.
-    if (totalComisiones > 0) {
+    // Sin ventas la tasa no existe: con cargos es incoherente (se rechaza); sin cargos tampoco hay nada que validar.
+    if (totalCargosML > 0) {
       return {
         tasa: null,
-        rechazo: `Las ventas brutas del ciclo son ${clp(ventasBrutas)} pero hay comisiones por ${clp(totalComisiones)}: no se puede calcular la tasa efectiva y no se guardó nada. Probablemente un archivo (Facturación ML o MP) no corresponde al ciclo de facturación de este mes.`,
-        aviso: null,
+        rechazo: `Las ventas brutas del ciclo son ${clp(ventasBrutas)} pero hay cargos de ML por ${clp(totalCargosML)}: no se puede calcular la tasa y no se guardó nada. Probablemente el archivo de Facturación ML no corresponde al ciclo de facturación de este mes.`,
       };
     }
-    return { tasa: 0, rechazo: null, aviso: null };
+    return { tasa: 0, rechazo: null };
   }
-  const tasa = (totalComisiones / ventasBrutas) * 100;
-  const tasaTexto = tasa.toFixed(2).replace(".", ",");
+  const tasa = (totalCargosML / ventasBrutas) * 100;
   if (tasa > TASA_MAXIMA) {
     return {
       tasa,
-      rechazo: `Las comisiones (${clp(totalComisiones)}) superan las ventas brutas (${clp(ventasBrutas)}): la tasa efectiva sería ${tasaTexto} %, imposible. No se guardó nada. Probablemente un archivo (Facturación ML o MP) no corresponde al ciclo de facturación de este mes, o las comisiones de MP incluyen operaciones liquidadas fuera del ciclo.`,
-      aviso: null,
+      rechazo: `Los cargos de ML (${clp(totalCargosML)}) superan las ventas brutas (${clp(ventasBrutas)}): la tasa de cargos ML sería ${tasa.toFixed(2).replace(".", ",")} %, imposible. No se guardó nada. Probablemente el archivo de Facturación ML no corresponde al ciclo de facturación de este mes, o las ventas de referencia no son las de este ciclo.`,
     };
   }
-  if (tasa < TASA_HABITUAL.min || tasa > TASA_HABITUAL.max) {
-    return {
-      tasa,
-      rechazo: null,
-      aviso: `La tasa efectiva (${tasaTexto} %) está fuera del rango habitual (${TASA_HABITUAL.min} % a ${TASA_HABITUAL.max} %). Se guardó igual; conviene revisar que los archivos correspondan al ciclo.`,
-    };
-  }
-  return { tasa, rechazo: null, aviso: null };
+  return { tasa, rechazo: null };
 }

@@ -27,13 +27,31 @@ export type TransaccionError = {
   detalle: string;
 };
 
+// Desglose de los cargos de ML que forman la tasa. Suma: cargo_por_venta + envio + publicidad_mantenimiento + anulaciones +
+// notas_credito + flex_credito + flex_debito = comisiones_ml (salvo el piso en 0 que se aplica al restar NC y Flex).
+export type DesgloseML = {
+  cargo_por_venta: number;
+  envio: number;
+  publicidad_mantenimiento: number;
+  anulaciones: number;      // negativo
+  notas_credito: number;    // negativo (NC de ML aplicadas)
+  flex_credito: number;     // negativo
+  flex_debito: number;      // positivo
+  otros_no_incluidos: number; // cargos del ciclo con otro detalle, NO sumados a la tasa (solo informativo)
+};
+
 export type AuditResult = {
   ventas_brutas: number;
   ventas_netas: number;
   comisiones_ml: number;
+  // INFORMATIVOS, no entran a total_comisiones ni a la tasa ni se guardan en la hoja: en el CSV de MP no aparecen las
+  // ventas del marketplace de ML (0 de 335 pagos de ventas ML en enero, febrero, marzo y junio de 2026), así que sus
+  // comisiones no corresponden a las ventas de este ciclo (hallazgo C-12).
   comisiones_mp: number;
   comisiones_mp_px: number;
+  // Cargos de ML del ciclo (= comisiones_ml): cargo por venta + envío + publicidad y mantenimiento, menos anulaciones, NC y Flex.
   total_comisiones: number;
+  desglose_ml: DesgloseML;
   notas_credito_ml: number;
   recuperable: number;
   neto_recibido_mp: number;
@@ -400,6 +418,7 @@ function auditResultVacio(detalle_errores: string[], error_cobertura?: string): 
     comisiones_mp: 0,
     comisiones_mp_px: 0,
     total_comisiones: 0,
+    desglose_ml: { cargo_por_venta: 0, envio: 0, publicidad_mantenimiento: 0, anulaciones: 0, notas_credito: 0, flex_credito: 0, flex_debito: 0, otros_no_incluidos: 0 },
     notas_credito_ml: 0,
     recuperable: 0,
     neto_recibido_mp: 0,
@@ -515,6 +534,7 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
 
   const ventasML = new Map<string, VentaML>();
   let comisiones_ml_raw = 0;
+  const desglose: DesgloseML = { cargo_por_venta: 0, envio: 0, publicidad_mantenimiento: 0, anulaciones: 0, notas_credito: 0, flex_credito: 0, flex_debito: 0, otros_no_incluidos: 0 };
   let ventas_brutas = 0;
   const ordenesContadas = new Set<string>();
 
@@ -549,11 +569,13 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
 
       if (esPublicidad) {
         comisiones_ml_raw += Math.abs(valorCargo);
+        desglose.publicidad_mantenimiento += Math.abs(valorCargo);
         continue;
       }
 
       if (esAnulacion) {
         comisiones_ml_raw += valorCargo; // valorCargo negativo → reduce total
+        desglose.anulaciones += valorCargo;
         if (orden && ventasML.has(orden)) {
           const v = ventasML.get(orden)!;
           const anulaVenta = detalle.includes("venta");
@@ -562,6 +584,12 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
           if (anulaEnvio) v.envio_cobrado = Math.max(0, v.envio_cobrado + valorCargo);
           if (v.comision_cobrada === 0 && v.envio_cobrado === 0) v.anulada = true;
         }
+        continue;
+      }
+
+      // Cualquier otro detalle (ni venta, ni envío, ni publicidad, ni anulación) nunca se sumó al total: solo se informa.
+      if (!esVenta && !esEnvio) {
+        desglose.otros_no_incluidos += Math.abs(valorCargo);
         continue;
       }
 
@@ -584,8 +612,10 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
         if (esVenta) v.comision_cobrada += Math.abs(valorCargo);
         if (esEnvio) v.envio_cobrado += Math.abs(valorCargo);
         comisiones_ml_raw += Math.abs(valorCargo);
+        if (esVenta) desglose.cargo_por_venta += Math.abs(valorCargo); else desglose.envio += Math.abs(valorCargo);
       } else if (esVenta || esEnvio) {
         comisiones_ml_raw += Math.abs(valorCargo);
+        if (esVenta) desglose.cargo_por_venta += Math.abs(valorCargo); else desglose.envio += Math.abs(valorCargo);
       }
 
       // Ventas brutas: una vez por orden, solo ventas no anuladas
@@ -704,7 +734,9 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
         detalle_errores.push(`NC ML: ${ref} — -$${monto.toLocaleString("es-CL")}`);
       }
     }
+    const antesNC = comisiones_ml_raw;
     comisiones_ml_raw = Math.max(0, comisiones_ml_raw - notasCreditoMLTotal);
+    desglose.notas_credito = comisiones_ml_raw - antesNC;
   }
 
   // ── Flex Crédito / Débito ──────────────────────────────────────────────────
@@ -713,7 +745,9 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
     for (const row of data.flexCredito) {
       flexCreditoTotal += Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "bonificación", "total")));
     }
+    const antesFlexC = comisiones_ml_raw;
     comisiones_ml_raw = Math.max(0, comisiones_ml_raw - flexCreditoTotal);
+    desglose.flex_credito = comisiones_ml_raw - antesFlexC;
   }
 
   let flexDebitoTotal = 0;
@@ -722,6 +756,7 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
       flexDebitoTotal += Math.abs(parseCLP(getVal(row, "monto", "importe", "valor", "cargo", "total")));
     }
     comisiones_ml_raw += flexDebitoTotal;
+    desglose.flex_debito = flexDebitoTotal;
   }
 
   // ── Detectar errores por transacción ──────────────────────────────────────
@@ -770,19 +805,21 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
   }
   const comisiones_ml = comisiones_ml_raw;
   const ventas_netas = ventas_brutas;
-  const total_comisiones = comisiones_ml + comisiones_mp;
+  // La tasa mide SOLO los cargos de ML sobre las ventas del ciclo (C-12): el cargo por venta y el de envío de ML se generan
+  // el mismo día de la venta (90-100 % mismo día en los reportes reales), así que numerador y denominador quedan alineados por
+  // fecha de venta. Las comisiones de MP se calculan arriba como informativas, pero no se suman: el CSV de MP no trae las
+  // ventas del marketplace de ML. OJO: incluye envío y publicidad, no es «solo comisión por venta».
+  const total_comisiones = comisiones_ml;
   const tasa_efectiva = ventas_brutas > 0
     ? parseFloat(((total_comisiones / ventas_brutas) * 100).toFixed(2))
     : 0;
 
   const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
+  const otrosAjustes = desglose.anulaciones + desglose.notas_credito + desglose.flex_credito + desglose.flex_debito;
   const partes = [
     `Mes ${mes}: ventas brutas ${clp(ventas_brutas)}.`,
-    `Com. ML ${clp(comisiones_ml)} · Com. MP ${clp(comisiones_mp)} · Total ${clp(total_comisiones)} (${tasa_efectiva}%).`,
+    `Cargos ML ${clp(total_comisiones)} (venta ${clp(desglose.cargo_por_venta)} · envío ${clp(desglose.envio)} · publicidad y mantenimiento ${clp(desglose.publicidad_mantenimiento)} · anulaciones, NC y Flex ${clp(otrosAjustes)}) = tasa de cargos ML ${tasa_efectiva}% de las ventas.`,
   ];
-  if (comisiones_mp_px !== 0) {
-    partes.push(`(de los cuales PX — asumido ML, no verificado: ${clp(comisiones_mp_px)}).`);
-  }
   if (recuperable > 0) partes.push(`Recuperable: ${clp(recuperable)}.`);
   if (notasCreditoMLTotal > 0) partes.push(`NC ML aplicadas: -${clp(notasCreditoMLTotal)}.`);
   if (flexCreditoTotal > 0) partes.push(`Flex crédito: -${clp(flexCreditoTotal)}.`);
@@ -796,6 +833,7 @@ export function calculateAudit(mes: string, data: AuditData, ventasBrutasML?: nu
     comisiones_mp,
     comisiones_mp_px,
     total_comisiones,
+    desglose_ml: desglose,
     notas_credito_ml: notasCreditoMLTotal,
     recuperable,
     neto_recibido_mp,
