@@ -44,7 +44,7 @@ El ensayo se niega a sobrescribir un plan existente: usa siempre otro nombre con
 2. Duplicar `Rentabilidad` como `Rentabilidad RESPALDO C16` **DESPUÉS de la limpieza y de ese ensayo repetido**. Si algo cambia después, hay que duplicar de nuevo y repetir el ensayo (el script lo detecta comparando el respaldo con el «antes» del plan).
 3. `node scripts/una-vez/recalcular-margen-c16.mjs --aplicar --plan=%TEMP%\c16_plan_post_limpieza.json --respaldo=C16`
 4. Si falla a mitad: repetir el mismo comando con el mismo plan.
-5. Verificar: debe imprimir «IGUAL a lo acordado», «resto de la hoja sin cambios = sí», «120/120» y «un nuevo ensayo propone 0 filas»; la tarjeta de Rentabilidad debe mostrar −15.612, −14,4 % y 89.
+5. Verificar: debe imprimir «IGUAL a lo acordado», «resto de la hoja sin cambios = sí», «120/120» y «un nuevo ensayo propone 0 filas»; la tarjeta de Rentabilidad debe mostrar −15.612, −14,4 % y 89. Verificación independiente (solo lectura): `node scripts/una-vez/c16_verificar_post.mjs --plan=%TEMP%\c16_plan_post_limpieza.json --respaldo=C16` (120 filas modificadas y solo en J:K, resto idéntico al respaldo, tarjeta −15.612 / −14,4 % / 89 / 10 cambios de signo; código 0 si todo coincide). Se prueba con `test-c16-verificar-post.mjs` (17 comprobaciones).
 6. Volver atrás: `restaurar-margen-c16.mjs` (ver «Restauración de C-16» abajo). Reserva manual, sin probar: copiar J:K de `Rentabilidad RESPALDO C16` y pegar solo valores sobre la real, y comprobar después que siguen siendo texto.
 7. Escrituras (estimadas): 120 filas (240 celdas) en 6 `batchUpdate`; unos 2 a 3 minutos con la verificación.
 
