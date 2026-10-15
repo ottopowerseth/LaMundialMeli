@@ -45,10 +45,22 @@ El ensayo se niega a sobrescribir un plan existente: usa siempre otro nombre con
 3. `node scripts/una-vez/recalcular-margen-c16.mjs --aplicar --plan=%TEMP%\c16_plan_post_limpieza.json --respaldo=C16`
 4. Si falla a mitad: repetir el mismo comando con el mismo plan.
 5. Verificar: debe imprimir «IGUAL a lo acordado», «resto de la hoja sin cambios = sí», «120/120» y «un nuevo ensayo propone 0 filas»; la tarjeta de Rentabilidad debe mostrar −15.612, −14,4 % y 89.
-6. Volver atrás: copiar J:K de `Rentabilidad RESPALDO C16` sobre la real.
+6. Volver atrás: `restaurar-margen-c16.mjs` (ver «Restauración de C-16» abajo). Reserva manual, sin probar: copiar J:K de `Rentabilidad RESPALDO C16` y pegar solo valores sobre la real, y comprobar después que siguen siendo texto.
 7. Escrituras (estimadas): 120 filas (240 celdas) en 6 `batchUpdate`; unos 2 a 3 minutos con la verificación.
 
 Hasta aplicar B no se deben ejecutar `recalcular-envio` ni `completar` (reescribirían J:K con la fórmula actual sobre el costo guardado).
+
+## Restauración de C-16 (solo si la aplicación sale mal; requiere autorización explícita)
+
+Lee el «antes» de la pestaña `Rentabilidad RESPALDO <sufijo>` (el plan solo dice qué filas son y se exige que coincida) y reescribe `Rentabilidad!J:K` de las filas aplicadas como TEXTO, bajo el lock `ml-sync`, en lotes atómicos.
+
+1. Parar todo: nadie sincroniza ni corre Auditoría, Rentabilidad, backfill, `recalcular-envio` ni `completar`.
+2. Ensayo (solo lectura): `node scripts/una-vez/restaurar-margen-c16.mjs --plan=%TEMP%\c16_plan_post_limpieza.json --respaldo=C16`. Dice cuántas filas están aplicadas y se niega si el respaldo no guarda el «antes», si hay cambios fuera de J:K de esas filas o si hay tickets activos.
+3. Restaurar: el mismo comando con `--aplicar` (`--lote=20`, `--pausa-ms=2500` por defecto). Si falla a mitad, repetirlo con el mismo plan (reconoce las filas ya restauradas).
+4. Verificar (solo lectura, independiente): `node scripts/una-vez/verificar-restauracion-c16.mjs --respaldo=C16`. Debe decir que Rentabilidad es IDÉNTICA al respaldo (valor interno, texto mostrado y formato de las 26 columnas, y la tarjeta).
+5. Los respaldos no se borran hasta que Otto lo diga.
+
+Pruebas: `node scripts/una-vez/test-restaurar-margen-c16.mjs` (aplica C-16 simulado y restaura; 50 comprobaciones).
 
 ## Datos reales
 
