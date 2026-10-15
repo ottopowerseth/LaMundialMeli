@@ -70,7 +70,8 @@ export async function clearSheet(sheetName: string) {
 
 // Quita el formato de TODAS las filas de la hoja (todo su alto de cuadrícula, no un número fijo: Ventas ya supera las 2000 filas
 // que reseteaba antes). No toca los valores. Las filas que la tabla nueva agregue más allá de la cuadrícula nacen sin formato.
-async function resetearFormato(sheetName: string) {
+// Devuelve el alto y el ancho de la cuadrícula ANTES de escribir (undefined si la hoja no existe): reemplazarHoja los usa para saber si queda algo por limpiar.
+async function resetearFormato(sheetName: string): Promise<{ rowCount?: number; columnCount?: number }> {
   const auth = getAuthClient();
   const sheets = google.sheets({ version: "v4", auth });
   const { data } = await sheets.spreadsheets.get({
@@ -97,6 +98,7 @@ async function resetearFormato(sheetName: string) {
       })
     );
   }
+  return { rowCount: sheet?.properties?.gridProperties?.rowCount ?? undefined, columnCount: sheet?.properties?.gridProperties?.columnCount ?? undefined };
 }
 
 const letraDeColumna = (n: number) => { let s = ""; for (let c = n; c > 0; c = Math.floor((c - 1) / 26)) s = String.fromCharCode(65 + ((c - 1) % 26)) + s; return s; };
@@ -105,7 +107,9 @@ const letraDeColumna = (n: number) => { let s = ""; for (let c = n; c > 0; c = M
 // clearSheet + writeSheet, que dejaba la hoja vacía si algo fallaba (o si otra lectura caía) entre los dos pasos.
 //   1. reset de formato (no toca valores: si falla acá, o en el paso 2, la hoja anterior queda intacta)
 //   2. escribe la tabla nueva sobre A1
-//   3. limpia SOLO lo que sobra de la tabla anterior: las filas bajo la nueva y las columnas a la derecha de su ancho (hasta Z)
+//   3. limpia SOLO lo que sobra de la tabla anterior: las filas bajo la nueva y las columnas a la derecha de su ancho (hasta Z), y solo si la
+//      cuadrícula ANTERIOR tenía algo ahí: una tabla que llena justo la cuadrícula (o la hace crecer) no deja sobrante, y pedir limpiar un rango que
+//      empieza fuera de la cuadrícula hace que Sheets responda «exceeds grid limits» (pasaba con Ventas, 2.474 filas justas: un falso error en el sync).
 // Si el paso 3 falla NO lanza: la tabla nueva ya está escrita; devuelve sobranteLimpio=false y el próximo reemplazo lo limpia.
 // Límite: sigue sin ser atómico; entre el paso 2 y el 3 un lector puede ver la tabla nueva con filas viejas debajo.
 export async function reemplazarHoja(sheetName: string, valores: unknown[][]): Promise<{ sobranteLimpio: boolean; errorSobrante?: string }> {
@@ -113,12 +117,17 @@ export async function reemplazarHoja(sheetName: string, valores: unknown[][]): P
   const ancho = Math.max(...valores.map((f) => f.length));
   // Filas más cortas que el ancho se rellenan con "": así ninguna celda de la tabla conserva un valor viejo (clearSheet limpiaba A:Z entero).
   const completas = valores.map((f) => (f.length < ancho ? [...f, ...Array(ancho - f.length).fill("")] : f));
-  await resetearFormato(sheetName);
+  const grilla = await resetearFormato(sheetName);
   await writeSheet(`${sheetName}!A1`, completas);
 
   const filas = valores.length;
-  const ranges = [`${sheetName}!A${filas + 1}:Z`];
-  if (ancho < 26) ranges.push(`${sheetName}!${letraDeColumna(ancho + 1)}1:Z${filas}`);
+  const ranges: string[] = [];
+  const ultima = letraDeColumna(Math.min(26, grilla.columnCount ?? 26)); // última columna de la cuadrícula (tope Z): no se pide un rango que termine fuera de ella
+  // Filas bajo la tabla nueva: solo si la cuadrícula anterior era más alta (sin el dato de la cuadrícula se limpia, como antes).
+  if (grilla.rowCount === undefined || filas < grilla.rowCount) ranges.push(`${sheetName}!A${filas + 1}:${ultima}`);
+  // Columnas a la derecha del ancho nuevo: solo si la cuadrícula anterior tenía columnas ahí (el tope de limpieza sigue siendo Z).
+  if (ancho < 26 && (grilla.columnCount === undefined || ancho < grilla.columnCount)) ranges.push(`${sheetName}!${letraDeColumna(ancho + 1)}1:${ultima}${filas}`);
+  if (ranges.length === 0) return { sobranteLimpio: true }; // nada que limpiar
   try {
     const auth = getAuthClient();
     const sheets = google.sheets({ version: "v4", auth });

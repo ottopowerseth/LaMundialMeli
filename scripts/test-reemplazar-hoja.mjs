@@ -21,13 +21,15 @@ const rango = (ref) => { const m = ref.match(/^([A-Z]+)(\\d+)?(?::([A-Z]+)(\\d+)
 const nombreYRef = (r) => { const i = r.lastIndexOf("!"); return [r.slice(0, i), r.slice(i + 1)]; };
 const paso = (op) => { globalThis.__log.push(op); globalThis.__vista.push(JSON.stringify(globalThis.__hojas)); if (globalThis.__falla === op) { const e = new Error("falla simulada en " + op); e.code = 400; throw e; } };
 exports.google = { auth: { GoogleAuth: class {} }, sheets: () => ({ spreadsheets: {
-  get: async () => ({ data: { sheets: Object.keys(globalThis.__hojas).map((t, i) => ({ properties: { title: t, sheetId: i + 1, gridProperties: { rowCount: globalThis.__grid[t] ?? 1000 } } })) } }),
+  get: async () => ({ data: { sheets: Object.keys(globalThis.__hojas).map((t, i) => ({ properties: { title: t, sheetId: i + 1, gridProperties: { rowCount: globalThis.__grid[t] ?? 1000, columnCount: (globalThis.__cols ?? {})[t] ?? 26 } } })) } }),
   batchUpdate: async (r) => { paso("formato"); const nombres = Object.keys(globalThis.__hojas); for (const q of r.requestBody.requests) { const rg = q.repeatCell.range; const t = nombres[rg.sheetId - 1]; globalThis.__formatos.push({ hoja: t, fin: rg.endRowIndex }); for (const i of [...globalThis.__sucio[t]]) if (i >= rg.startRowIndex && i < rg.endRowIndex) globalThis.__sucio[t].delete(i); } return {}; },
   values: {
     clear: async () => { paso("clear"); },
     update: async (r) => { paso("escribir"); globalThis.__opciones.push(r.valueInputOption); const [h, ref] = nombreYRef(r.range); const { c1, r1 } = rango(ref); const hoja = globalThis.__hojas[h]; globalThis.__grid[h] = Math.max(globalThis.__grid[h] ?? 1000, r1 + r.requestBody.values.length);
       r.requestBody.values.forEach((fila, i) => fila.forEach((v, j) => { (hoja[r1 + i] ??= [])[c1 + j] = v; })); },
     batchClear: async (r) => { paso("limpiar"); for (const rg of r.requestBody.ranges) { const [h, ref] = nombreYRef(rg); const { c1, r1, c2, r2 } = rango(ref); const hoja = globalThis.__hojas[h];
+      // como Sheets: un rango que EMPIEZA fuera de la cuadrícula (fila o columna) se rechaza; uno que termina más allá se recorta
+      (globalThis.__pedidos ??= []).push(rg); const filasGrid = globalThis.__grid[h] ?? 1000, colsGrid = (globalThis.__cols ?? {})[h] ?? 26; if (r1 >= filasGrid || c1 >= colsGrid) { globalThis.__rechazos.push(rg); const e = new Error("Invalid range[0]: Range (" + rg + ") exceeds grid limits. Max rows: " + filasGrid + ", max columns: " + colsGrid); e.code = 400; throw e; }
       for (let i = r1; i <= Math.min(r2, hoja.length - 1); i++) for (let j = c1; j <= c2; j++) if (hoja[i] && j < hoja[i].length) hoja[i][j] = undefined; } },
   } } }) };`);
 const S = require(path.join(out, "sheets.js"));
@@ -36,7 +38,7 @@ const check = (c, m) => { assert.ok(c, m); ok++; console.log("  ✓", m); };
 
 // Lo que "ve" un lector: filas sin celdas vacías al final y sin filas vacías al final.
 const leer = (nombre) => { const h = (globalThis.__hojas[nombre] ?? []).map((f) => { const s = [...(f ?? [])].map((v) => (v === undefined ? "" : v)); while (s.length && s.at(-1) === "") s.pop(); return s; }); while (h.length && h.at(-1).length === 0) h.pop(); return h; };
-const nuevo = (hojas, falla = null) => { globalThis.__hojas = JSON.parse(JSON.stringify(hojas)); globalThis.__log = []; globalThis.__vista = []; globalThis.__falla = falla; globalThis.__grid = {}; globalThis.__sucio = Object.fromEntries(Object.keys(hojas).map((t) => [t, new Set()])); globalThis.__formatos = []; globalThis.__opciones = []; process.env.GOOGLE_SHEET_ID = "hoja-falsa"; };
+const nuevo = (hojas, falla = null) => { globalThis.__hojas = JSON.parse(JSON.stringify(hojas)); globalThis.__log = []; globalThis.__vista = []; globalThis.__falla = falla; globalThis.__grid = {}; globalThis.__sucio = Object.fromEntries(Object.keys(hojas).map((t) => [t, new Set()])); globalThis.__formatos = []; globalThis.__opciones = []; globalThis.__rechazos = []; globalThis.__cols = {}; process.env.GOOGLE_SHEET_ID = "hoja-falsa"; };
 const tabla = (filas, cols) => Array.from({ length: filas }, (_, i) => Array.from({ length: cols }, (_, j) => (i === 0 ? `H${j}` : `r${i}c${j}`)));
 const nuncaVacia = (nombre) => globalThis.__vista.every((v) => (JSON.parse(v)[nombre] ?? []).some((f) => (f ?? []).some((x) => x !== null && x !== undefined && x !== "")));
 
@@ -120,5 +122,32 @@ console.log("ml-sync ya no usa clearSheet ni el tope A2:S1000");
   check(!/clearSheet/.test(src), "no queda ninguna llamada a clearSheet en ml-sync");
   check(!/A2:S1000/.test(src), "la lectura previa de Publicaciones no tiene tope de 1000");
   check(/reemplazarHoja\("Publicaciones"/.test(src) && /reemplazarHoja\("Ventas"/.test(src), "Publicaciones y Ventas usan reemplazarHoja"); }
+
+console.log("cuadrícula justa: no se pide limpiar un rango fuera de la hoja (Ventas con 2.474 filas justas daba «exceeds grid limits»)");
+{ // la tabla llena EXACTAMENTE la cuadrícula anterior: no hay sobrante
+  nuevo({ Ventas: tabla(8, 4) }); globalThis.__grid.Ventas = 8; const nueva = tabla(8, 4); const r = await S.reemplazarHoja("Ventas", nueva);
+  eq(leer("Ventas"), nueva, "tabla del alto exacto de la cuadrícula: queda escrita completa");
+  eq([r.sobranteLimpio, r.errorSobrante, globalThis.__rechazos], [true, undefined, []], "sobranteLimpio = true, sin error y sin ningún rango rechazado por Sheets");
+  check(!globalThis.__log.includes("limpiar") || globalThis.__rechazos.length === 0, "no se pidió limpiar filas bajo la tabla (la cuadrícula no tiene filas ahí)");
+  eq(globalThis.__log, ["formato", "escribir", "limpiar"], "se limpian solo las columnas a la derecha (la cuadrícula tiene 26): A9:Z no se pide"); }
+{ // la tabla crece más allá de la cuadrícula (la escritura la agranda): tampoco hay sobrante de filas
+  nuevo({ Ventas: tabla(5, 4) }); globalThis.__grid.Ventas = 5; const nueva = tabla(9, 4); const r = await S.reemplazarHoja("Ventas", nueva);
+  eq([leer("Ventas"), r.sobranteLimpio, globalThis.__rechazos, globalThis.__grid.Ventas], [nueva, true, [], 9], "tabla más alta que la cuadrícula: crece, sin error de limpieza"); }
+{ // cuadrícula más alta que la tabla: sí queda sobrante y se limpia
+  nuevo({ Ventas: tabla(20, 4) }); globalThis.__grid.Ventas = 20; const nueva = tabla(8, 4); const r = await S.reemplazarHoja("Ventas", nueva);
+  eq([leer("Ventas"), r.sobranteLimpio, globalThis.__rechazos], [nueva, true, []], "cuadrícula más alta que la tabla: se limpian las filas sobrantes");
+  eq(globalThis.__log, ["formato", "escribir", "limpiar"], "…con una sola llamada de limpieza"); }
+{ // el caso del 2026-10-15: hoja anterior de 2.471 filas, tabla nueva de 2.474 (la hoja crece y queda justa)
+  nuevo({ Ventas: tabla(2471, 11) }); globalThis.__grid.Ventas = 2471; const nueva = tabla(2474, 11); const r = await S.reemplazarHoja("Ventas", nueva);
+  eq([r.sobranteLimpio, globalThis.__rechazos, globalThis.__grid.Ventas], [true, [], 2474], "Ventas 2.471 → 2.474 filas: sin el falso error del sync"); }
+{ // la tabla llena el ancho de la cuadrícula (6 columnas): tampoco se pide limpiar columnas a la derecha
+  nuevo({ Hoja: tabla(10, 6) }); globalThis.__grid.Hoja = 50; globalThis.__cols.Hoja = 6; const nueva = tabla(10, 6); const r = await S.reemplazarHoja("Hoja", nueva);
+  eq([r.sobranteLimpio, globalThis.__rechazos], [true, []], "cuadrícula de 6 columnas y tabla de 6: no se pide limpiar la columna G en adelante");
+  nuevo({ Hoja: tabla(10, 6) }); globalThis.__grid.Hoja = 50; globalThis.__cols.Hoja = 6; const mas = tabla(10, 4); const r2 = await S.reemplazarHoja("Hoja", mas);
+  eq([leer("Hoja"), r2.sobranteLimpio, globalThis.__rechazos], [mas, true, []], "tabla más angosta que la cuadrícula: se limpian las columnas sobrantes (E en adelante)");
+  eq(globalThis.__pedidos.slice(-1), [["Hoja!E1:F10"]].flat(), "…y el rango de limpieza termina en la última columna de la cuadrícula (E1:F10), no en Z"); }
+{ // si la limpieza REAL falla, se sigue avisando (no se traga el error)
+  nuevo({ Ventas: tabla(20, 4) }, "limpiar"); globalThis.__grid.Ventas = 20; const r = await S.reemplazarHoja("Ventas", tabla(8, 4));
+  check(r.sobranteLimpio === false && /falla simulada en limpiar/.test(r.errorSobrante ?? ""), "una falla real al limpiar se sigue reportando: «" + r.errorSobrante + "»"); }
 
 console.log(`\n${ok} comprobaciones OK`);
